@@ -72,7 +72,7 @@ impl ViewerApp {
             Self::wrapped_node_extra(
                 ui,
                 ("segs", slot, pat, stu),
-                !which.is_empty(),
+                displayed || !me.slots[slot].has_volume(),
                 title,
                 |ui| {
                     if tip_widget(
@@ -118,7 +118,24 @@ impl ViewerApp {
                             current.as_ref() == Some(&RenameTarget::Set(here)),
                         );
                         Self::focus_row(ui, &resp, RenameTarget::Set(here), current, &mut focus);
-                        if resp.clicked() {
+                        let mut toggle = resp.clicked();
+                        let resp = resp.on_hover_text(Self::object_tip(
+                            &sr.sop_instance_uid,
+                            if sr.file_name.is_empty() {
+                                "made here, not written to a file"
+                            } else {
+                                &sr.file_name
+                            },
+                        ));
+                        resp.context_menu(|ui| {
+                            if Self::show_entry(ui, selected && segs_shown) {
+                                toggle = true;
+                                ui.close();
+                            }
+                            ui.separator();
+                            me.set_context_menu(ui, here, &mut set_act)
+                        });
+                        if toggle {
                             if selected {
                                 new_segs_shown = Some(!segs_shown);
                             } else {
@@ -126,16 +143,6 @@ impl ViewerApp {
                                 new_segs_shown = Some(true);
                             }
                         }
-                        resp.context_menu(|ui| me.set_context_menu(ui, here, &mut set_act));
-                        resp.on_hover_text(format!(
-                            "{}\nclick: show or hide\nright-click: connect to another image \
-                         series, copy / move to the other workspace, export as DICOM SEG, remove",
-                            if sr.file_name.is_empty() {
-                                "created here"
-                            } else {
-                                &sr.file_name
-                            }
-                        ));
 
                         // The segments of a series, and what acts on them, sit
                         // under *that* series rather than at the end of the
@@ -211,10 +218,12 @@ impl ViewerApp {
                                         egui::Button::selectable(i == active_seg, name.clone())
                                             .wrap(),
                                     )
-                                    .on_hover_text(
-                                        "Click to make this the segmentation the tools edit\n\
-                                         F2: rename, Delete: remove",
-                                    );
+                                    .on_hover_text(format!("Segment {}", i + 1));
+                                Self::keyboard_badge(
+                                    ui,
+                                    current.as_ref()
+                                        == Some(&RenameTarget::Item { set: here, idx: i }),
+                                );
                                 Self::focus_row(
                                     ui,
                                     &resp,

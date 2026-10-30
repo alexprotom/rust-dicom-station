@@ -134,6 +134,10 @@ pub(super) struct StudySlot {
     /// at all. Clicking the active row again turns them off without losing
     /// which plan is selected.
     pub(super) plans_shown: bool,
+    /// The dose row's own switch, the same for the active dose grid: whether
+    /// this workspace draws it. *How* dose is drawn (colorwash, isodose
+    /// lines) is `ViewerApp::dose_mode`, one choice for every workspace.
+    pub(super) dose_shown: bool,
     /// Index of the active structure set within `study.structure_sets`.
     pub(super) active_structs: usize,
     /// The tick box on the RT structures series row: whether the active set
@@ -369,6 +373,7 @@ impl StudySlot {
             roi_visible: Vec::new(),
             active_plan: 0,
             plans_shown: true,
+            dose_shown: true,
             active_structs: 0,
             structs_shown: true,
             segs_shown: true,

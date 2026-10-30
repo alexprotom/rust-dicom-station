@@ -92,7 +92,19 @@ pub(super) struct DvhModule {
     /// recomputing behind the user's back.
     pub gen: u64,
     pub status: Option<String>,
+    /// What was ticked in the data tree at the last pass the section was
+    /// unfolded, and what that tick list belonged to: the pass number, the
+    /// workspaces' studies and active sets, and the ticked items
+    /// ([`ViewerApp::dvh_follow_ticks`]).
+    ticks_seen: Option<(u64, TickOwners, Ticked)>,
 }
+
+/// Per open workspace: its slot, its study (by address), its active
+/// structure set and its active segmentation series - what a tick list
+/// belongs to.
+type TickOwners = Vec<[usize; 4]>;
+/// The ticked structures and segments, each with its workspace.
+type Ticked = Vec<(usize, ItemRef)>;
 
 impl DvhModule {
     fn new() -> DvhModule {
@@ -116,6 +128,7 @@ impl DvhModule {
             show_chart: true,
             gen: 0,
             status: None,
+            ticks_seen: None,
         }
     }
 }
@@ -237,6 +250,88 @@ impl ViewerApp {
         self.ensure_dvh();
         self.dvh_add(slot, seed);
         self.reveal_module(Module::Dvh);
+    }
+
+    /// What is ticked in the data tree: the shown structures of each open
+    /// workspace's active set and the shown segments of its active
+    /// segmentation series, with what that list belongs to (each
+    /// workspace's study, its active set and series), so a switch of set or
+    /// a new study is told from a tick.
+    fn tree_ticks(&self) -> (TickOwners, Ticked) {
+        let mut owners = Vec::new();
+        let mut ticked = Vec::new();
+        for slot in self.open_slots() {
+            let s = &self.slots[slot];
+            let Some(study) = s.study.as_ref() else {
+                continue;
+            };
+            let series = s.seg_series_idx();
+            owners.push([
+                slot,
+                study as *const LoadedStudy as usize,
+                s.active_structs,
+                series.unwrap_or(usize::MAX),
+            ]);
+            for (idx, _) in s.roi_visible.iter().enumerate().filter(|(_, v)| **v) {
+                ticked.push((
+                    slot,
+                    ItemRef {
+                        kind: SetKind::Structures,
+                        set: s.active_structs,
+                        idx,
+                    },
+                ));
+            }
+            if let Some(sr) = series.and_then(|i| study.seg_series.get(i).map(|sr| (i, sr))) {
+                let (set, sr) = sr;
+                for (idx, _) in sr.segs.iter().enumerate().filter(|(_, g)| g.visible) {
+                    ticked.push((
+                        slot,
+                        ItemRef {
+                            kind: SetKind::Segmentations,
+                            set,
+                            idx,
+                        },
+                    ));
+                }
+            }
+        }
+        (owners, ticked)
+    }
+
+    /// While the section is unfolded, a structure or segment ticked in the
+    /// data tree joins the plot, as the tree's *DVH* action would add it.
+    /// Unticking leaves it there (the plot's own list takes it off). Only a
+    /// tick between two consecutive passes counts: on the pass the section
+    /// unfolds, or after the active set or the study changed, the list is
+    /// taken as it stands, so a set switched to or loaded is not poured in.
+    fn dvh_follow_ticks(&mut self, pass: u64) {
+        let (owners, now) = self.tree_ticks();
+        let candidates = self.dvh_struct_candidates();
+        let Some(d) = &mut self.dvh else {
+            return;
+        };
+        let seen = d.ticks_seen.replace((pass, owners.clone(), now.clone()));
+        let Some((last, was_owners, before)) = seen else {
+            return;
+        };
+        if pass.saturating_sub(last) > 1 || was_owners != owners {
+            return;
+        }
+        let mut by_slot: Vec<(usize, Vec<ItemRef>)> = Vec::new();
+        for (slot, item) in now.into_iter().filter(|x| !before.contains(x)) {
+            let r = StructRef { slot, item };
+            if d.structures.contains(&r) || !candidates.iter().any(|(c, _)| *c == r) {
+                continue;
+            }
+            match by_slot.iter_mut().find(|(s, _)| *s == slot) {
+                Some((_, v)) => v.push(item),
+                None => by_slot.push((slot, vec![item])),
+            }
+        }
+        for (slot, items) in by_slot {
+            self.dvh_add(slot, items);
+        }
     }
 
     /// Add structures of `slot` to the plot and recompute.
@@ -397,9 +492,15 @@ impl ViewerApp {
         d.curves = done.curves;
         d.gen = gen;
         d.hover = None;
+        let stale = d.structures != d.asked;
         if std::mem::take(&mut d.show_chart) && !d.curves.is_empty() {
             let row = d.row;
             self.show_chart(row, super::chart_pane::ChartSource::Dvh);
+        }
+        // Structures picked while this run was in flight (a tick in the
+        // tree, the tree's DVH action) were not in it: run again for them.
+        if stale {
+            self.start_dvh();
         }
     }
 
@@ -454,6 +555,7 @@ impl ViewerApp {
             return;
         }
         self.ensure_dvh();
+        self.dvh_follow_ticks(ui.ctx().cumulative_pass_nr());
         // Everything that reads the whole of `self` is settled first.
         let dose_list = self.dvh_dose_candidates();
         let struct_list = self.dvh_struct_candidates();

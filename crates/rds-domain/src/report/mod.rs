@@ -78,6 +78,9 @@ pub struct Report {
     pub modality: String,
     /// The content date, `2025-03-07`; empty when not stated.
     pub date: String,
+    /// When it was made, `YYYYMMDDHHMMSS` ([`report_datetime`]): what
+    /// files a report into its treatment session ([`crate::sessions`]).
+    pub datetime: String,
     /// Facts above the tables: the scanner, the totals, the procedure.
     pub info: Vec<(String, String)>,
     /// Free lines of a page.
@@ -165,6 +168,7 @@ pub fn load_report(path: &Path) -> Result<Report> {
         modality: str_of(&obj, tags::MODALITY).unwrap_or_else(|| "SR".into()),
         study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         date,
+        datetime: report_datetime(&obj),
         file_name: path
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
@@ -235,6 +239,7 @@ fn load_document(obj: &dicom_object::InMemDicomObject, path: &Path) -> Result<Re
         kind: ReportKind::Document,
         modality: str_of(obj, tags::MODALITY).unwrap_or_else(|| "DOC".into()),
         date,
+        datetime: report_datetime(obj),
         info,
         study_uid: str_of(obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         file_name: path
@@ -244,6 +249,22 @@ fn load_document(obj: &dicom_object::InMemDicomObject, path: &Path) -> Result<Re
         document: Some(doc),
         ..Default::default()
     })
+}
+
+/// When a report was made: its series' date and time, else its content's,
+/// else its study's. The series comes first because a setup imaging system
+/// may stamp every dose report it writes with one fixed Content Date/Time
+/// (years before the treatment) while the series date and time are the
+/// exposure's.
+pub fn report_datetime(obj: &dicom_object::InMemDicomObject) -> String {
+    crate::loader::first_datetime(
+        obj,
+        &[
+            (tags::SERIES_DATE, tags::SERIES_TIME),
+            (tags::CONTENT_DATE, tags::CONTENT_TIME),
+            (tags::STUDY_DATE, tags::STUDY_TIME),
+        ],
+    )
 }
 
 /// A byte count as a person reads it: `812 B`, `34.1 kB`, `2.4 MB`.
@@ -288,6 +309,7 @@ pub fn load_page(path: &Path) -> Result<PageObject> {
         kind: ReportKind::ProtocolPage,
         modality: image.modality.clone(),
         date,
+        datetime: report_datetime(&obj),
         info: Vec::new(),
         notes,
         tables,

@@ -347,6 +347,7 @@ pub fn generate_transformed_study(
             temporal_id: None,
             suv_bw: None,
             frame_of_reference_uid: volume.frame_of_reference_uid.clone(),
+            series_datetime: String::new(),
             files: Vec::new(),
         }],
         active_series: 0,

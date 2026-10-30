@@ -174,7 +174,10 @@ The panes tile the central area edge to edge, each with its own **slice
 scrubber** drawn over its bottom edge; the plane and workspace name in the
 top-left corner is white in every pane, the edge labels keep their colour.
 The corner buttons (named on hover), right to left: **⛶ / ⊞** maximizes the
-pane and restores the layout, **◀ / ▶** folds the rest of the bar away and
+pane and restores the layout, **✖** takes it out of its row (every pane has
+it, folded bar or not; *Settings ▸ View layout* puts a plane back, the
+toolbar's *3D* the scene, a click in the data tree a planar or additional
+pane; a row's last pane stays), **◀ / ▶** folds the rest of the bar away and
 brings it back - one switch for every pane, remembered between runs, and
 folded on a fresh installation so a viewport opens with nothing over the
 anatomy - then **⤴** takes the pane out of its row into a window of its own
@@ -182,7 +185,11 @@ anatomy - then **⤴** takes the pane out of its row into a window of its own
 crosshair in the volume, **✋** hands the left button the
 image - drag it and the image moves instead of the crosshair, as a middle
 drag always does - and **➕ / ➖** zoom a step about the middle of the pane.
-The hand is one switch for every pane of both workspaces. The toolbar holds a
+The hand is one switch for every pane of both workspaces. A pane too narrow
+for its bar in one line has it in several, one under the other, every line
+holding the same number of buttons at their own size, so a button keeps its
+place in its line; a planar and a 3D pane have the same bar in the same
+order (then a stack's compare mode, the 3D pane's 4D play). The toolbar holds a
 global **⟲** (the same reset for every pane of both workspaces), the **⌖**
 crosshair toggle (while hidden,
 left-click navigation is off and slices change only by scrolling), the
@@ -263,6 +270,14 @@ at (the toolbar names it, *W/L A:*, when several are open):
 width; the closed list carries only the chosen name, and any other window - a
 drag or the full range - leaves it nameless.
 
+**A preset stays picked.** The CTs keep one (a Hounsfield window), the
+images without a fixed scale another (MR, PET, ...), the planar images a
+third: every series of that kind that comes up afterwards - another CT of
+the study, an MR loaded later, the next radiograph clicked - is shown in it,
+a relative preset worked out on that image's own values. A window set by
+hand (the numbers, a right-drag, *Full range*) drops the preset of its kind,
+and the next series comes up in its own window again.
+
 A series comes up with the window its files carry; without one, a CT with the
 soft tissue window (C 40 / W 400) and anything else with the *Auto* window.
 **Each workspace has its own window, and workspaces showing the same modality
@@ -270,6 +285,19 @@ share it**: two CTs side by side (two phases, a planning CT and a re-scan) are
 read with one window and a change to it moves both, while a CT beside an MR
 keeps a window of its own for each. A series that comes up in a workspace
 takes the window of another workspace showing its modality, if one does.
+**A 4D group has one window**: a preset or a window set on one phase stays
+when the next phase comes up, from the tree, the arrow keys or *Play 4D*
+(only *Series default* is each phase's own).
+
+**Planar images.** While a planar or additional pane shows an image, the
+toolbar has a second window beside the volume's (*W/L Planar 1:*): its
+numbers are the window of the image at the scrubber of the pane last pointed
+at (else of the first such pane on screen), and its presets are read off
+that image's values, as an MR's are - a radiograph's or a DRR's values have
+no Hounsfield scale - *Series default* being the window the image carries.
+A planar preset goes on every planar image shown, each worked out on its own
+values, and on each one shown later. Right-drag in a planar pane sets the
+same window.
 
 **Every tool that is not a module has its own window.** The workflow editor,
 the PACS, the model manager, the export and save-image dialogs, the
@@ -340,8 +368,9 @@ analysis** (the dose metrics table) and **Dose-volume histograms** (both in
 **Workflows**: the run of a saved workflow ([workflows.md](workflows.md)).
 A section that is about particular structures says so in the views while it
 is unfolded: the structures it measures, the row of its table under the
-pointer, the curve under the pointer in its chart are drawn thicker, the
-way the Structure editor draws the structure it edits. The two that draw
+pointer, the curve under the pointer in its chart are drawn thicker (a
+segment at twice its opacity), the way the Structure editor draws the
+structure it edits. The two that draw
 charts (the histograms and the motion runs) put them in the row's chart
 pane, and a **📈** on the section header brings the pane back once it was
 closed. A fresh
@@ -557,32 +586,136 @@ Workspace A
        │   └ Plan dose ▶ plan IMRT
        ├ Plans (1)
        │   └ IMRT ▶ Approved
+       ├ Treatment sessions (16)     a course with setup imaging, day by day
+       │   └ 2024-09-17 · CT · 4 of 16 · LPO ✔ · PA ✔
+       │       ├ CT AXIAL (359 sl.)               the daily CT
+       │       ├ ⇄ Imaging position ▶ daily CT    the day's registrations
+       │       ├ ⇄ Daily CT ▶ planning CT
+       │       ├ LPO ✔                            a beam: one step
+       │       │   ├ Setup pair 1 · 10:51:45
+       │       │   ├ Dose report · 10:51:46       written for that exposure
+       │       │   ├ Setup pair 2 · 10:53:47 (final)
+       │       │   ├ ⇄ Treatment position · 10:54:03 · Δ -0.8, 4.9, -4.4 mm · ...
+       │       │   ├ ✔ Record · 10:54:18 · LPO · NORMAL
+       │       │   ├ Verification pair · 10:57:57
+       │       │   └ Dose report · 10:57:58
+       │       └ PA ✔
        ├ Planar images (2)           radiographs, RT images, DRRs
        ├ Additional (1)              secondary captures, pages
+       ├ Spatial registrations (2)   those no session took
+       ├ Treatment records (1)
        └ Reports (1)                 dose reports, structured reports
- Spatial registrations · Records · Warnings
+ Setups · Warnings
 ```
 
 The modality level (CT / MR / US / PT …) is one DICOM implies but does not
 store as a node; it is grouped from the series' Modality in first-seen order.
 Everything with a StudyInstanceUID - image series, RT structure sets,
-segmentation series, dose grids, plans, planar images, additional objects
-and reports - sits inside its study; an object whose StudyInstanceUID is
-blank or names an unloaded study goes under the study of the image series it
-references, failing that under the first study. A DRR is filed under the
-study of the image it was made from (the displayed CT, or the radiograph it
-is laid over). Spatial registrations and treatment records belong to a
-frame of reference rather than a study and sit below the tree. How dose is
-drawn - colorwash, isodose ladder, opacity, threshold - is the **Dose
-display** module, one setting shared by every workspace.
+segmentation series, dose grids, plans, planar images, additional objects,
+spatial registrations, treatment records and reports - sits inside its
+study; an object whose StudyInstanceUID is blank or names an unloaded study
+goes under the study of the image series it references (a record: of the
+plan it delivered), failing that under the first study. A DRR is filed
+under the study of the image it was made from (the displayed CT, or the
+radiograph it is laid over). Below the patients are only the setups found
+here (2D/3D registration) and the load's warnings. How dose is drawn -
+colorwash, isodose ladder, opacity, threshold - is the **Dose display**
+module, one setting shared by every workspace.
 
-Structure sets, segmentation series, **dose grids and plans** all use the
-same row - a name, and nothing in front of it. The views draw one of each
-kind at a time, so selection and visibility are one thing: clicking a row
-makes it the one on display, clicking the row that is already displayed hides
-that kind from the views (the row stays selected, drawn weak, and the list,
-the drawing tools and any 3D scene go on working on it). For a dose that
-means the colorwash and the isodose lines; for a plan, its isocenters.
+**Treatment sessions.** A course treated on a room with setup imaging leaves
+a trail of objects behind each fraction: a daily CT, a registration that
+places it in the room and one that maps it onto the planning CT, then per
+beam the setup radiographs (orthogonal pairs, one per iteration), the
+treatment registration that holds the setup correction, the treatment
+records of the delivery and a verification pair. The setup systems write
+few of the references that would tie these together (an RT Image may carry
+no frame of reference, plan or geometry at all), so the study puts them
+together by day and by beam (`sessions.rs` has the rules): two radiographs
+with the same series and instance number taken within 2 s are a **pair**; a
+registration that references a loaded plan is a **treatment** registration,
+one that references two loaded image series a **CT to CT** one, anything
+else an **imaging** one; the pairs reviewed up to 5 s before a treatment
+registration are its setup iterations, the records after it until the next
+are its delivery, and a pair after the delivery verifies it. Every date with
+a record or a treatment registration is a session, numbered by date
+(*4 of 16*: the records' Current Fraction Number is not trusted, as a setup
+system may write 1 in every one), and a study has sessions only when it
+holds at least one treatment registration - a plain RT study's records stay
+its *Treatment records* list. The session's title names the modality of the
+images made that day (*CT* for a daily CT) and marks each beam with ✔
+for a record whose beams all ended `NORMAL` and ⚠ for one that did not (an
+interrupted delivery is ⚠✔: the interruption, then the repeat). A treatment
+registration's row carries its correction - translation in mm, rotations
+about x, y, z in degrees, the first matrix that is not the identity. A
+**pair** row shows its two images side by side in the two planar panes
+(Ctrl-click puts them on the panes' stacks to compare) and unfolds to the
+two images. A report made that day is the session's, and one made within
+2 s of a pair - the dose report a setup imaging system writes for each
+exposure - is drawn under that pair. Its time is the series': such a system
+may stamp every dose report with one fixed Content Date years before the
+treatment. One object, one place: what a session holds is drawn there and
+nowhere else, and the study's own *CT*, *Planar images*, *Spatial
+registrations*, *Treatment records* and *Reports* keep what no session took
+(the registrations of the planning day, say). ↑ / ↓ walk the corrections of
+the whole course beam by beam, the daily CTs day by day.
+
+**The tree holds data; the Additional pane reads it.** A registration or a
+treatment record is one row in the tree, wherever it is filed, and nothing
+unfolds under it: a click shows it in full in the row's **Additional** pane,
+as a report is shown, with an **A** badge on the row, and a second click
+takes it out again (the rules below). A registration there is its facts - what kind it is and why (what it
+references), when it was made, the vendor's comment, its references named
+as the loaded plan or series they are, or *not loaded*, its frame of
+reference, a treatment registration's correction - then each matrix with
+the frames it maps, its rigid parameters, *Invert* and the *Apply as A ▶ B*
+buttons, and a deformation grid with its own. A record is its facts (when,
+status, machine, the fraction as recorded, the plan) and the table of its
+beams: metersets specified and delivered, their difference, termination and
+verification status.
+
+**One behaviour for every row.** The tree has two kinds of line. A
+**node** groups - a patient, a study, a modality, a 4D group, *Treatment
+sessions*, a session's day, a beam's step, each category heading - and a
+click folds or unfolds it. Everything else is an **object row**, one object
+drawn as one selectable name, and every object row follows the same rules:
+
+* **A click shows it, a second click stops showing it.** Shown is drawn as
+  the selected row. A structure set, segmentation series, dose grid or plan
+  is drawn in the views (the views draw one of each kind at a time, so
+  selection and visibility are one thing: the second click hides that kind,
+  and the row stays selected, drawn weak, the list, the drawing tools and
+  any 3D scene going on working on it); a planar image or additional object
+  goes into its pane (`P1`, `P2`, `A` badges say which), a radiograph pair
+  into Planar 1 and 2, a report, registration or treatment record into
+  Additional - and the second click takes it out. Whether a dose is drawn is
+  each workspace's own, as its structures and plans are; *how* it is drawn
+  is the Dose display module, shared. Three rows keep what they show on a
+  second click, because there is always one: the **image series** on
+  display (the views and every tool work on it), the **setup** the 2D/3D
+  section shows, and the **structure or segment** being edited (its
+  visibility is its tick box).
+* **Ctrl-click adds to a multiple; Shift-click extends a range.** On image
+  series and 4D phases Ctrl ticks one row (a `✔` marks it) and Shift ticks
+  every row from the last one ticked in the same node, without changing
+  what is displayed; on planar images and pairs Ctrl puts the image on the
+  pane's stack to compare; on a structure's or segment's tick box Shift
+  ticks a range.
+* **One menu order.** A right-click opens *👁 Show* / *➖ Hide* (or *👁
+  Display* for a series not on display, *👁 Show in …* for a planar image)
+  first, then what the kind has of its own, then *✏ Rename* (**F2**) and
+  *Copy / Move to workspace* where the object can travel, then *🗑 Remove*
+  (**Delete**). The keys are written beside the entries they stand for.
+* **The keyboard reaches every row** (below), and an arrow landing on a row
+  does what a plain click does - never the second click's taking away.
+* **A tooltip says what the object is**: an image series' UID and the folder
+  its files are in, another object's UID and its file or its facts. How to
+  use the row is in its menu.
+* **Folded by default**, except what is being looked at: a study opens on
+  the modality node or 4D group holding the displayed series, and on its RT
+  structures and segmentations under the study on screen; every other
+  category (dose, plans, sessions, planar images, additional objects,
+  registrations, records, reports, warnings) starts folded, unless it is all
+  the workspace has to show. Session days start folded, their steps open.
 
 **Badges on the image series.** A series row carries a small `RTS`, `SEG`,
 `RTD` or `RTP` frame for each of the four selections that lands on it: the
@@ -628,8 +761,9 @@ sets drawn on it, the plans made on those, the doses computed for those
 plans - and study and patient selections also take the RT objects of their
 studies. Right-clicking a workspace header offers *Clear workspace*.
 
-**Several series at once.** Ctrl-click ticks a series row (a `✔` marks it)
-without changing what is displayed; right-clicking a ticked row then acts on
+**Several series at once.** Ctrl-click ticks a series row or a 4D phase (a
+`✔` marks it) and Shift-click the range from the last one ticked in the same
+node, without changing what is displayed; right-clicking a ticked row then acts on
 every ticked series of the workspace - copy, move, remove, add to a 4D group,
 or *New 4D group from the N ticked series*. Right-clicking a **modality node**
 (*CT (10)*) offers the same for every series under it, which is how a 4DCT
@@ -649,22 +783,27 @@ its name exactly as RTS and SEG are, so which row the typing will reach is
 visible rather than remembered.
 
 **↑** and **↓** step to the row above and below *at that row's own level*,
-and show what they land on. The level is the one the tree draws: another CT
-of the same study under the same modality node, another phase of the same 4D
-group, another structure set, another dose grid. So a 4DCT is flipped
-through by holding ↓ - the phases arrive one after another, the crosshair
-staying where it was put, which is what makes the motion visible - and a
-list of CTs is walked the same way. The ends do not wrap, and a level of one
-row does not move. Stepping onto a structure set or a dose grid makes it the
-shown one; stepping onto a patient or a study moves the focus alone, and
-stepping onto one structure of a set does not toggle its visibility, which
-is a click's job and not an arrow's.
+and show what they land on. The level is the one the tree draws, under the
+same node: another CT of the same study under the same modality node,
+another phase of the same 4D group, another structure set, dose grid, plan
+or 4D group *of the same study*, another pair of the same beam. So a 4DCT
+is flipped through by holding ↓ - the phases arrive one after another, the
+crosshair staying where it was put, which is what makes the motion visible -
+and a list of CTs is walked the same way. The ends do not wrap, and a level
+of one row does not move. Stepping onto a row shows it as a click would - a
+structure set, a dose, a plan, a planar image, a pair, a report, a
+registration, a record; stepping onto a patient, a study or a 4D group moves
+the focus alone, and stepping onto one structure of a set does not make it
+the edited one, which is a click's job and not an arrow's.
 
 **F2** renames the focused row and **Delete** removes it, as they do in a
 file manager. Every row the tree shows takes both: a patient, a study, a
-series, a 4D group (Delete dissolves it), a structure set or segmentation
-series, one structure or segment, a dose grid, a plan, a planar or additional
-image, a report, a spatial registration, a treatment record. Delete does exactly what the row's
+series, a 4D group (Delete dissolves it, keeping its series - the menu's
+*Dissolve group*), a structure set or segmentation series, one structure or
+segment, a dose grid, a plan, a planar or additional image, a report, a
+spatial registration, a treatment record, a setup, and a radiograph pair
+(Delete removes both its images; F2 does nothing there, the images are
+renamed one by one). Delete does exactly what the row's
 *Remove* entry does, with no confirmation and no undo - the files on disk
 are never touched, so a removal costs a reload. None of these keys fire
 while a text field has the focus, and the arrows wait while a series is
@@ -681,9 +820,12 @@ to no image series; `▶ (image series not loaded)` when the referenced series
 is not in the workspace). Clicking a node makes it active and lists
 its items **under that row**, not at the end of the list - with ten phases of
 a 4D group in the node, the buttons that act on a set belong beside the set
-they act on. The **+** on the *RT structures* / *Segmentations* heading
-creates an empty structure set or segmentation series bound to the displayed
-image series. **Right-clicking a series node** offers:
+they act on. A study with no structure set or no segmentation series has no
+such heading; **➕ New RT structure set** and **➕ New segmentation series**
+in the study's right-click menu create an empty one bound to the displayed
+image series (greyed out until one of that study's series is on screen),
+and the **+** on the heading does the same once there is one. **Right-clicking
+a series node** offers:
 
 * *🔗 Connect to image series ▶* - re-point the series at any image series of
   the workspace (● marks the current one); contours are in patient coordinates
@@ -712,7 +854,11 @@ ticked. Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure set* is
 what →RS did, and **🗑** deletes the ticked rows. Clicking an item's **name**
 selects it - the segmentation the voxel tools paint, the structure the
 contour tools and the Structure editor work on - independently of whether
-it is shown; new items come from the **+** after the selected name on the
+it is shown. Under a study whose images are not on screen a structure's name
+still takes its menu and the keyboard (rename, copy, remove need no image);
+selecting it and the menu's entries that draw (*Edit in the Structure
+editor*, *Localize*, the point entries) wait for that study's images. New
+items come from the **+** after the selected name on the
 toolbar's draw row and, for structures, from the editor's *Insert structure*
 section.
 

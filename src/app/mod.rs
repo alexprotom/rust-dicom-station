@@ -74,6 +74,7 @@ mod models_win;
 mod modules;
 mod motion;
 mod motion_results;
+mod object_view;
 mod pacs_remote;
 mod pacs_server_win;
 mod pacs_tree;
@@ -115,6 +116,7 @@ mod tree_records;
 mod tree_registrations;
 mod tree_reports;
 mod tree_segmentations;
+mod tree_sessions;
 mod tree_structures;
 mod views;
 mod widgets;
@@ -493,6 +495,9 @@ struct PlanarView {
     report: Option<usize>,
     /// Whether the report's page is shown rather than its tables.
     report_page: bool,
+    /// The registration or treatment record the pane shows instead of a
+    /// stack or a report (the additional pane only).
+    object: Option<object_view::PaneObject>,
     /// The texture of that page, and the page it was made from.
     page_tex: Option<TextureHandle>,
     page_key: Option<PlanarKey>,
@@ -806,6 +811,9 @@ pub struct ViewerApp {
     /// A study-level object the tree asked to remove, applied after the
     /// panel has been drawn (it borrows the study while drawing).
     obj_remove: Option<ObjRef>,
+    /// Several at once (the two images of a radiograph pair), removed the
+    /// same way, the highest index first so the others keep theirs.
+    objs_remove: Vec<ObjRef>,
     /// Deferred right-click action on structures / segments.
     item_action: Option<ItemAction>,
     /// The rename dialog, when open.
@@ -1071,11 +1079,22 @@ pub struct ViewerApp {
     /// section is open cost milliseconds for a body outline.
     edit_summary_cache: Option<(EditSummaryKey, (f64, usize))>,
 
-    /// The window preset last picked from the toolbar list (an index into
-    /// [`WL_PRESETS`] for a CT, into [`RELATIVE_PRESETS`] otherwise), so
-    /// the closed combo can name it instead of reading "CT presets".
-    /// Dropped as soon as the window no longer matches it.
-    wl_preset: Option<usize>,
+    /// The window presets picked from the toolbar lists, one per kind of
+    /// image: an index into [`WL_PRESETS`] for the CTs, into
+    /// [`RELATIVE_PRESETS`] for the images without a fixed scale (MR, PET,
+    /// ...) and for the planar images. A picked preset stays picked: every
+    /// series of its kind that comes up is shown in it (a relative one
+    /// worked out on that image's own values), until a window is set by
+    /// hand ([`ViewerApp::forget_preset`]).
+    wl_ct_preset: Option<usize>,
+    wl_rel_preset: Option<usize>,
+    wl_planar_preset: Option<usize>,
+    /// The planar or additional pane last pointed at (slot, pane): the
+    /// toolbar's planar window acts on the image at its scrubber
+    /// ([`ViewerApp::planar_wl_target`]).
+    wl_pane: Option<(usize, usize)>,
+    /// The percentile windows of one planar image, worked out once.
+    wl_planar_relative: Option<(PlanarKey, Vec<(f32, f32)>)>,
 
     /// The modules switched on in the *Modules* menu, one section of the
     /// right panel each (see `modules.rs`). Persisted between runs.
@@ -1335,6 +1354,7 @@ impl ViewerApp {
             tree_action: None,
             set_action: None,
             obj_remove: None,
+            objs_remove: Vec::new(),
             item_action: None,
             rename: None,
             rename_request: None,
@@ -1451,7 +1471,11 @@ impl ViewerApp {
             tree_cache: Default::default(),
             struct_gen: [0; MAX_WORKSPACES],
             edit_summary_cache: None,
-            wl_preset: None,
+            wl_ct_preset: None,
+            wl_rel_preset: None,
+            wl_planar_preset: None,
+            wl_pane: None,
+            wl_planar_relative: None,
             modules: prefs.modules.clone(),
             section_focus: None,
             reveal_section: None,
@@ -1620,6 +1644,44 @@ impl ViewerApp {
         };
         self.window_center[slot] = c;
         self.window_width[slot] = w.max(1.0);
+    }
+
+    /// Whether a workspace's series takes the Hounsfield presets.
+    fn shows_ct(&self, slot: usize) -> bool {
+        let m = self.shown_modality(slot);
+        m == "CT" || m.is_empty()
+    }
+
+    /// A window set by hand in `slot`: the preset of its kind is no longer
+    /// the one in force, and the next series of that kind keeps its own.
+    pub(super) fn forget_preset(&mut self, slot: usize) {
+        if self.shows_ct(slot) {
+            self.wl_ct_preset = None;
+        } else {
+            self.wl_rel_preset = None;
+        }
+    }
+
+    /// A series has come up in `slot`: show it in the preset of its kind
+    /// picked before, if one is - the Hounsfield window as it stands, a
+    /// relative one worked out on this volume's values.
+    pub(super) fn reapply_preset(&mut self, slot: usize) {
+        if !self.slots[slot].has_volume() {
+            return;
+        }
+        let window = if self.shows_ct(slot) {
+            self.wl_ct_preset
+                .and_then(|i| WL_PRESETS.get(i))
+                .map(|(_, c, w)| (*c, *w))
+        } else {
+            match self.wl_rel_preset {
+                Some(i) => self.relative_windows(slot).get(i).copied(),
+                None => None,
+            }
+        };
+        if let Some((c, w)) = window {
+            self.set_window(slot, c, w);
+        }
     }
 
     /// The windows of [`RELATIVE_PRESETS`] for a workspace's volume: the
@@ -1907,6 +1969,11 @@ impl eframe::App for ViewerApp {
             self.apply_set_action(action);
         }
         if let Some(obj) = self.obj_remove.take() {
+            self.remove_object(obj);
+        }
+        let mut objs = std::mem::take(&mut self.objs_remove);
+        objs.sort_by_key(|o| std::cmp::Reverse(o.idx));
+        for obj in objs {
             self.remove_object(obj);
         }
         if let Some(action) = self.item_action.take() {

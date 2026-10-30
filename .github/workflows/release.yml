@@ -658,15 +658,36 @@ jobs:
           Get-ChildItem manifests
 
       # `submit` validates the manifests first and fails on a schema error.
+      # winget-pkgs is big enough that GitHub sometimes throttles reads of
+      # it on its side (HTTP 429 "gitmon refuses to schedule us:
+      # too-many-processes", 2026-10-29, while winget-create read the
+      # package's folder), so a failed submit is tried again after a pause,
+      # up to four times in all. Before each retry the pull requests of the
+      # token's account are looked up: an attempt that failed after opening
+      # its pull request is not followed by a second one.
       - name: Submit the new version to winget-pkgs
         if: env.WINGET_CREATE_GITHUB_TOKEN != ''
         shell: pwsh
         env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
-          curl.exe -JLO https://aka.ms/wingetcreate/latest
-          .\wingetcreate.exe submit --no-open `
-            --prtitle "New version: RDS.RustDICOMStation version $env:VERSION" `
-            .\manifests
+          curl.exe -fJLO https://aka.ms/wingetcreate/latest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $title = "New version: RDS.RustDICOMStation version $env:VERSION"
+          $waits = 60, 180, 300
+          for ($attempt = 1; ; $attempt++) {
+            .\wingetcreate.exe submit --no-open --prtitle $title .\manifests
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            $titles = gh pr list --repo microsoft/winget-pkgs --author '@me' --state all `
+              --search "RDS.RustDICOMStation $env:VERSION in:title" --json title --jq '.[].title'
+            if ($LASTEXITCODE -eq 0 -and ($titles -contains $title)) {
+              Write-Host "the pull request '$title' exists - nothing left to do"
+              exit 0
+            }
+            if ($attempt -gt $waits.Count) { exit 1 }
+            $wait = $waits[$attempt - 1]
+            Write-Host "::warning::wingetcreate submit failed (attempt $attempt), trying again in $wait s"
+            Start-Sleep -Seconds $wait
+          }

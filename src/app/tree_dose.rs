@@ -7,7 +7,9 @@ use super::*;
 impl ViewerApp {
     /// The RTDOSE grids filed under one study: which one is displayed, and
     /// what it is. How dose is *drawn* is a display setting shared by both
-    /// workspaces, so it lives in [`Self::dose_display_section`] instead.
+    /// workspaces, so it lives in [`Self::dose_display_section`] instead;
+    /// *whether* it is drawn is this workspace's own (`StudySlot::dose_shown`),
+    /// as its structure sets' and plans' are.
     pub(super) fn dose_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -28,7 +30,7 @@ impl ViewerApp {
         // the structure sets' do: clicking another grid makes it the drawn
         // one, clicking the drawn grid takes dose off the images.
         let mut shown_dose: Option<Option<usize>> = None;
-        let dose_on = self.dose_mode != DoseMode::Off;
+        let dose_on = self.dose_mode != DoseMode::Off && self.slots[slot].dose_shown;
         {
             let StudySlot {
                 study,
@@ -39,8 +41,8 @@ impl ViewerApp {
             let Some(study) = study.as_ref() else { return };
             let doses = &study.doses;
             let plans = &study.plans;
-            let mut picked = (*active_dose).min(doses.len().saturating_sub(1));
-            let hdr = Self::wrapped_node(
+            let picked = (*active_dose).min(doses.len().saturating_sub(1));
+            Self::wrapped_node(
                 ui,
                 ("dose", slot, pat, stu),
                 false,
@@ -49,6 +51,7 @@ impl ViewerApp {
                     for &i in which {
                         let Some(d) = doses.get(i) else { continue };
                         let selected = i == picked;
+                        let me = RenameTarget::Dose { slot, idx: i };
                         let resp = Self::series_row(
                             ui,
                             selected,
@@ -58,38 +61,40 @@ impl ViewerApp {
                                 d.label,
                                 Self::plan_suffix(plans, &d.referenced_plan_uid)
                             ),
-                            current.as_ref() == Some(&RenameTarget::Dose { slot, idx: i }),
+                            current.as_ref() == Some(&me),
                         );
-                        Self::focus_row(
-                            ui,
-                            &resp,
-                            RenameTarget::Dose { slot, idx: i },
-                            &current,
-                            &mut focus,
-                        );
-                        if resp.clicked() {
-                            // Clicking the drawn grid takes dose off the
-                            // images; clicking any other draws that one.
+                        Self::focus_row(ui, &resp, me.clone(), &current, &mut focus);
+                        // Clicking the drawn grid takes dose off the images;
+                        // clicking any other draws that one.
+                        let toggle = || {
                             if selected {
-                                shown_dose = Some((!dose_on).then_some(i));
+                                Some((!dose_on).then_some(i))
                             } else {
-                                picked = i;
-                                shown_dose = Some(Some(i));
+                                Some(Some(i))
                             }
+                        };
+                        if resp.clicked() {
+                            shown_dose = toggle();
                         }
-                        resp.on_hover_text(format!(
-                            "{}  max {:.2} {}\nclick: draw this grid, or take dose off \
-                             the images\nright-click: rename or remove\nF2: rename, \
-                             Delete: remove",
-                            d.summation_type,
-                            d.max_dose,
-                            d.units.to_lowercase()
+                        resp.on_hover_text(Self::object_tip(
+                            &d.sop_instance_uid,
+                            format!(
+                                "{} dose · max {:.2} {}",
+                                d.summation_type,
+                                d.max_dose,
+                                d.units.to_lowercase()
+                            ),
                         ))
                         .context_menu(|ui| {
+                            if Self::show_entry(ui, selected && dose_on) {
+                                shown_dose = toggle();
+                                ui.close();
+                            }
                             if ui
                                 .button("🎨 Display settings")
                                 .on_hover_text(
-                                    "Colorwash, isodose lines, opacity and levels: the Dose                                      display module",
+                                    "Colorwash, isodose lines, opacity and levels: the Dose \
+                                     display module",
                                 )
                                 .clicked()
                             {
@@ -97,12 +102,12 @@ impl ViewerApp {
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("✏ Rename").clicked() {
-                                rename = Some(RenameTarget::Dose { slot, idx: i });
+                            if Self::rename_entry(ui) {
+                                rename = Some(me.clone());
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("🗑 Remove").clicked() {
+                            if Self::remove_entry(ui, "🗑 Remove") {
                                 remove = Some(ObjRef {
                                     slot,
                                     kind: ObjKind::Dose,
@@ -133,20 +138,9 @@ impl ViewerApp {
                     });
                 },
             );
-            *active_dose = picked;
-            let _ = &hdr;
         }
         if let Some(pick) = shown_dose {
-            match pick {
-                // Ticking a grid turns dose display on if it was off; the
-                // *Dose display* section decides how it is drawn.
-                Some(_) if self.dose_mode == DoseMode::Off => {
-                    self.dose_mode = DoseMode::Colorwash;
-                }
-                None => self.dose_mode = DoseMode::Off,
-                _ => {}
-            }
-            self.settings_gen += 1;
+            self.show_dose(slot, pick);
         }
         if rename.is_some() {
             self.rename_request = rename;
@@ -160,5 +154,22 @@ impl ViewerApp {
         if display {
             self.reveal_module(Module::DoseDisplay);
         }
+    }
+
+    /// Draw dose grid `pick` in this workspace, or (`None`) none at all. A
+    /// grid to draw turns dose display on if it was off; the *Dose display*
+    /// section decides how it is drawn.
+    pub(super) fn show_dose(&mut self, slot: usize, pick: Option<usize>) {
+        match pick {
+            Some(i) => {
+                self.slots[slot].active_dose = i;
+                self.slots[slot].dose_shown = true;
+                if self.dose_mode == DoseMode::Off {
+                    self.dose_mode = DoseMode::Colorwash;
+                }
+            }
+            None => self.slots[slot].dose_shown = false,
+        }
+        self.settings_gen += 1;
     }
 }

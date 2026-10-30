@@ -42,6 +42,7 @@ impl ViewerApp {
                             continue;
                         };
                         let selected = active_plan == Some(pi);
+                        let me = RenameTarget::Plan { slot, idx: pi };
                         let resp = Self::series_row(
                             ui,
                             selected,
@@ -55,36 +56,51 @@ impl ViewerApp {
                                 },
                                 Self::structset_suffix(study, &plan.referenced_structset_uid)
                             ),
-                            current.as_ref() == Some(&RenameTarget::Plan { slot, idx: pi }),
+                            current.as_ref() == Some(&me),
                         );
-                        Self::focus_row(
-                            ui,
-                            &resp,
-                            RenameTarget::Plan { slot, idx: pi },
-                            &current,
-                            &mut focus,
-                        );
-                        if resp.clicked() {
-                            // Clicking the shown plan hides its isocenters;
-                            // clicking any other makes it the shown one.
+                        Self::focus_row(ui, &resp, me.clone(), &current, &mut focus);
+                        // Clicking the shown plan hides its isocenters;
+                        // clicking any other makes it the shown one.
+                        let mut toggle = || {
                             if selected {
                                 new_shown = Some(!shown);
                             } else {
                                 new_active = Some(pi);
                                 new_shown = Some(true);
                             }
+                        };
+                        if resp.clicked() {
+                            toggle();
                         }
-                        resp.on_hover_text(
-                            "click: draw this plan's isocenters, or take them off the \
-                             views\nright-click: rename or remove\nF2: rename, Delete: remove",
-                        )
+                        let mut menu_toggle = false;
+                        resp.on_hover_text(Self::object_tip(
+                            &plan.sop_instance_uid,
+                            format!(
+                                "{} plan{}",
+                                if plan.plan_kind.is_empty() {
+                                    "RT"
+                                } else {
+                                    &plan.plan_kind
+                                },
+                                if plan.name.is_empty() || plan.name == plan.label {
+                                    String::new()
+                                } else {
+                                    format!(" · {}", plan.name)
+                                }
+                            ),
+                        ))
                         .context_menu(|ui| {
-                            if ui.button("✏ Rename").clicked() {
-                                rename = Some(RenameTarget::Plan { slot, idx: pi });
+                            if Self::show_entry(ui, selected && shown) {
+                                menu_toggle = true;
                                 ui.close();
                             }
                             ui.separator();
-                            if ui.button("🗑 Remove").clicked() {
+                            if Self::rename_entry(ui) {
+                                rename = Some(me.clone());
+                                ui.close();
+                            }
+                            ui.separator();
+                            if Self::remove_entry(ui, "🗑 Remove") {
                                 remove = Some(ObjRef {
                                     slot,
                                     kind: ObjKind::Plan,
@@ -93,6 +109,9 @@ impl ViewerApp {
                                 ui.close();
                             }
                         });
+                        if menu_toggle {
+                            toggle();
+                        }
                         // What a plan is made of sits under *that* plan, not
                         // at the end of the list - the same place a set's
                         // structures are listed.
@@ -191,6 +210,9 @@ impl ViewerApp {
         }
         if remove.is_some() {
             self.obj_remove = remove;
+        }
+        if focus.is_some() {
+            self.tree_focus = focus;
         }
     }
 

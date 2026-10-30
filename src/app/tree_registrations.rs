@@ -1,259 +1,163 @@
-//! The data tree's registrations section: the spatial registrations and
-//! deformation fields of a study.
+//! The data tree's registrations: the spatial registrations and
+//! deformation fields of a study - in the study's own list, or as the rows
+//! of its treatment sessions ([`super::tree_sessions`]). A row names one; a
+//! click shows it in the row's additional pane, matrices and apply buttons
+//! with it ([`super::object_view`]).
 
+use super::object_view::PaneObject;
 use super::*;
+use crate::extras::SpatialReg;
 
 impl ViewerApp {
-    /// REG spatial registration objects: matrices + apply as active
-    /// registration.
-    pub(super) fn reg_objects_section(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let n = self.slots[slot]
-            .study
-            .as_ref()
-            .map(|s| s.registrations.len())
-            .unwrap_or(0);
-        if n == 0 {
+    /// The study's own REG objects, those no treatment session took.
+    pub(super) fn reg_objects_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        (pi, si): (usize, usize),
+        regs: &[usize],
+    ) {
+        if regs.is_empty() {
             return;
         }
-        // The workspaces this one can be paired with: a transform read
-        // from a file maps one frame of reference onto another, and both
-        // ends have to be on screen with an image in them.
-        let partners: Vec<usize> = self
-            .volume_slot_list()
-            .into_iter()
-            .filter(|s| *s != slot)
-            .collect();
+        egui::CollapsingHeader::new(format!("Spatial registrations ({})", regs.len()))
+            .id_salt(("regobj", slot, pi, si))
+            .default_open(false)
+            .show(ui, |ui| self.reg_rows(ui, slot, regs, false));
+    }
 
-        // (transform, fixed workspace, moving workspace) - with more than
-        // two open, which pair a file's transform is meant for is a choice.
-        let mut apply: Option<(registration::RigidTransform, usize, usize)> = None;
-        let mut apply_grid: Option<(usize, usize, usize)> = None;
+    /// The rows of the registrations `regs`, by name - or `compact`, for a
+    /// session: by what each is, with its time and, for a treatment
+    /// registration, the setup correction it holds.
+    pub(super) fn reg_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        regs: &[usize],
+        compact: bool,
+    ) {
+        let mut show: Option<usize> = None;
+        let mut hide = false;
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
+        let current = self.tree_focus.clone();
+        let shown: Vec<bool> = regs
+            .iter()
+            .map(|&ri| self.object_shown(slot, PaneObject::Registration(ri)))
+            .collect();
         {
-            let study = self.slots[slot].study.as_ref().unwrap();
-            // Frame-of-reference UID of every open workspace's volume, so
-            // the hint can name the one a registration actually refers to.
-            let fors: Vec<(usize, String)> = self
-                .open_slots()
-                .into_iter()
-                .filter_map(|s| {
-                    let uid = self.slots[s]
-                        .study
-                        .as_ref()?
-                        .volume
-                        .frame_of_reference_uid
-                        .clone();
-                    (!uid.is_empty()).then_some((s, uid))
-                })
-                .collect();
-            let hint = |uid: &str| -> String {
-                fors.iter()
-                    .find(|(_, f)| f == uid)
-                    .map(|(s, _)| format!(" (= {})", SLOT_NAMES[*s]))
-                    .unwrap_or_default()
+            let Some(study) = self.slots[slot].study.as_ref() else {
+                return;
             };
-            let mut invert = self.reg_apply_invert;
-            let current = self.tree_focus.clone();
-            egui::CollapsingHeader::new(format!("Spatial registrations ({n})"))
-                .id_salt(("regobj", slot))
-                .default_open(false)
-                .show(ui, |ui| {
-                    for (ri, reg) in study.registrations.iter().enumerate() {
-                        let resp = ui
-                            .label(
-                                egui::RichText::new(format!(
-                                    "{}{}",
-                                    reg.label,
-                                    if reg.deformable {
-                                        "  [deformable: matrices only]"
-                                    } else {
-                                        ""
-                                    }
-                                ))
-                                .strong(),
-                            )
-                            .on_hover_text(
-                                "right-click: rename or remove this registration\nF2: rename, \
-                                 Delete: remove",
-                            );
-                        Self::focus_row(
-                            ui,
-                            &resp,
-                            RenameTarget::Registration { slot, idx: ri },
-                            &current,
-                            &mut focus,
-                        );
-                        resp.context_menu(|ui| {
-                            if ui.button("✏ Rename").clicked() {
-                                rename = Some(RenameTarget::Registration { slot, idx: ri });
-                                ui.close();
-                            }
-                            ui.separator();
-                            if ui.button("🗑 Remove").clicked() {
-                                remove = Some(ObjRef {
-                                    slot,
-                                    kind: ObjKind::Registration,
-                                    idx: ri,
-                                });
-                                ui.close();
-                            }
+            for (row, &ri) in regs.iter().enumerate() {
+                let Some(reg) = study.registrations.get(ri) else {
+                    continue;
+                };
+                let me = RenameTarget::Registration { slot, idx: ri };
+                let text = if compact {
+                    compact_title(study, reg)
+                } else {
+                    format!(
+                        "{}{}",
+                        reg.label,
+                        if reg.deformable { "  [deformable]" } else { "" }
+                    )
+                };
+                let resp =
+                    Self::additional_row(ui, shown[row], text, current.as_ref() == Some(&me));
+                Self::focus_row(ui, &resp, me.clone(), &current, &mut focus);
+                // A click shows it; a click on it while it is shown takes
+                // it out of the pane again.
+                if resp.clicked() {
+                    if shown[row] {
+                        hide = true;
+                    } else {
+                        show = Some(ri);
+                    }
+                }
+                let tip = Self::object_tip(
+                    &reg.sop_instance_uid,
+                    if !reg.comment.is_empty() && reg.comment != reg.label {
+                        format!("{} · {}", reg.label, reg.comment)
+                    } else {
+                        reg.label.clone()
+                    },
+                );
+                resp.on_hover_text(tip).context_menu(|ui| {
+                    if Self::show_entry(ui, shown[row]) {
+                        if shown[row] {
+                            hide = true;
+                        } else {
+                            show = Some(ri);
+                        }
+                        ui.close();
+                    }
+                    ui.separator();
+                    if Self::rename_entry(ui) {
+                        rename = Some(me.clone());
+                        ui.close();
+                    }
+                    ui.separator();
+                    if Self::remove_entry(ui, "🗑 Remove") {
+                        remove = Some(ObjRef {
+                            slot,
+                            kind: ObjKind::Registration,
+                            idx: ri,
                         });
-                        for (ii, item) in reg.items.iter().enumerate() {
-                            if item.is_identity {
-                                ui.weak(format!("· item {}: identity ({})", ii + 1, item.matrix_type));
-                                continue;
-                            }
-                            let m = &item.matrix;
-                            ui.weak(format!("· item {}: {}", ii + 1, item.matrix_type));
-                            for r in 0..3 {
-                                ui.monospace(format!(
-                                    "  [{:7.3} {:7.3} {:7.3} {:8.2}]",
-                                    m[r * 4],
-                                    m[r * 4 + 1],
-                                    m[r * 4 + 2],
-                                    m[r * 4 + 3]
-                                ));
-                            }
-                            // FoR hints against the loaded studies.
-                            let src_hint = hint(&item.for_uid);
-                            let dst_hint = hint(&reg.frame_of_reference_uid);
-                            ui.weak(format!(
-                                "  maps FoR …{}{} ▶ …{}{}",
-                                tail(&item.for_uid),
-                                src_hint,
-                                tail(&reg.frame_of_reference_uid),
-                                dst_hint
-                            ));
-                            match extras::matrix_to_rigid(m, invert) {
-                                Some(rigid) => {
-                                    let rp = rigid.params();
-                                    ui.weak(format!(
-                                        "  t = ({:.1}, {:.1}, {:.1}) mm  r = ({:.2}, {:.2}, {:.2})°{}",
-                                        rp[3],
-                                        rp[4],
-                                        rp[5],
-                                        rp[0].to_degrees(),
-                                        rp[1].to_degrees(),
-                                        rp[2].to_degrees(),
-                                        if invert { "  (inverted)" } else { "" }
-                                    ));
-                                    ui.horizontal(|ui| {
-                                        ui.checkbox(&mut invert, "Invert")
-                                            .on_hover_text(
-                                                "Invert the matrix before applying (flip the mapping direction)",
-                                            );
-                                        // This workspace against each of
-                                        // the others, both ways round.
-                                        for other in &partners {
-                                            for (fixed, moving) in
-                                                [(slot, *other), (*other, slot)]
-                                            {
-                                                let label = format!(
-                                                    "Apply as {} ▶ {}",
-                                                    SLOT_NAMES[moving], SLOT_NAMES[fixed]
-                                                );
-                                                let tip = format!(
-                                                    "Use this matrix as the transform mapping \
-                                                     {} (fixed) coordinates into {} (moving)",
-                                                    SLOT_NAMES[fixed], SLOT_NAMES[moving]
-                                                );
-                                                if ui
-                                                    .add(egui::Button::new(label))
-                                                    .on_hover_text(tip)
-                                                    .clicked()
-                                                {
-                                                    if let Some(r2) =
-                                                        extras::matrix_to_rigid(m, invert)
-                                                    {
-                                                        apply = Some((r2, fixed, moving));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    });
-                                }
-                                None => {
-                                    ui.weak("  (matrix is not a pure rigid transform - cannot apply)");
-                                }
-                            }
-                        }
-                        // A Deformable Spatial Registration's displacement
-                        // lattice applies exactly as a matrix does.
-                        if let Some(grid) = &reg.grid {
-                            ui.weak(format!("· deformation grid: {}", grid.describe()));
-                            let src_hint = fors
-                                .iter()
-                                .find(|(_, f)| *f == reg.grid_source_for_uid)
-                                .map(|(s, _)| *s);
-                            ui.horizontal(|ui| {
-                                for (fixed, moving) in partners
-                                    .iter()
-                                    .flat_map(|o| [(slot, *o), (*o, slot)])
-                                {
-                                    let label = format!(
-                                        "Apply grid as {} ▶ {}",
-                                        SLOT_NAMES[moving], SLOT_NAMES[fixed]
-                                    );
-                                    let hint = match src_hint {
-                                        Some(s) if s == fixed => {
-                                            "The grid's own frame of reference matches this                                              workspace - this is the direction the file means"
-                                        }
-                                        Some(_) => {
-                                            "The grid's frame of reference matches the *other*                                              workspace; applying it this way round inverts what                                              the file says"
-                                        }
-                                        None => {
-                                            "Neither loaded workspace matches the grid's frame of                                              reference - check that this is the right pair"
-                                        }
-                                    };
-                                    if enabled_tip_button(ui, true, label, hint) {
-                                        apply_grid = Some((ri, fixed, moving));
-                                    }
-                                }
-                            });
-                        }
-                        if ri + 1 < study.registrations.len() {
-                            ui.separator();
-                        }
+                        ui.close();
                     }
                 });
-            self.reg_apply_invert = invert;
+            }
         }
         if rename.is_some() {
             self.rename_request = rename;
         }
+        if remove.is_some() {
+            self.obj_remove = remove;
+        }
         if focus.is_some() {
             self.tree_focus = focus;
         }
-        if let Some((rigid, fixed_slot, moving_slot)) = apply {
-            self.apply_external_transform_between(
-                Transform3::rigid_only(rigid),
-                registration::RegMethod::ElastixRigid,
-                fixed_slot,
-                moving_slot,
-            );
+        if hide {
+            self.hide_additional(slot);
         }
-        if let Some((ri, fixed_slot, moving_slot)) = apply_grid {
-            if let Some(field) = self.slots[slot]
-                .study
-                .as_ref()
-                .and_then(|s| s.registrations.get(ri))
-                .and_then(|r| r.grid.clone())
-            {
-                let center = field.origin;
-                let transform = Transform3 {
-                    rigid: registration::RigidTransform::identity(center),
-                    warp: registration::Warp::Field(Arc::new(field)),
-                    manual: None,
-                };
-                self.apply_external_transform_between(
-                    transform,
-                    registration::RegMethod::PlastimatchBSpline,
-                    fixed_slot,
-                    moving_slot,
-                );
-            }
+        if let Some(ri) = show {
+            self.show_object(slot, PaneObject::Registration(ri));
         }
     }
+}
+
+/// A registration in one line, for a session: `⇄` and what it is - its own
+/// name when it has one other than the vendor's comment (a name given
+/// here), else the kind it is - with its time, and for a treatment
+/// registration the correction.
+fn compact_title(study: &LoadedStudy, reg: &SpatialReg) -> String {
+    let kind = crate::sessions::reg_kind(reg, study);
+    let named = !reg.label.is_empty() && reg.label != reg.comment;
+    let what = match kind {
+        _ if named => reg.label.clone(),
+        crate::sessions::RegKind::Treatment => "Treatment position".to_string(),
+        crate::sessions::RegKind::CtToCt => "Daily CT ▶ planning CT".to_string(),
+        crate::sessions::RegKind::Imaging => {
+            if reg.references.is_empty() {
+                "Imaging position".to_string()
+            } else if study.series.iter().any(|s| reg.references.contains(&s.uid)) {
+                "Imaging position ▶ daily CT".to_string()
+            } else {
+                "Imaging position ▶ a series not loaded".to_string()
+            }
+        }
+    };
+    let mut t = format!("⇄ {what}");
+    let clock = crate::sessions::clock(&reg.datetime);
+    if !clock.is_empty() {
+        t.push_str(&format!(" · {clock}"));
+    }
+    if kind == crate::sessions::RegKind::Treatment {
+        if let Some(c) = crate::sessions::correction(reg) {
+            t.push_str(&format!(" · {}", crate::sessions::correction_text(&c)));
+        }
+    }
+    t
 }

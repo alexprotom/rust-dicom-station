@@ -737,3 +737,64 @@ fn several_folders_are_filed_under_one_catalog_update() {
         "a plain import copies"
     );
 }
+
+/// A series carries the date and time it was made (the earliest of its
+/// files), and a catalog written before the series had one gets it at the
+/// next scan, with the names given in the window kept.
+#[test]
+fn a_series_knows_when_it_was_made_and_an_older_catalog_learns_it() {
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+    let root = scratch("test_archive_series_time");
+    for (k, time) in ["103712", "103701"].into_iter().enumerate() {
+        let path = root.join(format!("P/CT/{k}.dcm"));
+        tiny(
+            &path,
+            ("P9", "TEST^ONE"),
+            "1.9",
+            "1.9.1",
+            &format!("1.9.1.{k}"),
+            "CT",
+        );
+        let mut obj = dicom_object::open_file(&path).unwrap();
+        obj.put(DataElement::new(
+            tags::SERIES_DATE,
+            VR::DA,
+            PrimitiveValue::from("20240917"),
+        ));
+        obj.put(DataElement::new(
+            tags::SERIES_TIME,
+            VR::TM,
+            PrimitiveValue::from(time),
+        ));
+        obj.write_to_file(&path).unwrap();
+    }
+    let archive = Archive::new(&root);
+    let when = |a: &Archive| {
+        a.scan_tree(&Progress::default()).unwrap().patients()[0].studies[0].series[0]
+            .datetime
+            .clone()
+    };
+    assert_eq!(when(&archive), "20240917103701", "the earliest file's");
+
+    // The catalog as version 1 wrote it: no time, a name given by hand.
+    let cat = archive.catalog_path();
+    let text = std::fs::read_to_string(&cat).unwrap();
+    assert!(text.contains("\"version\": 2"), "{text}");
+    let old = text
+        .replace("\"version\": 2", "\"version\": 1")
+        .replace("\"datetime\":\"20240917103701\"", "\"label\":\"Daily\"")
+        .replacen("\"label\":\"\",", "", 1);
+    assert!(
+        old.contains("\"label\":\"Daily\"") && !old.contains("103701"),
+        "{old}"
+    );
+    std::fs::write(&cat, old).unwrap();
+    let series =
+        &archive.scan_tree(&Progress::default()).unwrap().patients()[0].studies[0].series[0];
+    assert_eq!(series.datetime, "20240917103701", "read again once");
+    assert_eq!(series.label, "Daily", "the person's name for it is kept");
+    assert!(std::fs::read_to_string(&cat)
+        .unwrap()
+        .contains("\"version\": 2"));
+}

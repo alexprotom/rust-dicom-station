@@ -550,6 +550,58 @@ pub fn overlay_slice_within(
     }
 }
 
+/// [`overlay_slice`] for a whole label map at once: every voxel whose label
+/// has a colour in `colors` (indexed by label, `None` for a label not drawn)
+/// is painted in it. One pass over the slice whatever the number of classes,
+/// which is what previewing the hundred classes of an automatic run as they
+/// are ticked needs; the plane and row conventions are [`overlay_slice`]'s.
+pub fn overlay_labels_slice(
+    labels: &[u8],
+    dims: [usize; 3],
+    plane: ViewPlane,
+    slice: usize,
+    colors: &[Option<Color32>; 256],
+    out: &mut [Color32],
+) {
+    let [nx, ny, nz] = dims;
+    if nx == 0 || ny == 0 || nz == 0 || labels.len() != nx * ny * nz {
+        return;
+    }
+    let paint = |o: &mut Color32, l: u8| {
+        if let Some(c) = colors[l as usize] {
+            *o = c;
+        }
+    };
+    match plane {
+        ViewPlane::Axial => {
+            let k = slice.min(nz - 1);
+            let src = &labels[k * nx * ny..(k + 1) * nx * ny];
+            for (o, &l) in out.iter_mut().zip(src) {
+                paint(o, l);
+            }
+        }
+        ViewPlane::Sagittal => {
+            let i = slice.min(nx - 1);
+            for k in 0..nz {
+                let r = nz - 1 - k;
+                for j in 0..ny {
+                    paint(&mut out[r * ny + j], labels[k * nx * ny + j * nx + i]);
+                }
+            }
+        }
+        ViewPlane::Coronal => {
+            let j = slice.min(ny - 1);
+            for k in 0..nz {
+                let r = nz - 1 - k;
+                let src = &labels[k * nx * ny + j * nx..k * nx * ny + (j + 1) * nx];
+                for (o, &l) in out[r * nx..(r + 1) * nx].iter_mut().zip(src) {
+                    paint(o, l);
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Seeded organ growing (interactive "smart" segmentation)
 // ---------------------------------------------------------------------------
@@ -1245,6 +1297,51 @@ mod overlay_tests {
                     );
                     assert_eq!(full, boxed, "{plane:?} slice {slice} with {bbox:?}");
                 }
+            }
+        }
+    }
+
+    /// A label map previewed in one pass paints what the classes' own
+    /// masks would, one after the other, on every plane; an untinted class
+    /// paints nothing.
+    #[test]
+    fn a_label_map_overlays_as_its_masks_would() {
+        let dims = [13, 9, 7];
+        let a = blob(dims, [1, 1, 1], [8, 6, 5]);
+        let b = blob(dims, [5, 2, 0], [12, 8, 6]);
+        // Label 2 wins where both are set, label 3 is never drawn.
+        let labels: Vec<u8> = a
+            .iter()
+            .zip(&b)
+            .enumerate()
+            .map(|(n, (&x, &y))| {
+                if y != 0 {
+                    2
+                } else if x != 0 {
+                    1
+                } else {
+                    3 * (n % 2) as u8
+                }
+            })
+            .collect();
+        let mask = |l: u8| -> Vec<u8> { labels.iter().map(|&v| u8::from(v == l)).collect() };
+        let c1 = Color32::from_rgba_unmultiplied(9, 8, 7, 90);
+        let c2 = Color32::from_rgba_unmultiplied(1, 2, 3, 90);
+        let mut colors = [None; 256];
+        colors[1] = Some(c1);
+        colors[2] = Some(c2);
+        for (plane, n, w, h) in [
+            (ViewPlane::Axial, dims[2], dims[0], dims[1]),
+            (ViewPlane::Sagittal, dims[0], dims[1], dims[2]),
+            (ViewPlane::Coronal, dims[1], dims[0], dims[2]),
+        ] {
+            for slice in 0..n {
+                let mut want = vec![Color32::TRANSPARENT; w * h];
+                overlay_slice(&mask(1), dims, plane, slice, [9, 8, 7], 90, &mut want);
+                overlay_slice(&mask(2), dims, plane, slice, [1, 2, 3], 90, &mut want);
+                let mut got = vec![Color32::TRANSPARENT; w * h];
+                overlay_labels_slice(&labels, dims, plane, slice, &colors, &mut got);
+                assert_eq!(want, got, "{plane:?} slice {slice}");
             }
         }
     }

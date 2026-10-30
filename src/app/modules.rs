@@ -14,7 +14,8 @@
 //! small facility: [`Focus`]. A section that is unfolded names what it is
 //! about - the two structures a comparison measures, the row of a table
 //! under the pointer - and the views draw those contours thicker, the way
-//! the editor has always drawn the structure it edits. The focus is
+//! the editor has always drawn the structure it edits (a segment: its
+//! overlay at twice the opacity). The focus is
 //! cleared at the top of every pass of the panel and set again by whatever
 //! is unfolded, so nothing stays lit once its section is folded or the
 //! panel is hidden.
@@ -311,6 +312,22 @@ impl ViewerApp {
             );
         }
         out
+    }
+
+    /// The segments of the shown segmentation series of `slot` the views
+    /// draw stronger: whatever the unfolded sections are about.
+    pub(super) fn focused_segs(&self, slot: usize) -> Vec<usize> {
+        let Some(series) = self.slots[slot].seg_series_idx() else {
+            return Vec::new();
+        };
+        match &self.section_focus {
+            Some(Focus::Structures(items)) => items
+                .iter()
+                .filter(|(s, i)| *s == slot && i.kind == SetKind::Segmentations && i.set == series)
+                .map(|(_, i)| i.idx)
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     /// The header of a module's section: a [`CollapsingState`] under the

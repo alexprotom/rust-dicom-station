@@ -8,7 +8,12 @@ objects, with the metrics table, protocol constraint checking and CSV export.
 *Modules ▶ Dose-volume histograms* (right panel, F10), or tick structures in
 the data tree, right-click and choose **📊 Plot … on a DVH**: the structures
 are added to the plot, with the viewport's dose object already selected, and
-the section unfolds.
+the section unfolds. While the section is unfolded, ticking a structure or a
+segment in the data tree adds it to the plot as well (unticking leaves it
+there; the plot's own list takes it off). Switching the active set, or
+loading a study, does not pour the new set in: only a tick counts. A
+structure added while curves are being computed is computed as soon as that
+run lands.
 
 The section holds the pickers, the axes, the metrics table, the constraints
 and the exports; the plot is in the row's **chart pane**
@@ -18,8 +23,9 @@ after a change you made - not after every recompute, so a chart you took out
 stays out - and the **📈** on the section header brings it back. ⛶ maximizes
 it to the whole window, which on a large monitor is the way to read a plan:
 curves across the screen, the table beside them. The cumulative curve under
-the pointer lights its structure in the views, drawn thicker, so the line one
-is reading is found in the images at a glance.
+the pointer lights its structure in the views - a contour drawn thicker, a
+segment at twice its opacity - so the line one is reading is found in the
+images at a glance.
 
 ## What it computes
 

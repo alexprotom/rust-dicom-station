@@ -135,6 +135,9 @@ pub struct RemoteSeries {
     /// The name given on the server; empty: none.
     pub label: String,
     pub files: usize,
+    /// When it was made, `YYYYMMDDHHMMSS`; empty from a server of an
+    /// earlier version, or when no file says.
+    pub datetime: String,
 }
 
 impl RemoteSeries {

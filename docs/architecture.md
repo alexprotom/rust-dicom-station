@@ -327,7 +327,9 @@ src/
     pane_windows.rs   a pane of a row in a window of its own: the bar's
                       ⤴ / ⤵ (detached_panes), ⛶ maximizing that window, the
                       windows drawn after the central area through
-                      tool_window and the same pane function as the row
+                      tool_window and the same pane function as the row;
+                      every pane bar's layout (bar_cells: right to left,
+                      wrapped into lines of equal length) and its ✖ (close_button)
     pick.rs           the one door to a file dialog: the system dialog on the
                       desktop, an egui folder browser on Android and iOS, and
                       the answer handed to a continuation either way
@@ -349,16 +351,29 @@ src/
                       the structures the unfolded sections are about, drawn
                       thicker in the views
     data_tree.rs      the left panel's Data tree per workspace: patients,
-                      studies, modality nodes, series rows, transfer menu
+                      studies, modality nodes, series rows (SeriesMenu /
+                      SeriesOut, shared with the 4D phases), transfer menu;
+                      every object row follows one set of rules (docs/viewer.md,
+                      "One behaviour for every row"): panels.rs has its
+                      menu entries (show_entry, rename_entry, remove_entry)
+                      and tooltips (series_tip, object_tip)
     tree_model.rs     the tree as data (PatientNode / StudyNode, the layout,
-                      cached per study), the arrow-key walk
+                      cached per study), the arrow-key walk: a row's level is
+                      its own study node's list, and landing on a row shows it
     fourd_tree.rs     the 4D groups in the tree and what their menus do
     tree_menus.rs     the set, destination and item context menus
     tree_*.rs         one file per tree section: structures, segmentations,
                       dose, plans, planar images and additional objects (one file,
                       a section per kind), reports, registrations, records
-                      and warnings; planar images, additional objects and
-                      reports, like dose and plans, are categories of a study
+                      and warnings, treatment sessions (tree_sessions.rs: a
+                      node per day and per beam, pair rows with their dose
+                      reports, the registration and record rows of their own
+                      files in one-line form); a registration, record or
+                      report is one row that shows it in the Additional pane
+                      (tree_reports.rs: additional_row), nothing unfolds;
+                      planar images, additional objects, reports,
+                      registrations and records, like dose and plans, are
+                      categories of a study
     dose_display.rs   the Dose display module: how the displayed dose is
                       drawn (colorwash / isodose, opacity, threshold, the
                       isodose ladder), one setting for every workspace
@@ -393,6 +408,9 @@ src/
                       from the tree puts its pane into the row
     report_view.rs    a report in the Additional pane: its facts, lines and
                       tables, the page behind a toggle
+    object_view.rs    a registration or a treatment record in the Additional
+                      pane (PlanarView.object: PaneObject): a REG's facts,
+                      matrices and apply buttons, a record's facts and beams
     chart_pane.rs     the Chart pane, modelled on report_view.rs: the chart of
                       whichever module shows one (ChartSource: the DVH, a
                       motion run), kept per workspace, with its own bar
@@ -510,7 +528,9 @@ src/
                       (patients, studies, single series), load, send, sync,
                       upload, the Tasks tab, Add server / pairing
     pacs_tree.rs      the tree both draw: rows drawn only where visible,
-                      selection with Ctrl / Shift and the keyboard, filter
+                      selection with Ctrl / Shift and the keyboard, filter;
+                      a course's series by treatment day (study_rows; series_ids
+                      takes the day rows out of a selection)
     pacs_server_win.rs  PACS ▶ Settings ▶ PACS server (a page of the PACS
                       window): start / stop rds-pacs, the
                       connection details, pairing codes, paired stations,
@@ -562,6 +582,11 @@ src/
   extras.rs         DX / CR / RTIMAGE planar images (an RT Image's geometry
                     read into a camera), additional objects (PlanarKind:
                     secondary captures), overlay planes, REG, RTRECORD          DICOM
+  sessions.rs       treatment sessions: a course's radiograph pairs, setup
+                    registrations, records, daily CTs and dose reports put
+                    together by day and beam, by time and kind where the
+                    setup system writes no references; the correction of a
+                    treatment REG                                             DICOM
   report/           reports: the SR content tree (sr.rs), the CT dose SR as
                     a table of acquisitions (dose.rs, TID 10011 by concept
                     code), a Siemens page's MEDCOM OOG text laid out as its
@@ -972,9 +997,21 @@ structures a comparison measures, the row of the details table under the
 pointer, the target and references of a transfer, the DVH curve under the
 pointer in the chart, a motion target picked. `focused_rois` hands the
 views the RT-structure contours to draw thicker (3 px), the same way, and
-through the same call, as the structure the contour tools edit; segments
-are not highlighted. Nothing stays lit once its section is folded or the
-panel hidden.
+through the same call, as the structure the contour tools edit;
+`focused_segs` the segments of the shown segmentation series to overlay at
+twice the opacity (the focus is mixed into the overlay's cache key, since it
+moves with the pointer, not with a generation counter). Nothing stays lit
+once its section is folded or the panel hidden.
+
+Two more links work the other way round. The auto-segmentation *Results*
+fold previews what it would add: `autoseg_preview` names the phase of the
+waiting run that lies on the displayed volume and a colour per ticked
+label, and the seg overlay paints that label map in one pass
+(`segmentation::overlay_labels_slice`). The DVH section follows the tree's
+tick boxes while it is unfolded (`dvh_follow_ticks`: a structure or
+segment ticked between two consecutive passes joins the plot; a switch of
+active set or study only resyncs the list), and a run that lands with the
+picks changed under it starts again for them.
 
 **Charts go into a pane.** The two modules that draw charts keep their
 pickers and tables in the panel and put the chart in the row's
@@ -1044,8 +1081,8 @@ auto tools** module (`app/auto_tools.rs`), under one workspace row; the
 auto-segmentation *results* list, which appears once per run, is the
 *Results* fold at the end of the auto-segmentation section (`dialogs.rs`):
 a run that lands switches the module on, opens the panel and unfolds the
-module, the section and the fold once, and the fold goes after *Add* or
-*Discard*.
+module, the section and the fold once, its ticked classes are previewed in
+the views while it waits, and the fold goes after *Add* or *Discard*.
 
 Where a result lands and how far a run reaches are the same two questions
 for body contour, auto-segmentation and prompt segmentation, so they are

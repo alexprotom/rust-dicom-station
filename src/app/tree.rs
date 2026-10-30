@@ -121,13 +121,6 @@ impl ViewerApp {
                 {
                     *active = active.saturating_sub(1);
                 }
-                if self.slots[slot]
-                    .study
-                    .as_ref()
-                    .is_some_and(|s| s.doses.is_empty())
-                {
-                    self.dose_mode = DoseMode::Off;
-                }
             }
             ObjKind::Plan => {
                 if r.idx >= study.plans.len() {
@@ -155,12 +148,14 @@ impl ViewerApp {
                     return;
                 }
                 study.registrations.remove(r.idx);
+                self.object_removed(slot, true, r.idx);
             }
             ObjKind::Record => {
                 if r.idx >= study.treat_records.len() {
                     return;
                 }
                 study.treat_records.remove(r.idx);
+                self.object_removed(slot, false, r.idx);
             }
             ObjKind::Report => {
                 if r.idx >= study.reports.len() {
@@ -255,6 +250,12 @@ impl ViewerApp {
             RenameTarget::FourD { slot, idx } => {
                 self.fourd_action = Some(FourDAction::Dissolve { slot, group: idx });
             }
+            RenameTarget::Pair { slot, images } => {
+                self.objs_remove = images
+                    .into_iter()
+                    .map(|idx| obj(slot, ObjKind::Planar, idx))
+                    .collect();
+            }
         }
     }
 
@@ -283,6 +284,35 @@ impl ViewerApp {
                 self.tree_picks.remove(i);
             }
             None => self.tree_picks.push((slot, uid.to_string())),
+        }
+    }
+
+    /// Shift-click on a series row: tick every row from the last one ticked
+    /// in the same node (`list`, in tree order) to this one. With nothing
+    /// ticked there yet it ticks this row alone, as Ctrl-click would.
+    pub(super) fn pick_range(&mut self, slot: usize, list: &[usize], to: usize) {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let uid_of = |i: usize| study.series.get(i).map(|s| s.uid.clone());
+        let anchor = self
+            .tree_picks
+            .iter()
+            .rev()
+            .filter(|(s, _)| *s == slot)
+            .find_map(|(_, uid)| list.iter().position(|&i| uid_of(i).as_deref() == Some(uid)));
+        let Some(here) = list.iter().position(|&i| i == to) else {
+            return;
+        };
+        let (a, b) = match anchor {
+            Some(a) => (a.min(here), a.max(here)),
+            None => (here, here),
+        };
+        let uids: Vec<String> = list[a..=b].iter().filter_map(|&i| uid_of(i)).collect();
+        for uid in uids {
+            if !self.tree_picks.iter().any(|(s, u)| *s == slot && *u == uid) {
+                self.tree_picks.push((slot, uid));
+            }
         }
     }
 
@@ -793,6 +823,7 @@ mod tree_tests {
             temporal_id: None,
             suv_bw: None,
             frame_of_reference_uid: String::new(),
+            series_datetime: String::new(),
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
         }
     }

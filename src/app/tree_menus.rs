@@ -17,7 +17,7 @@ impl ViewerApp {
     ) {
         let open = &self.open_slots();
         let holds: [bool; MAX_WORKSPACES] = std::array::from_fn(|s| self.slots[s].study.is_some());
-        if ui.button("✏ Rename").clicked() {
+        if Self::rename_entry(ui) {
             *out = Some(SetAction::Rename(here));
             ui.close();
         }
@@ -104,7 +104,7 @@ impl ViewerApp {
             }
         }
         ui.separator();
-        if ui.button("🗑 Remove").clicked() {
+        if Self::remove_entry(ui, "🗑 Remove") {
             *out = Some(SetAction::Remove(here));
             ui.close();
         }
@@ -239,7 +239,7 @@ impl ViewerApp {
         } else {
             format!("'{label}'")
         };
-        if ui.button("✏ Rename").clicked() {
+        if Self::rename_entry(ui) {
             *out = Some(ItemAction::Rename { from, idx: clicked });
             ui.close();
         }
@@ -307,7 +307,7 @@ impl ViewerApp {
             }
         }
         ui.separator();
-        if ui.button("🗑 Remove").clicked() {
+        if Self::remove_entry(ui, "🗑 Remove") {
             *out = Some(ItemAction::Remove {
                 from,
                 items: items.clone(),

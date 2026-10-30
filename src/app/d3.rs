@@ -244,6 +244,8 @@ struct D3PaneActions {
     fold: bool,
     /// Out of the row into a window of its own, or back.
     detach: bool,
+    /// Out of the row altogether.
+    close: bool,
 }
 
 /// Where a 3D pane's furniture sits.
@@ -256,6 +258,8 @@ struct D3PaneActions {
 /// be told which parts of it belong to the buttons.
 struct D3PaneBar {
     maximize: egui::Rect,
+    /// Out of the row, shown folded or not.
+    close: egui::Rect,
     /// The arrow that folds the rest of the bar away.
     fold: egui::Rect,
     /// Is it folded right now?
@@ -1236,6 +1240,9 @@ impl ViewerApp {
         if acts.maximize {
             self.toggle_pane_max(ui, slot, PaneKind::Scene3d);
         }
+        if acts.close {
+            self.remove_from_row(slot, PaneKind::Scene3d);
+        }
         if acts.detach {
             self.toggle_detached(slot, PaneKind::Scene3d);
         }
@@ -1250,30 +1257,24 @@ impl ViewerApp {
         show_list: bool,
         folded: bool,
     ) -> D3PaneBar {
-        let bsize = egui::vec2(24.0, 20.0);
-        let psize = egui::vec2(38.0, 20.0);
-        let prep_w = 58.0;
         let by = rect.top() + 22.0;
-        let cell = |right: f32, size: egui::Vec2| {
-            egui::Rect::from_min_size(egui::Pos2::new(right - size.x, by), size)
-        };
-        let maximize = cell(rect.right() - 4.0, bsize);
-        let fold = cell(maximize.left() - 4.0, bsize);
-        let detach = cell(fold.left() - 4.0, bsize);
-        let reset = cell(detach.left() - 4.0, bsize);
-        let hand = cell(reset.left() - 4.0, bsize);
-        let zoom_out = cell(hand.left() - 4.0, bsize);
-        let zoom_in = cell(zoom_out.left() - 4.0, bsize);
-        let play = if phases {
-            cell(zoom_in.left() - 4.0, psize)
+        // Right to left, as a plane's bar: maximize, close, the fold, out of
+        // the row, reset, the hand, zoom out and in, then the 4D play and
+        // its *Prepare*; in lines of equal length when the pane is narrow.
+        let mut widths = vec![24.0; 8];
+        if phases {
+            widths.extend([38.0, 58.0]);
+        }
+        let cells = super::pane_windows::bar_cells(rect, by, &widths);
+        let (maximize, close, fold, detach) = (cells[0], cells[1], cells[2], cells[3]);
+        let (reset, hand, zoom_out, zoom_in) = (cells[4], cells[5], cells[6], cells[7]);
+        let (play, prepare) = if phases {
+            (cells[8], cells[9])
         } else {
-            zoom_in
+            (egui::Rect::NOTHING, egui::Rect::NOTHING)
         };
-        let prepare = if phases {
-            cell(play.left() - 4.0, egui::vec2(prep_w, 20.0))
-        } else {
-            play
-        };
+        // Below the last line of buttons.
+        let bar_bottom = cells.iter().map(|c| c.bottom()).fold(by + 20.0, f32::max);
         // What a 2D pane has no counterpart for goes below the chain, out of
         // its way: three panes to a row leave a bar too narrow to hold both,
         // and the top row is the one that has to match. Two lines of its
@@ -1286,10 +1287,10 @@ impl ViewerApp {
         // belongs to them.
         let left_w = if has_dose { 230.0 } else { 170.0 };
         let left = egui::Rect::from_min_max(
-            egui::Pos2::new(rect.left() + 6.0, by + 24.0),
+            egui::Pos2::new(rect.left() + 6.0, bar_bottom + 4.0),
             egui::Pos2::new(
                 (rect.left() + 6.0 + left_w).min(rect.right() - 6.0),
-                by + 68.0,
+                bar_bottom + 48.0,
             ),
         );
         // The structure list, when it is out: down the right-hand edge,
@@ -1308,6 +1309,7 @@ impl ViewerApp {
             .input(|i| i.pointer.interact_pos())
             .map(|p| {
                 maximize.contains(p)
+                    || close.contains(p)
                     || fold.contains(p)
                     || (!folded
                         && (detach.contains(p)
@@ -1322,6 +1324,7 @@ impl ViewerApp {
             .unwrap_or(false);
         D3PaneBar {
             maximize,
+            close,
             fold,
             folded,
             detach,
@@ -1523,6 +1526,10 @@ impl ViewerApp {
             });
         if hit(bar.maximize, &resp) {
             acts.maximize = true;
+        }
+        let resp = Self::close_button(ui, bar.close);
+        if hit(bar.close, &resp) {
+            acts.close = true;
         }
 
         // The structure list, over the scene's right-hand edge. Its own

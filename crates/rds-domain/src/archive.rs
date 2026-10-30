@@ -62,6 +62,9 @@ pub struct SeriesEntry {
     pub files: usize,
     /// The folder that holds its files (the nearest one holding all).
     pub dir: PathBuf,
+    /// When it was made, `YYYYMMDDHHMMSS`; empty when no file says
+    /// ([`catalog::SeriesRec::datetime`]).
+    pub datetime: String,
 }
 
 impl SeriesEntry {
@@ -595,6 +598,7 @@ impl Archive {
                 label: s.label.clone(),
                 files: sops.len(),
                 dir: common_dir(paths.iter().map(PathBuf::as_path)),
+                datetime: s.datetime.clone(),
             };
             by_study
                 .entry(s.study.as_str())
