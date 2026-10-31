@@ -798,3 +798,78 @@ fn a_series_knows_when_it_was_made_and_an_older_catalog_learns_it() {
         .unwrap()
         .contains("\"version\": 2"));
 }
+
+/// A file rewritten in place (its study and patient changed, as a merge or
+/// a pseudonymization does) moves in the catalog with its next scan: the
+/// series goes to the study its files now name, the study to the patient,
+/// the study that is left empty goes. A study's date is its earliest
+/// file's, however late that file arrives.
+#[test]
+fn a_rescan_follows_files_rewritten_in_place_and_dates_a_study_by_its_earliest_file() {
+    use dicom_dictionary_std::tags;
+    use rust_dicom_station::curation::raw::{encode_text, rewrite_file};
+    let root = scratch("test_archive_rekey");
+    for k in 0..2 {
+        tiny(
+            &root.join(format!("P/CT/{k}.dcm")),
+            ("P9", "TEST^ONE"),
+            "1.9",
+            "1.9.1",
+            &format!("1.9.1.{k}"),
+            "CT",
+        );
+    }
+    let archive = Archive::new(&root);
+    let pts = archive.scan_tree(&Progress::default()).unwrap().patients();
+    assert_eq!((pts.len(), pts[0].key.as_str()), (1, "P9"));
+    // The scan reads a file again when its size or time changed: a UID of
+    // another length changes the size whatever the clock says.
+    for k in 0..2 {
+        let n = rewrite_file(&root.join(format!("P/CT/{k}.dcm")), &mut |at| {
+            if !at.path.is_empty() {
+                return None;
+            }
+            match at.tag {
+                tags::STUDY_INSTANCE_UID => Some(encode_text(at.vr, "1.9.77")),
+                tags::PATIENT_ID => Some(encode_text(at.vr, "P10")),
+                _ => None,
+            }
+        })
+        .unwrap();
+        assert_eq!(n, 2);
+    }
+    // An earlier session of the same course study, with its description.
+    tiny(
+        &root.join("P/CT/early.dcm"),
+        ("P10", "TEST^ONE"),
+        "1.9.77",
+        "1.9.2",
+        "1.9.2.0",
+        "CT",
+    );
+    {
+        use dicom_core::{DataElement, PrimitiveValue, VR};
+        let path = root.join("P/CT/early.dcm");
+        let mut obj = dicom_object::open_file(&path).unwrap();
+        obj.put(DataElement::new(
+            tags::STUDY_DATE,
+            VR::DA,
+            PrimitiveValue::from("20251201"),
+        ));
+        obj.put(DataElement::new(
+            tags::STUDY_DESCRIPTION,
+            VR::LO,
+            PrimitiveValue::from("Procedure #1"),
+        ));
+        obj.write_to_file(&path).unwrap();
+    }
+    let pts = archive.scan_tree(&Progress::default()).unwrap().patients();
+    assert_eq!(pts.len(), 1, "the old patient is gone with its study");
+    assert_eq!(pts[0].key, "P10");
+    assert_eq!(pts[0].studies.len(), 1);
+    let st = &pts[0].studies[0];
+    assert_eq!(st.study_uid, "1.9.77");
+    assert_eq!(st.series.len(), 2, "both series under the study they name");
+    assert_eq!(st.date, "20251201", "the earliest session's date");
+    assert_eq!(st.description, "Procedure #1");
+}

@@ -626,3 +626,75 @@ fn the_stdio_frames_are_clean_too() {
     assert!(frames.len() >= 6);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Patch every file of `folder` with `set`.
+fn patch_all(folder: &Path, set: &[(dicom_core::Tag, dicom_core::VR, String)]) {
+    for e in std::fs::read_dir(folder).unwrap().flatten() {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        let tmp = p.with_extension("tmp");
+        rust_dicom_station::dicom_export::copy_patched(&p, &tmp, set).unwrap();
+        std::fs::rename(&tmp, &p).unwrap();
+    }
+}
+
+/// Under `pseudonymized` a dataset whose patient is a code opens, and the
+/// code is no secret: the folder named after it comes back as it is. One
+/// that still names a physician, or the patient, is refused without saying
+/// the name.
+#[test]
+fn the_pseudonymized_policy_opens_coded_patients_and_nothing_else() {
+    use dicom_core::VR;
+    use dicom_dictionary_std::tags;
+    let dir = common::target_dir("test_mcp_phi_pseudo");
+    let root = dir.join("trial");
+    let folder = common::fourd_folder(&root.join("P01-007"), [0.0, 6.0, 3.0]);
+    patch_all(
+        &folder,
+        &[
+            (tags::PATIENT_NAME, VR::PN, "P01-007".into()),
+            (tags::PATIENT_ID, VR::LO, "P01-007".into()),
+            (tags::PATIENT_BIRTH_DATE, VR::DA, "19560101".into()),
+            (tags::REFERRING_PHYSICIAN_NAME, VR::PN, String::new()),
+            // Staff stay in the files and out of every answer.
+            (tags::OPERATORS_NAME, VR::PN, "WILSON^JAMES".into()),
+        ],
+    );
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut cfg = config(&root, &out, PhiPolicy::Pseudonymized);
+    cfg.pacs.patient_codes = vec![r"^P01-\d{3}$".into()];
+    let mut core = Core::new(cfg);
+    let mut log = Vec::new();
+    let d = call(&mut core, &mut log, "open_dataset", json!({"path": folder}))
+        .expect("a coded dataset opens");
+    let text = d.to_string();
+    assert!(text.contains("P01-007"), "the code is no secret: {text}");
+
+    // A physician's name left in: refused, the tag named, the name not.
+    let mut named = folder.clone();
+    named.set_file_name("named");
+    std::fs::rename(&folder, &named).unwrap();
+    patch_all(
+        &named,
+        &[(
+            tags::REFERRING_PHYSICIAN_NAME,
+            VR::PN,
+            "HOUSE^GREGORY".into(),
+        )],
+    );
+    let err = call(&mut core, &mut log, "open_dataset", json!({"path": named}))
+        .expect_err("a physician's name refuses it");
+    assert!(err.contains("ReferringPhysicianName"), "{err}");
+    // The patient named: refused the same way.
+    common::name_the_patient(&named, NAME, ID, BIRTH);
+    let err = call(&mut core, &mut log, "open_dataset", json!({"path": named}))
+        .expect_err("a named patient refuses it");
+    assert!(
+        err.contains("PatientName") && err.contains("pseudonymized"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

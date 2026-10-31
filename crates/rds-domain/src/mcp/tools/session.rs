@@ -113,7 +113,7 @@ pub fn admit(
         .collect();
     let alias = anonymize::patient_alias(&ids);
     let values = verdict.values().to_vec();
-    core.session.add_values(values.clone());
+    pass_gate(core, &verdict, "the dataset")?;
     if !anonymized {
         match core.session.config.phi_policy {
             PhiPolicy::Refuse => bail!(
@@ -125,12 +125,39 @@ pub fn admit(
             // original identifiers; the redactor already holds the values,
             // so nothing that leaves the process does.
             PhiPolicy::Redact => scrub_in_memory(&mut study, &values, &alias),
-            PhiPolicy::Allow => {}
+            // Passed the gate: the patient is a code, kept as it is.
+            PhiPolicy::Allow | PhiPolicy::Pseudonymized => {}
         }
     }
 
     let ds = core.session.add_dataset(study, origin, root_label, tags)?;
     Ok(describe(ds))
+}
+
+/// Hand a verdict's values to the redactor, as the policy says. Every
+/// policy hides every value, except `pseudonymized`, under which a dataset
+/// that passes keeps its codes readable (they are no PHI) and one that does
+/// not is refused here, its values hidden all the same. `what` names the
+/// dataset in the refusal.
+pub fn pass_gate(core: &Core, verdict: &phi::PhiVerdict, what: &str) -> Result<()> {
+    if verdict.is_anonymized() || core.session.config.phi_policy != PhiPolicy::Pseudonymized {
+        core.session.add_values(verdict.values().to_vec());
+        return Ok(());
+    }
+    match verdict.pseudonymized(&core.session.config.pacs.codes()) {
+        Ok(rest) => {
+            core.session.add_values(rest);
+            Ok(())
+        }
+        Err(why) => {
+            core.session.add_values(verdict.values().to_vec());
+            bail!(
+                "{what} {why} ({}). The policy is 'pseudonymized': set the patient's name and ID \
+                 to their code first, or anonymize it",
+                verdict.describe()
+            )
+        }
+    }
 }
 
 pub fn describe_dataset(core: &mut Core, a: DatasetArgs, _p: &Progress) -> Result<Value> {

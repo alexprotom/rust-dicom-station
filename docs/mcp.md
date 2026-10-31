@@ -68,7 +68,7 @@ sequence.
    ```toml
    roots = ["D:/studies/anonymized"]      # folders that may be read
    output_dir = "D:/studies/rds-mcp-out"  # the one folder results go to
-   phi_policy = "refuse"                  # refuse | redact | allow (see below)
+   phi_policy = "refuse"                  # refuse | redact | allow | pseudonymized
    models_dir = ""                        # empty: the viewer's model folder
    allow_model_download = false           # weights are the only network use
    device = "auto"                        # auto | gpu | cpu
@@ -78,6 +78,12 @@ sequence.
    volume_cache_mb = 4096                 # image volumes kept between calls
    workflows_dir = ""                     # empty: the viewer's workflow folder
    archive = ""                           # empty: the station's own PACS
+
+   [pacs]                                 # the curation tools; omit to leave them off
+   roots = ["D:/Pryanick-PACS"]           # the archive being curated
+   quarantine = "D:/Pryanick-PACS-duplicates"
+   records = "D:/Pryanick-PACS-reorg-records"  # manifests, journals, pixel index
+   patient_codes = ['^P01-\d{3}$']     # what a pseudonymized patient is called
    ```
 
    `volume_cache_mb` is the memory for series other than a workspace's
@@ -87,6 +93,13 @@ sequence.
    for saved workflows. `archive` is the PACS the archive tools list and
    open: the station's own as the viewer's settings name it, or storage
    folders joined by `|`.
+   `[pacs]` turns on the curation tools (below): `roots` are the folders
+   they check and correct, `quarantine` where duplicates are moved,
+   `records` where every plan, journal and the pixel-hash index is kept;
+   all three are readable like a root, and paths under them are reported
+   as `pacs1/...`, `quarantine/...`, `records/...`. `patient_codes` are
+   regular expressions a pseudonymized PatientName and PatientID match
+   whole, for the `pseudonymized` policy.
 
 3. Tell the client about it. *Settings ▶ MCP server ▶ Copy client
    configuration* puts the entry on the clipboard; for Claude Desktop it goes
@@ -131,8 +144,11 @@ segmentation series added when a name repeats. Series are numbered as
 | `motion_report` | An earlier run's report again, as JSON and CSV |
 | `export`, `export_registration` | DICOM into the output folder: SEG or RTSTRUCT, doses, plans, images; a Deformable Spatial Registration object |
 | `import_to_archive`, `open_in_viewer` | File an exported folder into the local archive; launch the viewer on it |
-| `list_archive`, `describe_archive_study`, `open_archive_study` | The station's PACS: every patient as an alias (`anon_...`, never a name or an ID) with their studies by Study Instance UID, the year, the modalities, the description and the series; one study series by series from the headers alone, with what each series becomes when loaded (image volume, planar image, additional object, structure set, ...), its SOP class, image type, pixels, frames and whether its files carry a position, which is how to see why a scanner's protocol page is no radiograph without opening it; and a study opened as a workspace through the same identity gate as `open_dataset` |
+| `list_archive`, `describe_archive_study`, `open_archive_study` | The station's PACS: every patient as an alias (`anon_...`, never a name or an ID; under `pseudonymized` a patient filed under a code is listed by it) with their studies by Study Instance UID, the year, the modalities, the description and the series - `summary` for counts per cohort only, `cohort` and `patient` to narrow it, `offset` and `limit` to page through it (25 patients a page by default, `next_offset` saying where the next starts), so a listing stays small however large the archive; one study series by series from the headers alone, with what each series becomes when loaded (image volume, planar image, additional object, structure set, ...), its SOP class, image type, pixels, frames and whether its files carry a position, which is how to see why a scanner's protocol page is no radiograph without opening it; and a study opened as a workspace through the same identity gate as `open_dataset` |
 | `anonymize` | An anonymized copy of a folder, written under the output folder |
+| `audit_folder`, `check_references` | Curation, read-only, on a folder under the `[pacs]` folders: files that do not parse or parse with a problem, pixel data shorter than its header asks for, slice gaps and doubles, mixed matrices or frames of reference in a series, missing instance numbers, structure sets with fewer StructureSetROI than ROIContour items or their frame of reference in (0008,1155), references to series, instances and frames that are in neither the folder nor the archive, contour planes on no slice, structured reports filed as `DX` - grouped by study, each `broken`, `dangling-reference` or `warning`; `check_references` lists only what does not resolve, for every kind of object |
+| `find_duplicates` | Which series of an import a `[pacs]` folder holds already: `identical` (same SOP Instance UID, the same raw elements but for `ignore_tags`), `pixel-twin` (new UIDs, the same SHA-256 of the pixel data at the same position: a re-anonymized copy), `partial`, `ambiguous`, `new`, with the archive series each matches and the twins inside the import itself; the hashes are kept in `records`, so a later run reads only what changed. `quarantine_copies` plans moving the copies away |
+| `quarantine`, `set_patient_identity`, `apply_manifest`, `undo_journal` | Curation that writes, always in two steps. `quarantine` (files, or the files of some series or studies, moved to `quarantine/<path below the root>`) and `set_patient_identity` (PatientName and PatientID set, the old values never returned) only plan: they save a manifest in `records` and return its id. `apply_manifest` does it, journaling each operation (a run cut short resumes where it stopped); a rewrite changes those two elements and leaves every other byte of the file as it was, is read back and compared element by element before it replaces the file, and keeps a copy for `undo_journal`, which takes everything back, newest first, each file only if nobody changed it since |
 | `list_workflows`, `run_workflow` | The saved workflows (and the program's examples) with their steps and inputs, and a run of one: a folder under a root for each input, by its title; the reports come back as tables, the files go into a folder under the output folder, and `open_results` keeps the studies the run read open as workspaces. A *DICOM folders* input runs a batch over its subfolders |
 
 Every call that can take more than a few seconds has an `_async` twin that
@@ -179,6 +195,7 @@ which any of them holds a value the anonymizer did not write is
 | `refuse` (default) | The workspace is closed again. The error names the tags, never their values, and points to the `anonymize` tool. |
 | `redact` | The workspace opens with the identifying values replaced in memory by the anonymizer's alias, so nothing downstream (a report header, an export field) carries them. |
 | `allow` | The workspace opens as it is, so an export carries the study's own identifiers. Everything that leaves the process is still scrubbed. |
+| `pseudonymized` | For an archive whose patients are codes already. The workspace opens when every PatientName and PatientID matches one of `[pacs] patient_codes`, the birth date is empty or the year alone (`YYYY0101`), and none of the tags a pseudonymization removes holds a value: other names and IDs, birth and mother's names, address, telephone, the medical record locator, the issuer of the ID, the physicians, patient comments. The codes are no secret: they come back as they are, in paths too (`pacs1/Trial/P01-039/...`). Anything else is refused, as under `refuse`, naming the tags; staff and institution names stay in the files and are redacted like any value. |
 
 There is no `off`.
 
@@ -227,7 +244,14 @@ label: `root1/4DCT`, `output/session/anonymized`, `archive/...`, so what
 one tool answers is exactly what the next takes; a `..` behind a label is
 canonicalized like any other and cannot climb out. Output
 goes into a per-session folder under `output_dir`; existing files are never
-overwritten and no tool deletes. Model weights are not downloaded unless
+overwritten and no tool deletes. The curation tools are the one exception to
+"writes only under the output folder", and only within `[pacs]`: they move
+and rewrite files under its `roots` and `quarantine`, never in a root's top
+level (where the catalog would file a stray file as "other"), never to a path
+of 260 characters or more (a warning from 250), and only by applying a
+manifest a planning call saved in `records`, which keeps the journal of each
+operation and a copy of each rewritten file; they delete nothing either - a
+duplicate is moved, not removed. Model weights are not downloaded unless
 `allow_model_download` is on; a missing model is an error that names the
 viewer's model manager. The audit log records every call after redaction.
 

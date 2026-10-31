@@ -886,3 +886,153 @@ fn radiographs_register_to_the_ct_and_export() {
     assert_eq!(s["setups"][0]["setup"], "setup1");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Every file under `from`, copied to the same place under `to`.
+fn copy_tree(from: &Path, to: &Path) {
+    for e in walkdir::WalkDir::new(from).into_iter().flatten() {
+        let rel = e.path().strip_prefix(from).unwrap();
+        let dst = to.join(rel);
+        if e.file_type().is_dir() {
+            std::fs::create_dir_all(&dst).unwrap();
+        } else {
+            std::fs::copy(e.path(), &dst).unwrap();
+        }
+    }
+}
+
+/// A tree's files and their bytes.
+fn snapshot(root: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut v: Vec<_> = walkdir::WalkDir::new(root)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .map(|e| {
+            (
+                e.path().strip_prefix(root).unwrap().to_path_buf(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The curation tools on a small archive: an audit that finds nothing
+/// broken, an import that is a copy of an archived study found as such and
+/// quarantined, a pseudonymization of its patient tags, each applied from
+/// its manifest and undone back to the byte.
+#[test]
+fn the_curation_tools_plan_apply_and_undo() {
+    let dir = common::target_dir("test_mcp_curation");
+    let gen = dir.join("gen");
+    let folder = common::fourd_folder(&gen, [0.0, 6.0, 3.0]);
+    let (pacs, import) = (dir.join("pacs"), dir.join("import"));
+    copy_tree(&folder, &pacs.join("Trial/P01-001/4dct"));
+    copy_tree(&folder, &import.join("batch/4dct"));
+    let (quarantine, records) = (dir.join("quarantine"), dir.join("records"));
+    std::fs::create_dir_all(&quarantine).unwrap();
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut core = Core::new(Config {
+        output_dir: Some(out),
+        archive: pacs.display().to_string(),
+        phi_policy: PhiPolicy::Redact,
+        device: "cpu".into(),
+        audit_log: false,
+        pacs: rust_dicom_station::mcp::config::PacsConfig {
+            roots: vec![pacs.clone(), import.clone()],
+            quarantine: Some(quarantine.clone()),
+            records: Some(records.clone()),
+            patient_codes: vec![r"^P01-\d{3}$".into()],
+        },
+        ..Config::default()
+    });
+
+    let audit = call(
+        &mut core,
+        "audit_folder",
+        json!({"path": pacs.join("Trial")}),
+    );
+    assert!(audit["files"].as_u64().unwrap() > 10, "{audit}");
+    assert_eq!(audit["broken"], json!(0), "{audit}");
+    // Paths come back under the folders' labels.
+    assert!(
+        audit["folder"].as_str().unwrap().starts_with("pacs1"),
+        "{audit}"
+    );
+
+    // The listing: counts per cohort, then a page at a time.
+    let summary = call(&mut core, "list_archive", json!({"summary": true}));
+    assert_eq!(summary["cohorts"][0]["cohort"], json!("Trial"), "{summary}");
+    assert_eq!(summary["cohorts"][0]["patients"], json!(1), "{summary}");
+    let page = call(
+        &mut core,
+        "list_archive",
+        json!({"cohort": "Trial", "limit": 1}),
+    );
+    assert_eq!(
+        (page["patients"].clone(), page["listed"].clone()),
+        (json!(1), json!(1)),
+        "{page}"
+    );
+    assert!(page.get("next_offset").is_none(), "{page}");
+
+    let before = snapshot(&import);
+    let dupes = call(
+        &mut core,
+        "find_duplicates",
+        json!({"source": import, "against": pacs, "quarantine_copies": true, "reason": "test"}),
+    );
+    assert_eq!(dupes["new"], json!(0), "{dupes}");
+    assert!(dupes["identical"].as_u64().unwrap() >= 3, "{dupes}");
+    let id = dupes["manifest"]["manifest"].as_str().unwrap().to_string();
+    // Planning moved nothing.
+    assert_eq!(snapshot(&import), before);
+    let applied = call(&mut core, "apply_manifest", json!({"manifest": id}));
+    assert_eq!(applied["failed"], json!([]), "{applied}");
+    assert!(snapshot(&import).is_empty(), "every copy left the import");
+    assert!(
+        quarantine.join("batch/4dct").is_dir(),
+        "kept below the root's path"
+    );
+    let undone = call(&mut core, "undo_journal", json!({"manifest": id}));
+    assert_eq!(undone["skipped"], json!([]), "{undone}");
+    assert_eq!(snapshot(&import), before, "every file back, byte for byte");
+
+    // A manifest is only ever read from the records folder.
+    assert!(
+        fail(&mut core, "apply_manifest", json!({"manifest": "../x"}))
+            .contains("not a manifest id")
+    );
+    // Nothing outside the [pacs] folders is touched.
+    assert!(fail(&mut core, "audit_folder", json!({"path": gen})).contains("outside"));
+
+    let plan = call(
+        &mut core,
+        "set_patient_identity",
+        json!({"paths": [import], "name": "P01-009", "id": "P01-009", "reason": "pseudonymize"}),
+    );
+    let id = plan["manifest"].as_str().unwrap().to_string();
+    assert!(plan["operations"].as_u64().unwrap() > 10, "{plan}");
+    let applied = call(&mut core, "apply_manifest", json!({"manifest": id}));
+    assert_eq!(applied["failed"], json!([]), "{applied}");
+    let any = walkdir::WalkDir::new(&import)
+        .into_iter()
+        .flatten()
+        .find(|e| e.file_type().is_file())
+        .unwrap();
+    let f = rust_dicom_station::curation::raw::RawFile::read(any.path()).unwrap();
+    assert_eq!(
+        f.text(dicom_dictionary_std::tags::PATIENT_ID).as_deref(),
+        Some("P01-009")
+    );
+    // Planning the same again finds nothing to do.
+    let again = call(
+        &mut core,
+        "set_patient_identity",
+        json!({"paths": [import], "name": "P01-009", "id": "P01-009", "reason": "again"}),
+    );
+    assert_eq!(again["operations"], json!(0), "{again}");
+    call(&mut core, "undo_journal", json!({"manifest": id}));
+    assert_eq!(snapshot(&import), before, "the rewrite undone to the byte");
+}
