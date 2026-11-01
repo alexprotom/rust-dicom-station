@@ -10,6 +10,7 @@
 
 pub mod analysis;
 pub mod archive;
+pub mod curation;
 pub mod fourd;
 pub mod output;
 pub mod register;
@@ -215,9 +216,12 @@ registry! {
     // ---- the archive --------------------------------------------------
     "list_archive" => (archive::ListArchiveArgs, archive::list_archive, true,
         "What the station's archive (its PACS) holds: every patient as an alias (never a name \
-         or an ID), their studies by Study Instance UID with the year, the modalities, the \
-         description and the series (modality, number, description, files). patient narrows \
-         the listing to one alias. The catalog is brought up to date first."),
+         or an ID; their code under the pseudonymized policy), their studies by Study Instance \
+         UID with the year, the modalities, the description and the series (modality, number, \
+         description, files). summary gives counts per cohort only (start there for a large \
+         archive); cohort and patient narrow the listing; offset and limit page through it \
+         (25 patients a page, next_offset says where the next starts). The catalog is brought \
+         up to date first."),
     "describe_archive_study" => (archive::ArchiveStudyArgs, archive::describe_archive_study, true,
         "One study of the archive series by series, from the headers alone (no pixels, no \
          identifiers): what each series becomes when loaded (image volume, planar image, \
@@ -229,6 +233,57 @@ registry! {
          open_dataset: refused under the default policy when its headers still name the \
          patient, opened with the values redacted in memory under redact. Returns the dataset \
          handle and its contents, as open_dataset does."),
+    // ---- curating the archive ([pacs] in mcp.toml) ---------------------
+    "audit_folder" => (curation::AuditArgs, curation::audit_folder, true,
+        "Check a folder under the [pacs] roots from the headers and element lengths alone (no \
+         pixel decoded), findings grouped by study with a severity (broken, dangling-reference, \
+         warning): files that do not parse or parse with a problem (a length past its \
+         container, a transfer syntax that does not match the bytes), pixel data shorter than \
+         the header asks for, slice gaps, doubled positions, mixed matrices or frames of \
+         reference in a series, missing instance numbers, RTSTRUCTs with fewer \
+         StructureSetROI than ROIContour items or their frame of reference in (0008,1155), \
+         structure sets and registrations referencing series, images or frames that are \
+         neither in the folder nor in the archive, contour planes on no slice, structured \
+         reports whose Modality is DX. Read-only."),
+    "find_duplicates" => (curation::DuplicatesArgs, curation::find_duplicates, true,
+        "Which files of a source folder (an import) a [pacs] folder holds already, per source \
+         series: identical (same SOP Instance UID and the same raw elements but for \
+         ignore_tags, default PatientName and PatientID), pixel-twin (new UIDs, but the same \
+         SHA-256 of the pixel data at the same ImagePositionPatient: a re-anonymized copy), \
+         partial, ambiguous (twins in several archive series: never merge on that), new; with \
+         the archive series each matches, and twins inside the source itself. Secondary \
+         captures and placeholder images are left out of the pixel comparison. Pixel hashes \
+         are kept in the records folder, so only new or changed files are read again. \
+         quarantine_copies also plans moving the identical and pixel-twin series to the \
+         quarantine folder (a manifest for apply_manifest). Otherwise read-only."),
+    "check_references" => (curation::AuditArgs, curation::check_references, true,
+        "Before an apply: every reference the objects of a folder make (structure sets, plans, \
+         doses, RT images, registrations, records, segmentations, reports) to series, \
+         instances and frames of reference, checked against the folder and the archive; \
+         lists what does not resolve. Read-only."),
+    "quarantine" => (curation::QuarantineArgs, curation::quarantine, false,
+        "Plan moving files (or the files of some series or studies) under the [pacs] roots to \
+         the quarantine folder, keeping their path below the root (cohort first). Writes only \
+         a manifest into the records folder and returns its id and the first operations; \
+         apply_manifest moves them, undo_journal moves them back."),
+    "set_patient_identity" => (curation::IdentityArgs, curation::set_patient_identity, true,
+        "Plan setting PatientName and PatientID of files under the [pacs] roots (or of some \
+         of their series or studies) to the values given, for the files that differ. The old \
+         values are never returned. Writes only a manifest; apply_manifest rewrites the two \
+         elements of each file in place, every other element left byte for byte as it was, \
+         verified by reading the result back before it replaces the file, a copy of each \
+         file kept for undo_journal."),
+    "apply_manifest" => (curation::ManifestArgs, curation::apply_manifest, true,
+        "Do what a planning tool (quarantine, set_patient_identity, find_duplicates with \
+         quarantine_copies) planned, by its manifest id. Each operation is journaled in the \
+         records folder as it completes; a run that stops (a failure, a cancel) is resumed by \
+         applying again. Every path is checked again: only under the [pacs] roots and \
+         quarantine, below a root's top level, under 260 characters."),
+    "undo_journal" => (curation::ManifestArgs, curation::undo_journal, true,
+        "Take back what apply_manifest did for a manifest, newest first: moves are moved \
+         back, rewritten files restored from the copy kept, each only if nobody changed it \
+         since (its SHA-256 is in the journal). Entries that cannot be undone are skipped \
+         and listed."),
     "open_in_viewer" => (output::OpenViewerArgs, output::open_in_viewer, false,
         "Launch the Rust DICOM Station viewer on one or two folders (an exported one, or a root \
          subfolder), so a person can look at the result."),

@@ -28,6 +28,13 @@ pub enum PhiPolicy {
     /// As `redact` for everything that leaves the process, but exports may
     /// keep the original identifiers when asked.
     Allow,
+    /// Open a dataset whose patient is already a code: every PatientName and
+    /// PatientID matches one of `[pacs] patient_codes`, the birth date is
+    /// empty or `YYYY0101`, and none of the tags a pseudonymization removes
+    /// ([`super::phi::REMOVED`]) holds a value. The codes are not PHI: they
+    /// are returned as they are, in paths too. Anything else is refused, as
+    /// under `refuse`; staff and institution names are redacted as always.
+    Pseudonymized,
 }
 
 impl PhiPolicy {
@@ -36,6 +43,7 @@ impl PhiPolicy {
             PhiPolicy::Refuse => "refuse",
             PhiPolicy::Redact => "redact",
             PhiPolicy::Allow => "allow",
+            PhiPolicy::Pseudonymized => "pseudonymized",
         }
     }
 }
@@ -77,6 +85,116 @@ pub struct Config {
     /// own PACS, as the viewer's settings name it; otherwise its storage
     /// folders joined by `|`.
     pub archive: String,
+    /// The `[pacs]` table: what the curation tools may touch.
+    pub pacs: PacsConfig,
+}
+
+/// `[pacs]`: the folders the curation tools (`audit_folder`,
+/// `find_duplicates`, `quarantine`, `set_patient_identity`, ...) work in,
+/// and the patient codes of the `pseudonymized` policy. Reading is allowed
+/// under `roots`, `quarantine` and `records`; writing only under `roots` and
+/// `quarantine` (moves, verified rewrites) and into `records` (manifests,
+/// journals, the pixel index). Nothing is ever written into a storage
+/// folder's top level, where the catalog would file it as "other".
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PacsConfig {
+    /// The archive (or archives) being curated.
+    pub roots: Vec<PathBuf>,
+    /// Where `quarantine` moves duplicates, by cohort and original path.
+    pub quarantine: Option<PathBuf>,
+    /// Manifests, journals and the pixel index.
+    pub records: Option<PathBuf>,
+    /// Regular expressions a pseudonymized PatientName / PatientID matches
+    /// whole, `^P01-\d{3}$` say. Empty: no dataset is pseudonymized.
+    pub patient_codes: Vec<String>,
+}
+
+impl PacsConfig {
+    /// The patterns, compiled; [`Config::check`] has made sure they compile.
+    pub fn codes(&self) -> Codes {
+        Codes(
+            self.patient_codes
+                .iter()
+                .filter_map(|p| regex::Regex::new(p).ok())
+                .collect(),
+        )
+    }
+
+    /// The records folder, or the reason there is none.
+    pub fn records(&self) -> Result<&Path> {
+        self.records
+            .as_deref()
+            .context("no [pacs] records folder is configured in mcp.toml; nothing can be written")
+    }
+
+    /// The quarantine folder, or the reason there is none.
+    pub fn quarantine(&self) -> Result<&Path> {
+        self.quarantine
+            .as_deref()
+            .context("no [pacs] quarantine folder is configured in mcp.toml")
+    }
+
+    /// Every folder with its label: `pacs1`, `pacs2`, ..., `quarantine`,
+    /// `records` - what paths under them are reported as.
+    pub fn folders(&self) -> Vec<(PathBuf, String)> {
+        let mut out: Vec<(PathBuf, String)> = self
+            .roots
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.clone(), format!("pacs{}", i + 1)))
+            .collect();
+        if let Some(q) = &self.quarantine {
+            out.push((q.clone(), "quarantine".into()));
+        }
+        if let Some(r) = &self.records {
+            out.push((r.clone(), "records".into()));
+        }
+        out
+    }
+
+    /// Resolve a path a curation tool was given: canonicalized, then under
+    /// one of [`PacsConfig::folders`]. Returns the path and its label.
+    pub fn resolve(&self, given: &Path) -> Result<(PathBuf, String)> {
+        let folders = self.folders();
+        if folders.is_empty() {
+            bail!("no [pacs] roots are configured in mcp.toml; the curation tools are off");
+        }
+        let real = given
+            .canonicalize()
+            .with_context(|| format!("'{}' does not exist", given.display()))?;
+        for (root, label) in folders {
+            if let Ok(r) = root.canonicalize() {
+                if real.starts_with(&r) {
+                    return Ok((real, label));
+                }
+            }
+        }
+        bail!(
+            "'{}' is outside the [pacs] roots, quarantine and records folders",
+            given.display()
+        );
+    }
+}
+
+/// The compiled `patient_codes`.
+#[derive(Clone, Debug, Default)]
+pub struct Codes(Vec<regex::Regex>);
+
+impl Codes {
+    /// Whether `value` is a patient code: it matches one pattern whole.
+    pub fn is_code(&self, value: &str) -> bool {
+        let v = value.trim().trim_end_matches('\0').trim();
+        !v.is_empty()
+            && self.0.iter().any(|r| {
+                r.find(v)
+                    .is_some_and(|m| m.start() == 0 && m.end() == v.len())
+            })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl Default for Config {
@@ -95,6 +213,7 @@ impl Default for Config {
             volume_cache_mb: 4096,
             workflows_dir: None,
             archive: String::new(),
+            pacs: PacsConfig::default(),
         }
     }
 }
@@ -130,6 +249,12 @@ impl Config {
             if out.as_os_str().is_empty() {
                 bail!("output_dir must not be empty");
             }
+        }
+        for p in &self.pacs.patient_codes {
+            regex::Regex::new(p).with_context(|| format!("[pacs] patient_codes: {p}"))?;
+        }
+        if self.phi_policy == PhiPolicy::Pseudonymized && self.pacs.patient_codes.is_empty() {
+            bail!("phi_policy = \"pseudonymized\" needs [pacs] patient_codes");
         }
         Ok(())
     }
@@ -183,6 +308,9 @@ impl Config {
                 .filter(|r| !r.as_os_str().is_empty())
                 .map(|r| (r, "archive".to_string())),
         );
+        // The curated archive and its two side folders: what the curation
+        // tools find there can be opened too, through the same gate.
+        out.extend(self.pacs.folders());
         out
     }
 
@@ -248,6 +376,32 @@ allow_model_download = true
         assert_eq!(c.phi_policy, PhiPolicy::Redact);
         assert_eq!(c.device_pref(), DevicePref::Cpu);
         assert_eq!(c.max_open_datasets, 2);
+    }
+
+    #[test]
+    fn the_pacs_section_and_the_pseudonymized_policy_parse() {
+        let c = Config::parse(
+            r#"
+phi_policy = "pseudonymized"
+[pacs]
+roots = ["D:/PACS"]
+quarantine = "D:/PACS-duplicates"
+records = "D:/PACS-records"
+patient_codes = ['^P01-\d{3}$', '^QA-\d+$']
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.phi_policy, PhiPolicy::Pseudonymized);
+        let codes = c.pacs.codes();
+        assert!(codes.is_code("P01-039") && codes.is_code("QA-7") && codes.is_code(" P01-001 "));
+        for not in ["P01-0391", "xP01-039", "P01-39", "", "DOE^JANE"] {
+            assert!(!codes.is_code(not), "{not}");
+        }
+        let labels: Vec<String> = c.pacs.folders().into_iter().map(|(_, l)| l).collect();
+        assert_eq!(labels, vec!["pacs1", "quarantine", "records"]);
+        // The policy needs codes, and a code must compile.
+        assert!(Config::parse("phi_policy = \"pseudonymized\"").is_err());
+        assert!(Config::parse("[pacs]\npatient_codes = ['(']").is_err());
     }
 
     #[test]

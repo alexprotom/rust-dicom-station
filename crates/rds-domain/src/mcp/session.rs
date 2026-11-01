@@ -129,6 +129,9 @@ impl Session {
                 redactor.add_root(&root, "archive");
             }
         }
+        for (folder, label) in config.pacs.folders() {
+            redactor.add_root(&folder, &label);
+        }
         let volumes = Volumes::with_budget_mb(config.volume_cache_mb);
         Session {
             config,
@@ -423,6 +426,9 @@ impl Session {
         // The archive's storage folders all report as `archive`.
         for r in self.config.archive_roots() {
             candidates.push(("archive".to_string(), r));
+        }
+        for (folder, label) in self.config.pacs.folders() {
+            candidates.push((label, folder));
         }
         // The path behind the label, if `text` starts with it.
         let behind = |label: &str, folder: &std::path::Path| -> Option<PathBuf> {

@@ -526,22 +526,51 @@ fn walk_root(root: &Path, r: u32, out: &mut Vec<Seen>) {
 
 /// Put one header's records into `c` (creating the patient, study and
 /// series where new) and the file under its series.
+///
+/// A header just read is the truth about its file, so it wins over what
+/// the records say: a series whose files now name another study moves to
+/// it, a study whose files now name another patient moves to them (a
+/// retagged or merged study no longer stays where it was first seen), and
+/// the patient's name is the one the file carries. A study's date, time
+/// and description are its earliest session's: the smallest StudyDate any
+/// of its files carries (a course study spans weeks, one StudyDate a day),
+/// and a date wins over none. The names given by hand (`label`) are never
+/// touched here.
 pub fn add_file(c: &mut Catalog, h: &Head, file: FileRec) {
     let key = h.patient_key();
-    c.patients.entry(key.clone()).or_insert_with(|| PatientRec {
+    let p = c.patients.entry(key.clone()).or_insert_with(|| PatientRec {
         id: h.patient_id.clone(),
         name: h.patient_name.clone(),
         label: String::new(),
     });
-    c.studies
+    p.id = h.patient_id.clone();
+    if !h.patient_name.is_empty() {
+        p.name = h.patient_name.clone();
+    }
+    let st = c
+        .studies
         .entry(h.study.clone())
         .or_insert_with(|| StudyRec {
-            patient: key,
+            patient: key.clone(),
             date: h.study_date.clone(),
             time: h.study_time.clone(),
             description: h.study_description.clone(),
             label: String::new(),
         });
+    st.patient = key;
+    let earlier = !h.study_date.is_empty()
+        && (st.date.is_empty()
+            || (h.study_date.as_str(), h.study_time.as_str())
+                < (st.date.as_str(), st.time.as_str()));
+    if earlier {
+        st.date = h.study_date.clone();
+        st.time = h.study_time.clone();
+        if !h.study_description.is_empty() {
+            st.description = h.study_description.clone();
+        }
+    } else if st.description.is_empty() {
+        st.description = h.study_description.clone();
+    }
     let s = c
         .series
         .entry(h.series.clone())
@@ -554,6 +583,7 @@ pub fn add_file(c: &mut Catalog, h: &Head, file: FileRec) {
             datetime: String::new(),
             files: Vec::new(),
         });
+    s.study = h.study.clone();
     if !h.series_datetime.is_empty() && (s.datetime.is_empty() || h.series_datetime < s.datetime) {
         s.datetime = h.series_datetime.clone();
     }

@@ -15,6 +15,7 @@ pub mod archive;
 pub mod audit;
 pub mod bodymask;
 pub mod contours;
+pub mod curation;
 pub mod derived;
 pub mod dicom_export;
 pub mod dicomfile;

@@ -6692,7 +6692,7 @@ dependencies = [
 
 [[package]]
 name = "rds-domain"
-version = "0.11.11"
+version = "0.11.12"
 dependencies = [
  "anyhow",
  "axum",
@@ -6714,6 +6714,7 @@ dependencies = [
  "rcgen",
  "rds-core",
  "rds-engines",
+ "regex",
  "rmcp",
  "rustls",
  "schemars",
@@ -7012,7 +7013,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.11.11"
+version = "0.11.12"
 dependencies = [
  "anyhow",
  "burn",
@@ -7030,6 +7031,7 @@ dependencies = [
  "rfd",
  "serde_json",
  "tokio",
+ "walkdir",
  "winresource",
 ]
 

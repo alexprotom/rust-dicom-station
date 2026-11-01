@@ -152,6 +152,13 @@ the person decided: the cohorts, who is in which, the names given.
   acquisition's, else the content's, the earliest of its files). Catalog
   version 2 added it; a catalog of version 1 has every header read again,
   once, by the next scan, and keeps its names, cohorts and memberships.
+* A file read again (it changed) says where it belongs: a series whose files
+  now name another study moves to it, a study whose files now name another
+  patient moves to them, and a study left with no series goes - so a study
+  merged or pseudonymized in place is where its files say after one scan.
+  A study's date, time and description are its earliest session's (the
+  smallest StudyDate of its files: a course study spans weeks); the names
+  given by hand stay.
 * The DICOM files are the truth: delete the catalog and the next scan builds
   it again, from the files alone. Only the names, the cohorts and who is in
   which are lost then, being the catalog's alone.

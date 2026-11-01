@@ -9,10 +9,12 @@
 //! folder named after the patient - is scrubbed by [`Redactor`] before it
 //! becomes part of a frame.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use dicom_core::Tag;
+use dicom_dictionary_std::tags;
 use rayon::prelude::*;
 use serde_json::Value;
 
@@ -35,6 +37,8 @@ pub struct PhiVerdict {
     /// The values themselves. Never leave this struct except into a
     /// [`Redactor`]; nothing else needs them.
     values: Vec<String>,
+    /// The same, by tag name, for the `pseudonymized` test.
+    by_tag: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl PhiVerdict {
@@ -96,13 +100,52 @@ pub fn sample_files(study: &LoadedStudy, dir: Option<&Path>) -> Vec<PathBuf> {
     out
 }
 
+/// The tags a pseudonymization removes outright (beyond the patient's name
+/// and ID, which it replaces by a code): other names and IDs, birth and
+/// mother's names, contact details, the record locator, the issuer of the
+/// ID, the physicians. Under the `pseudonymized` policy any of them with a
+/// value refuses the dataset; under the others they are identifying like
+/// the anonymizer's own list. Staff who work the machines (OperatorsName)
+/// are kept, as the archive keeps them, and redacted on the way out.
+#[allow(deprecated)] // retired tags (OtherPatientIDs, MedicalRecordLocator) still occur
+pub const REMOVED: &[(Tag, &str)] = &[
+    (tags::OTHER_PATIENT_NAMES, "OtherPatientNames"),
+    (tags::OTHER_PATIENT_I_DS, "OtherPatientIDs"),
+    (tags::OTHER_PATIENT_I_DS_SEQUENCE, "OtherPatientIDsSequence"),
+    (tags::PATIENT_BIRTH_NAME, "PatientBirthName"),
+    (tags::PATIENT_MOTHER_BIRTH_NAME, "PatientMotherBirthName"),
+    (tags::PATIENT_ADDRESS, "PatientAddress"),
+    (tags::PATIENT_TELEPHONE_NUMBERS, "PatientTelephoneNumbers"),
+    (tags::MEDICAL_RECORD_LOCATOR, "MedicalRecordLocator"),
+    (tags::ISSUER_OF_PATIENT_ID, "IssuerOfPatientID"),
+    (tags::REFERRING_PHYSICIAN_NAME, "ReferringPhysicianName"),
+    (tags::PERFORMING_PHYSICIAN_NAME, "PerformingPhysicianName"),
+    (tags::PHYSICIANS_OF_RECORD, "PhysiciansOfRecord"),
+    (tags::PATIENT_COMMENTS, "PatientComments"),
+];
+
+/// The value of `tag` as text, or `"(sequence)"` for a sequence that holds
+/// an item (its contents are identifying by where they sit).
+fn value_of(obj: &dicom_object::InMemDicomObject, tag: Tag) -> Option<String> {
+    let e = obj.element_opt(tag).ok().flatten()?;
+    if let Some(items) = e.items() {
+        return (!items.is_empty()).then(|| "(sequence)".to_string());
+    }
+    loader::str_of(obj, tag)
+}
+
 /// Read the identity tags of `files` and say what they hold.
 ///
 /// A file that is not DICOM contributes nothing (a folder often holds a
-/// readme). The tag list is the anonymizer's own, so the two never
-/// disagree about what "identifying" means.
+/// readme). The tag list is the anonymizer's own plus [`REMOVED`], so the
+/// gate and the anonymizer never disagree about what "identifying" means.
 pub fn classify(files: &[PathBuf]) -> Result<PhiVerdict> {
-    let tags = anonymize::identity_tags();
+    let mut tags = anonymize::identity_tags();
+    for (tag, name) in REMOVED {
+        if !tags.iter().any(|(t, _)| t == tag) {
+            tags.push((*tag, name));
+        }
+    }
     let per_file: Vec<Vec<(usize, String)>> = files
         .par_iter()
         .map(|path| {
@@ -111,7 +154,7 @@ pub fn classify(files: &[PathBuf]) -> Result<PhiVerdict> {
             };
             let mut found = Vec::new();
             for (i, (tag, _)) in tags.iter().enumerate() {
-                if let Some(v) = loader::str_of(&obj, *tag) {
+                if let Some(v) = value_of(&obj, *tag) {
                     let v = v.trim().trim_end_matches('\0').trim().to_string();
                     if !anonymize::looks_anonymized(&v) {
                         found.push((i, v));
@@ -121,24 +164,73 @@ pub fn classify(files: &[PathBuf]) -> Result<PhiVerdict> {
             found
         })
         .collect();
-    let mut hit = vec![false; tags.len()];
-    let mut values: BTreeSet<String> = BTreeSet::new();
+    let mut by_tag: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for f in per_file {
         for (i, v) in f {
-            hit[i] = true;
-            values.insert(v);
+            by_tag.entry(tags[i].1.to_string()).or_default().insert(v);
         }
     }
+    // In the anonymizer's order, the extra tags after its own.
+    let names: Vec<String> = tags
+        .iter()
+        .map(|(_, n)| n.to_string())
+        .filter(|n| by_tag.contains_key(n))
+        .collect();
+    let mut values: BTreeSet<String> = BTreeSet::new();
+    for vs in by_tag.values() {
+        values.extend(vs.iter().filter(|v| *v != "(sequence)").cloned());
+    }
     Ok(PhiVerdict {
-        tags: tags
-            .iter()
-            .zip(&hit)
-            .filter(|(_, &h)| h)
-            .map(|((_, name), _)| (*name).to_string())
-            .collect(),
+        tags: names,
         files_checked: files.len(),
         values: values.into_iter().collect(),
+        by_tag,
     })
+}
+
+/// A birth date a pseudonymization keeps: none, or the year alone
+/// (`YYYY0101`).
+fn year_only(date: &str) -> bool {
+    let d = date.trim();
+    d.is_empty() || (d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()) && d.ends_with("0101"))
+}
+
+impl PhiVerdict {
+    /// The `pseudonymized` policy's test ([`super::config::PhiPolicy`]):
+    /// `Ok` with the values that still go to the redactor (staff,
+    /// institution: never the codes) when the patient is a code, the reason
+    /// otherwise - which tags, never their values.
+    pub fn pseudonymized(&self, codes: &super::config::Codes) -> Result<Vec<String>, String> {
+        let mut wrong: Vec<&str> = Vec::new();
+        for (name, vs) in &self.by_tag {
+            let ok = match name.as_str() {
+                "PatientName" | "PatientID" => vs.iter().all(|v| codes.is_code(v)),
+                "PatientBirthDate" => vs.iter().all(|v| year_only(v)),
+                n if REMOVED.iter().any(|(_, r)| *r == n) || n == "PatientBirthTime" => false,
+                // Staff, institution, accession number: kept in the files,
+                // redacted on the way out.
+                _ => true,
+            };
+            if !ok {
+                wrong.push(name);
+            }
+        }
+        if !wrong.is_empty() {
+            return Err(format!(
+                "is not pseudonymized: {} {} a value no patient code or year-only date explains",
+                wrong.join(", "),
+                if wrong.len() == 1 { "holds" } else { "hold" }
+            ));
+        }
+        Ok(self
+            .by_tag
+            .iter()
+            .filter(|(n, _)| {
+                !matches!(n.as_str(), "PatientName" | "PatientID" | "PatientBirthDate")
+            })
+            .flat_map(|(_, vs)| vs.iter().filter(|v| *v != "(sequence)").cloned())
+            .collect())
+    }
 }
 
 /// A string that has been through the redactor. The only constructor is

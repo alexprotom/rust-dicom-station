@@ -12,11 +12,11 @@ pub mod icon;
 // alone. Every module keeps the path it had here, `crate::loader` in the
 // viewer and `rust_dicom_station::medsam2` outside alike.
 pub use rds_domain::{
-    anonymize, archive, audit, bodymask, contours, derived, dicom_export, dicomfile, dicomseg, drr,
-    dvh, export, extras, fourd, gen_test_data, generate, gfx, iec, imginfo, livewire, loader,
-    mesh3d, models, morphology, motion, pacs, par, portal, projection, propagate, registration,
-    render, report, rooms, rt_surface, rtdose, rtplan, rtstruct, sct, segmentation, sessions,
-    settings, setup, simulate, sop, structops, templates, testdata, workflow,
+    anonymize, archive, audit, bodymask, contours, curation, derived, dicom_export, dicomfile,
+    dicomseg, drr, dvh, export, extras, fourd, gen_test_data, generate, gfx, iec, imginfo,
+    livewire, loader, mesh3d, models, morphology, motion, pacs, par, portal, projection, propagate,
+    registration, render, report, rooms, rt_surface, rtdose, rtplan, rtstruct, sct, segmentation,
+    sessions, settings, setup, simulate, sop, structops, templates, testdata, workflow,
 };
 pub use rds_domain::{
     autoseg, medsam2, nn, nninteractive, segresnet, segvol, synth, unet2d, vista3d, zoo,

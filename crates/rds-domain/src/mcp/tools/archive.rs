@@ -17,6 +17,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use super::super::config::PhiPolicy;
 use super::super::phi::clean_text;
 use super::super::Core;
 use super::session;
@@ -41,6 +42,26 @@ fn archive_of(core: &Core) -> Archive {
 /// the catalog files them by, the same in every call.
 fn alias_of(p: &PatientEntry) -> String {
     anonymize::patient_alias(&[p.key()])
+}
+
+/// What a patient is listed as: their code, under the `pseudonymized`
+/// policy, when the key the catalog files them by is one (a code is no
+/// PHI, and the curation tools speak of `P01-039`, not of a hash); the
+/// alias otherwise.
+fn listed_as(core: &Core, p: &PatientEntry) -> String {
+    let key = p.key();
+    if is_code(core, &key) {
+        key
+    } else {
+        alias_of(p)
+    }
+}
+
+/// Whether `value` is a patient code the `pseudonymized` policy lets
+/// through as it is.
+fn is_code(core: &Core, value: &str) -> bool {
+    core.session.config.phi_policy == PhiPolicy::Pseudonymized
+        && core.session.config.pacs.codes().is_code(value)
 }
 
 /// Everything about the patients the catalog holds that could name one,
@@ -75,17 +96,24 @@ fn hide_identities(core: &Core, patients: &[PatientEntry]) {
     }
     values.sort();
     values.dedup();
+    // A code stays readable under the `pseudonymized` policy; the parts of
+    // a name are hidden whatever the policy.
+    values.retain(|v| !is_code(core, v));
     core.session.add_values(values);
 }
 
-/// The patients of the archive, catalog brought up to date, with their
-/// identities already hidden.
-fn patients_of(core: &Core, ar: &Archive, p: &Progress) -> Result<Vec<PatientEntry>> {
+/// The archive's tree, catalog brought up to date, with every patient's
+/// identity already hidden.
+fn tree_of(core: &Core, ar: &Archive, p: &Progress) -> Result<archive::Tree> {
     p.set("Reading the archive's catalog");
     let tree = ar.scan_tree(p)?;
-    let patients = tree.patients();
-    hide_identities(core, &patients);
-    Ok(patients)
+    hide_identities(core, &tree.patients());
+    Ok(tree)
+}
+
+/// The patients of the archive, as [`tree_of`] reads them.
+fn patients_of(core: &Core, ar: &Archive, p: &Progress) -> Result<Vec<PatientEntry>> {
+    Ok(tree_of(core, ar, p)?.patients())
 }
 
 /// `20240517` as `2024`; anything else as nothing. The year is all a
@@ -114,43 +142,125 @@ fn study_json(s: &StudyEntry) -> Value {
     v
 }
 
+/// Patients a listing returns when the call names no `limit`: enough to
+/// page through, few enough that one page stays well under what a tool
+/// result may carry (the whole of a large archive was close to a million
+/// characters).
+pub const LIST_LIMIT: usize = 25;
+
 #[derive(Deserialize, JsonSchema, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct ListArchiveArgs {
-    /// A patient alias from an earlier listing (`anon_...`): only their
-    /// studies. Empty: every patient.
+    /// A patient as an earlier listing named them (an alias, or their
+    /// code under the pseudonymized policy): only their studies. Empty:
+    /// every patient.
     pub patient: Option<String>,
+    /// Only the patients of this cohort (its name, as the summary lists
+    /// it).
+    pub cohort: Option<String>,
+    /// Counts only: per cohort the patients, studies, series and files, and
+    /// the modalities. Small whatever the archive's size.
+    pub summary: bool,
+    /// Skip this many patients (paging; the answer says the next offset).
+    pub offset: usize,
+    /// At most this many patients; default 25.
+    pub limit: Option<usize>,
 }
 
 pub fn list_archive(core: &mut Core, a: ListArchiveArgs, p: &Progress) -> Result<Value> {
     let ar = archive_of(core);
-    let patients = patients_of(core, &ar, p)?;
+    let tree = tree_of(core, &ar, p)?;
+    let cohort = a.cohort.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let cohorts: Vec<&archive::CohortEntry> = tree
+        .cohorts
+        .iter()
+        .filter(|c| cohort.is_none_or(|w| c.name.trim().eq_ignore_ascii_case(w)))
+        .collect();
+    if let Some(w) = cohort {
+        if cohorts.is_empty() {
+            bail!("the archive has no cohort '{}'", clean_text(w));
+        }
+    }
+    if a.summary {
+        let per: Vec<Value> = cohorts
+            .iter()
+            .map(|c| {
+                let studies: usize = c.patients.iter().map(|p| p.studies.len()).sum();
+                let series: usize = c
+                    .patients
+                    .iter()
+                    .flat_map(|p| &p.studies)
+                    .map(|s| s.series.len())
+                    .sum();
+                let mut modalities: BTreeMap<String, usize> = BTreeMap::new();
+                for s in c
+                    .patients
+                    .iter()
+                    .flat_map(|p| &p.studies)
+                    .flat_map(|s| &s.series)
+                {
+                    *modalities.entry(s.modality.clone()).or_default() += 1;
+                }
+                json!({
+                    "cohort": clean_text(&c.name),
+                    "patients": c.patients.len(),
+                    "studies": studies,
+                    "series": series,
+                    "files": c.files(),
+                    "series_by_modality": modalities,
+                })
+            })
+            .collect();
+        return Ok(json!({ "archive": "archive", "cohorts": per }));
+    }
+    // Every patient once, in name order, as `Tree::patients` does, within
+    // the cohorts asked for.
+    let mut seen = std::collections::HashSet::new();
+    let mut patients: Vec<&PatientEntry> = cohorts
+        .iter()
+        .flat_map(|c| c.patients.iter())
+        .filter(|p| seen.insert(p.key.clone()))
+        .collect();
+    patients.sort_by_key(|p| p.title().to_lowercase());
     let want = a
         .patient
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let listed: Vec<Value> = patients
+    let matching: Vec<&PatientEntry> = patients
+        .into_iter()
+        .filter(|pt| want.is_none_or(|w| alias_of(pt) == w || listed_as(core, pt) == w))
+        .collect();
+    if let Some(w) = want {
+        if matching.is_empty() {
+            bail!("no patient of the archive is listed as '{}'", clean_text(w));
+        }
+    }
+    let total = matching.len();
+    let limit = a.limit.unwrap_or(LIST_LIMIT).max(1);
+    let page: Vec<Value> = matching
         .iter()
-        .filter(|pt| want.is_none_or(|w| alias_of(pt) == w))
+        .skip(a.offset)
+        .take(limit)
         .map(|pt| {
             json!({
-                "patient": alias_of(pt),
+                "patient": listed_as(core, pt),
                 "studies": pt.studies.iter().map(study_json).collect::<Vec<_>>(),
             })
         })
         .collect();
-    if let Some(w) = want {
-        if listed.is_empty() {
-            bail!("no patient of the archive is listed as '{}'", clean_text(w));
-        }
-    }
-    Ok(json!({
+    let mut out = json!({
         "archive": "archive",
-        "patients": listed.len(),
-        "studies": listed.iter().map(|p| p["studies"].as_array().map_or(0, Vec::len)).sum::<usize>(),
-        "listing": listed,
-    }))
+        "patients": total,
+        "offset": a.offset,
+        "listed": page.len(),
+        "studies": page.iter().map(|p| p["studies"].as_array().map_or(0, Vec::len)).sum::<usize>(),
+        "listing": page,
+    });
+    if a.offset + limit < total {
+        out["next_offset"] = json!(a.offset + limit);
+    }
+    Ok(out)
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -301,7 +411,7 @@ pub fn describe_archive_study(core: &mut Core, a: ArchiveStudyArgs, p: &Progress
         })
         .collect();
     let mut out = study_json(&st);
-    out["patient"] = json!(alias_of(&pt));
+    out["patient"] = json!(listed_as(core, &pt));
     out["series"] = json!(series);
     Ok(out)
 }

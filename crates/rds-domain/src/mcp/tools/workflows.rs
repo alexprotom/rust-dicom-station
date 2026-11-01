@@ -180,8 +180,13 @@ fn gate(core: &Core, dir: &Path, title: &str, p: &Progress) -> Result<()> {
     let study = loader::load_directory_to_merge(dir, p)?;
     let sample = phi::sample_files(&study, Some(dir));
     let verdict = phi::classify(&sample)?;
-    core.session.add_values(verdict.values().to_vec());
-    if !verdict.is_anonymized() && core.session.config.phi_policy != PhiPolicy::Allow {
+    super::session::pass_gate(core, &verdict, &format!("the input '{title}'"))?;
+    if !verdict.is_anonymized()
+        && !matches!(
+            core.session.config.phi_policy,
+            PhiPolicy::Allow | PhiPolicy::Pseudonymized
+        )
+    {
         bail!(
             "the input '{title}' {}. A workflow reads its folders as they are, so under the \
              '{}' policy they must be anonymized first (the anonymize tool)",

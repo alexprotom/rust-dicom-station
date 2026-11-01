@@ -602,6 +602,16 @@ src/
                     RTSTRUCT / SEG choice, and the runner that keeps the
                     references between the written objects resolvable          DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
+  curation/         curating an archive: raw.rs (DICOM files as bytes - elements
+                    by position, pixel bytes, rewrites that copy every untouched
+                    element verbatim and fix the lengths around a changed one,
+                    verified by reading the result back), facts.rs (what one
+                    file is and references, pixel hash included), audit.rs
+                    (parse, pixel length, series geometry, RTSTRUCT and REG
+                    references), dupes.rs (exact copies by SOP UID and raw
+                    elements, pixel twins by SHA-256 + position, the pixel
+                    index), journal.rs (manifests, journaled resumable apply,
+                    undo from kept copies)                                       DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
   testdata.rs       the bundled real patient (data-test/) fetched from GitHub:
                     git trees listing, raw downloads, resumable                  Sim
@@ -729,14 +739,19 @@ src/
 
   mcp/              the MCP server behind rds-mcp (cargo feature `mcp`)         MCP
     config.rs         the operator's mcp.toml: roots, output folder, PHI policy
+                      (refuse, redact, allow, pseudonymized), the [pacs] folders
+                      and patient codes of the curation tools
     phi.rs            the gate (which workspaces still name their patient) and
                       the redactor every outgoing string passes
     session.rs        open workspaces, transforms, reports, and their handles
     tools/            the tools as plain functions with schema-deriving
                       argument structs: session, segment, register, setup
                       (2D/3D), fourd, analysis, output, archive (the
-                      station's PACS listed under aliases, a study described
-                      from its headers, opened through the gate)
+                      station's PACS listed under aliases or codes, paged or
+                      summarised, a study described from its headers, opened
+                      through the gate), curation (audit, duplicates,
+                      references, quarantine, patient identity, apply / undo
+                      of manifests, within the [pacs] folders)
     prompts.rs        the heart_target_propagation prompt, the doc resources
     audit             the call log (the shared crate::audit)
     server.rs         the rmcp glue: transport, progress, cancellation, _async jobs
