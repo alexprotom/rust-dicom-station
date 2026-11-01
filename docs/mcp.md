@@ -100,6 +100,30 @@ sequence.
    as `pacs1/...`, `quarantine/...`, `records/...`. `patient_codes` are
    regular expressions a pseudonymized PatientName and PatientID match
    whole, for the `pseudonymized` policy.
+   `records/pacs-rules.toml` (optional; the defaults otherwise) holds the
+   naming rules `plan_reorganize` sorts by, and the patient-folder rules
+   every curation tool maps folder names to patient codes with:
+
+   ```toml
+   version = 1
+   upright_scanners = ["Brilliance Big Bore", "RayStation", "P-Cure"]
+   position_keyword = true                # Upright/Supine in study folder names
+   max_note = 48                          # longest note in a folder name
+   [[patient_folders]]                    # folder name -> code, first match wins
+   pattern = 'patient(\d{3})'
+   code = 'P01-$1'
+   [[patient_folders]]
+   pattern = '(\d{2}-\d{3})(_.*)?'        # 01-031_case1_t -> P01-031
+   code = 'P$1'
+   [study_notes]                          # Study Instance UID -> note
+   [series_notes]                         # Series UID, or a folder's name -> note
+   "plan_1_arc_lung_med" = "plan-1-arc-lung-med"
+   [cohorts.Trial]
+   keep_patient_tags = false              # PatientName/ID become the code
+   position_keyword = true
+   [cohorts.Trial.patient_code_map]       # before the patterns
+   "special" = "P01-099"
+   ```
 
 3. Tell the client about it. *Settings ▶ MCP server ▶ Copy client
    configuration* puts the entry on the clipboard; for Claude Desktop it goes
@@ -144,11 +168,16 @@ segmentation series added when a name repeats. Series are numbered as
 | `motion_report` | An earlier run's report again, as JSON and CSV |
 | `export`, `export_registration` | DICOM into the output folder: SEG or RTSTRUCT, doses, plans, images; a Deformable Spatial Registration object |
 | `import_to_archive`, `open_in_viewer` | File an exported folder into the local archive; launch the viewer on it |
-| `list_archive`, `describe_archive_study`, `open_archive_study` | The station's PACS: every patient as an alias (`anon_...`, never a name or an ID; under `pseudonymized` a patient filed under a code is listed by it) with their studies by Study Instance UID, the year, the modalities, the description and the series - `summary` for counts per cohort only, `cohort` and `patient` to narrow it, `offset` and `limit` to page through it (25 patients a page by default, `next_offset` saying where the next starts), so a listing stays small however large the archive; one study series by series from the headers alone, with what each series becomes when loaded (image volume, planar image, additional object, structure set, ...), its SOP class, image type, pixels, frames and whether its files carry a position, which is how to see why a scanner's protocol page is no radiograph without opening it; and a study opened as a workspace through the same identity gate as `open_dataset` |
+| `list_archive`, `describe_archive_study`, `open_archive_study` | The station's PACS: every patient as an alias (`anon_...`, never a name or an ID; under `pseudonymized` a patient filed under a code is listed by it) with their studies by Study Instance UID, the year, the modalities, the description and the series - `summary` for counts per cohort only, `cohort` and `patient` to narrow it, `offset` and `limit` to page through it (25 patients a page by default, `next_offset` saying where the next starts), so a listing stays small however large the archive; one study series by series from the headers alone, with what each series becomes when loaded (image volume, planar image, additional object, structure set, ...), its SOP class, image type, pixels, frames and whether its files carry a position, which is how to see why a scanner's protocol page is no radiograph without opening it; and a study opened as a workspace through the same identity gate as `open_dataset`. Built for course studies of tens of thousands of files: the description reads one header per series and lists the sessions by day, the opening can take only some series (`series`); a listing also counts each patient's attachments (files in their folder that are not DICOM) |
 | `anonymize` | An anonymized copy of a folder, written under the output folder |
 | `audit_folder`, `check_references` | Curation, read-only, on a folder under the `[pacs]` folders: files that do not parse or parse with a problem, pixel data shorter than its header asks for, slice gaps and doubles, mixed matrices or frames of reference in a series, missing instance numbers, structure sets with fewer StructureSetROI than ROIContour items or their frame of reference in (0008,1155), references to series, instances and frames that are in neither the folder nor the archive, contour planes on no slice, structured reports filed as `DX` - grouped by study, each `broken`, `dangling-reference` or `warning`; `check_references` lists only what does not resolve, for every kind of object |
-| `find_duplicates` | Which series of an import a `[pacs]` folder holds already: `identical` (same SOP Instance UID, the same raw elements but for `ignore_tags`), `pixel-twin` (new UIDs, the same SHA-256 of the pixel data at the same position: a re-anonymized copy), `partial`, `ambiguous`, `new`, with the archive series each matches and the twins inside the import itself; the hashes are kept in `records`, so a later run reads only what changed. `quarantine_copies` plans moving the copies away |
-| `quarantine`, `set_patient_identity`, `apply_manifest`, `undo_journal` | Curation that writes, always in two steps. `quarantine` (files, or the files of some series or studies, moved to `quarantine/<path below the root>`) and `set_patient_identity` (PatientName and PatientID set, the old values never returned) only plan: they save a manifest in `records` and return its id. `apply_manifest` does it, journaling each operation (a run cut short resumes where it stopped); a rewrite changes those two elements and leaves every other byte of the file as it was, is read back and compared element by element before it replaces the file, and keeps a copy for `undo_journal`, which takes everything back, newest first, each file only if nobody changed it since |
+| `find_duplicates` | Which series of an import a `[pacs]` folder holds already: `identical` (same SOP Instance UID, the same raw elements but for `ignore_tags`), `pixel-twin` (new UIDs, the same SHA-256 of the pixel data at the same position, within one patient folder: a re-anonymized copy), `partial`, `ambiguous`, `new`, with the archive series each matches. Inside the import: repeated SOP Instance UIDs (byte-identical, or versions of which the largest is kept) and series that re-export another (the one kept by `prefer`: a full export over a case copy over a plan folder). It saves the UID map the copies give (for `remap_references`), reports splits (a source study or frame of reference with copies in two archive ones), and keeps the hashes in `records`, so a later run reads only what changed. `quarantine_copies` plans moving the copies away |
+| `dedupe_rt_objects` | The RT objects of an import (structure sets, plans, doses, RT images, registrations, records, reports) that the archive holds under other UIDs: by a content fingerprint whose referenced UIDs go through the twins' map first (structure sets, then plans, then the rest, each match extending the map, so contours copied onto two 4D phases stay two), else by content without UIDs told apart by the creation stamp, a unique stamp, or a plan's beams and spots or a structure set's contours; copies inside the import keep the largest. Saves the extended map |
+| `relink_structure_set`, `remap_references`, `merge_studies`, `merge_frames` | Curation that rewrites references, through three typed UID maps - objects, studies, frames of reference - each UID given to one by where it sits, never by its value (a Philips 4D series shares its UID with its frame); an object's own SOP and series UIDs and private elements are never touched. `relink_structure_set` points a structure set at a CT series of the archive (images mapped through pixel twins, or by slice position after checking the series lie the same way, or by contour z where its CT is missing), optionally moving the 4D phases that shared its frame into the target study and frame - only when a series of that frame is a verified twin; `remap_references` applies a map built from twins, saved, or given by hand; `merge_studies` / `merge_frames` merge an earlier split. Each rewrite is run dry first: an old UID left anywhere refuses the plan, and references that would lead nowhere are listed (the relink refuses them) |
+| `phi_report`, `plan_pseudonymize`, `patient_demographics`, `set_patient_demographics` | Identified imports: where each patient's names and IDs occur (tag places and counts, never values); a pseudonymization as the archive keeps its trial data - PatientName and PatientID the patient's code (from `pacs-rules.toml` or given), the birth date `YYYY0101`, the identifying tags of the `pseudonymized` policy removed, dates, UIDs, staff names and (by default) private elements kept, in place or on the way to `move_to` - refused while any token of any of the patient's names or IDs (three characters or more, numbers of nine digits or more, a stop-list aside) is left in any text element of the result, nested and private included; patients whose files disagree on birth date or sex (counts only), and a verified rewrite of the two |
+| `plan_reorganize`, `apply_reorganize` | Sorting an import (or a cohort) into `cohort/patient/study/series/file`: study folders `<date>_<Upright\|Supine>-<note>_StudyUID-<last 12 digits>` (the earliest session's date and description, Upright by the imaging scanner, `Procedure#n` / `CT-Simulation` where there is no description), series folders `Series-<n>_<Modality>_<note>_SeriesUID-<last 12>` (SeriesDescription, the RT label, `Dose-<type>`, ProtocolName, the date and time), files `<CT\|MR\|RS\|RP\|RD\|RI\|RE\|RR\|...>.<SOP UID>.dcm`, one set of character rules (`_` between parts, `-` within, decimal commas as points, umlauts spelled out); a study the archive has is merged into its folder, a byte-identical copy goes to quarantine, PatientName/ID become the patient folder's code unless the cohort keeps them, attachments (non-DICOM files) are reported or moved; paths stay under 260 characters, the notes giving way first |
+| `catalog_relink`, `set_label`, `fill_study_labels` | The station's PACS catalog after a curation: one patient entry per patient folder (labels and cohort memberships carried over), a label for a patient or a study, and labels `<YYYY-MM-DD\|undated> (<Upright\|Supine>: <note>) · <modalities>` for every unlabelled study of a cohort (never over a typed one); each change written the station's way, a copy kept in `records/catalog-backups` first |
+| `quarantine`, `set_patient_identity`, `apply_manifest`, `undo_journal` | Curation that writes, always in two steps. `quarantine` (files, or the files of some series or studies, moved to `quarantine/<path below the root>`) and `set_patient_identity` (PatientName and PatientID set, the old values never returned), like every planning tool above, only plan: they save a manifest in `records` and return its id. `apply_manifest` does it, journaling each operation (a run cut short resumes where it stopped); a rewrite changes the elements it names and leaves every other byte of the file as it was, is read back and compared element by element before it replaces the file - and must come out byte for byte as the dry run computed it (its SHA-256 is in the manifest), so what the dry run checked is what is written - and keeps a copy for `undo_journal`, which takes everything back, newest first, each file only if nobody changed it since |
 | `list_workflows`, `run_workflow` | The saved workflows (and the program's examples) with their steps and inputs, and a run of one: a folder under a root for each input, by its title; the reports come back as tables, the files go into a folder under the output folder, and `open_results` keeps the studies the run read open as workspaces. A *DICOM folders* input runs a batch over its subfolders |
 
 Every call that can take more than a few seconds has an `_async` twin that
@@ -246,7 +275,9 @@ canonicalized like any other and cannot climb out. Output
 goes into a per-session folder under `output_dir`; existing files are never
 overwritten and no tool deletes. The curation tools are the one exception to
 "writes only under the output folder", and only within `[pacs]`: they move
-and rewrite files under its `roots` and `quarantine`, never in a root's top
+and rewrite files under its `roots` and `quarantine` (and move attachments
+into `records/attachments`), rewrite the station's catalog
+(`catalog_relink`, `set_label`, `fill_study_labels`, a copy kept first), never in a root's top
 level (where the catalog would file a stray file as "other"), never to a path
 of 260 characters or more (a warning from 250), and only by applying a
 manifest a planning call saved in `records`, which keeps the journal of each
@@ -290,5 +321,5 @@ tools, the dialogs and the workflow steps read by the same names.
 
 ```
 cargo build --release --features mcp
-cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
+cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi --test curation
 ```

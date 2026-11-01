@@ -28,7 +28,7 @@
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use dicom_core::Tag;
 use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, FileMetaTableBuilder, InMemDicomObject, OpenFileOptions};
@@ -73,9 +73,12 @@ fn open(path: &Path, until: Option<Tag>) -> Result<DefaultDicomObject> {
 
     // The file claims a header and the standard reader still could not use
     // it. Guessing an encoding on top of that would replace a precise
-    // complaint with a vague one, so let its own error stand.
+    // complaint with a vague one - unless the tolerant parser finds what is
+    // wrong (a length past its container, a header naming the wrong VR
+    // encoding) and reads past it; otherwise the reader's own error stands.
     if has_file_header(path) {
-        return Err(anyhow::Error::new(err).context(format!("open {}", path.display())));
+        return open_repaired(path, until)
+            .map_err(|_| anyhow::Error::new(err).context(format!("open {}", path.display())));
     }
     open_bare(path, until)
 }
@@ -299,6 +302,55 @@ fn open_bare(path: &Path, until: Option<Tag>) -> Result<DefaultDicomObject> {
         .with_context(|| format!("build a file meta table for {}", path.display()))
 }
 
+// ---------------------------------------------------------------------------
+// Files the standard reader refuses
+// ---------------------------------------------------------------------------
+
+/// Read a file with a header that the standard reader refused, through the
+/// tolerant parser of [`crate::curation::raw`]: what it says is wrong with
+/// such files is what archives hold - a private element whose length runs
+/// past its container (Philips' (01F1,1026)), a header that says implicit VR
+/// for a data set written in explicit VR. The top-level elements that parse
+/// whole are read, in the encoding their bytes are in; an element with a
+/// broken length anywhere inside it is left out (it is private, or the file
+/// was useless anyway), and so is everything from `until` on.
+fn open_repaired(path: &Path, until: Option<Tag>) -> Result<DefaultDicomObject> {
+    use crate::curation::raw::{Element, RawFile, TS_EXPLICIT, TS_IMPLICIT};
+    let raw = RawFile::read(path)?;
+    if raw.elements.is_empty() || raw.problems.is_empty() {
+        bail!("nothing to repair");
+    }
+    fn whole(e: &Element) -> bool {
+        !e.truncated
+            && e.items
+                .iter()
+                .flatten()
+                .all(|it| it.elements.iter().all(whole))
+    }
+    let explicit = raw.elements[0].explicit;
+    let ts = match (explicit, raw.transfer_syntax.as_str()) {
+        (false, _) => TS_IMPLICIT.to_string(),
+        (true, TS_IMPLICIT) => TS_EXPLICIT.to_string(),
+        (true, other) => other.to_string(),
+    };
+    let mut data = Vec::with_capacity(raw.bytes.len());
+    for e in &raw.elements {
+        if until.is_some_and(|t| e.tag >= t) {
+            break;
+        }
+        if whole(e) && e.explicit == explicit {
+            data.extend_from_slice(&raw.bytes[e.start..e.end]);
+        }
+    }
+    let syntax = TransferSyntaxRegistry
+        .get(&ts)
+        .ok_or_else(|| anyhow!("transfer syntax {ts} is not in the registry"))?;
+    let obj = InMemDicomObject::read_dataset_with_ts(Cursor::new(&data[..]), syntax)
+        .with_context(|| format!("read {} past its broken elements", path.display()))?;
+    obj.with_meta(FileMetaTableBuilder::new().transfer_syntax(ts.as_str()))
+        .with_context(|| format!("build a file meta table for {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,5 +478,91 @@ mod tests {
         std::fs::write(&path, b"hello").expect("write");
         assert!(open_full(&path).is_err());
         assert!(open_header(&path).is_err());
+    }
+
+    /// A Part 10 file: preamble, `DICM`, a meta group naming `ts`, `data`.
+    fn part10(ts: &str, data: &[u8]) -> Vec<u8> {
+        let mut meta = explicit(tags::TRANSFER_SYNTAX_UID, b"UI", ts);
+        meta.extend(explicit(
+            tags::MEDIA_STORAGE_SOP_CLASS_UID,
+            b"UI",
+            "1.2.840.10008.5.1.4.1.1.2",
+        ));
+        let mut out = vec![0u8; 128];
+        out.extend_from_slice(b"DICM");
+        out.extend_from_slice(&[0x02, 0x00, 0x00, 0x00, b'U', b'L', 4, 0]);
+        out.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        out.extend(meta);
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn write(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test_malformed");
+        std::fs::create_dir_all(&dir).expect("create the folder");
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("write");
+        path
+    }
+
+    fn ct_elements() -> Vec<u8> {
+        let mut d = explicit(tags::SOP_CLASS_UID, b"UI", "1.2.840.10008.5.1.4.1.1.2");
+        d.extend(explicit(tags::SOP_INSTANCE_UID, b"UI", "1.2.3.4"));
+        d.extend(explicit(tags::MODALITY, b"CS", "CT"));
+        d.extend(explicit(tags::SERIES_INSTANCE_UID, b"UI", "1.2.3"));
+        d
+    }
+
+    /// Philips' private (01F1,1026) with a length past the end of the file,
+    /// and a header that says implicit VR for an explicit data set: the
+    /// station reads both, as the tolerant parser does.
+    #[test]
+    fn malformed_headers_open_past_what_is_broken() {
+        let mut bad = ct_elements();
+        bad.extend_from_slice(&[0xF1, 0x01, 0x26, 0x10, b'U', b'N', 0, 0]);
+        bad.extend_from_slice(&5000u32.to_le_bytes());
+        bad.extend_from_slice(&[1, 2, 3, 4]);
+        let p = write("bad-private.dcm", &part10("1.2.840.10008.1.2.1", &bad));
+        for obj in [
+            open_header(&p).expect("opens"),
+            open_scan(&p).expect("opens"),
+        ] {
+            assert_eq!(
+                crate::loader::str_of(&obj, tags::MODALITY).as_deref(),
+                Some("CT")
+            );
+        }
+        let p = write(
+            "says-implicit.dcm",
+            &part10("1.2.840.10008.1.2", &ct_elements()),
+        );
+        let obj = open_header(&p).expect("opens");
+        assert_eq!(
+            crate::loader::str_of(&obj, tags::SERIES_INSTANCE_UID).as_deref(),
+            Some("1.2.3")
+        );
+        // A retired group length inside a sequence item reads as it is.
+        let mut item = explicit(Tag(0x0008, 0x0000), b"UL", "");
+        item.truncate(6);
+        item.extend_from_slice(&4u16.to_le_bytes());
+        item.extend_from_slice(&0u32.to_le_bytes());
+        item.extend(explicit(
+            tags::REFERENCED_SOP_INSTANCE_UID,
+            b"UI",
+            "1.2.3.9",
+        ));
+        let mut seq = ct_elements();
+        let mut it = vec![0xFE, 0xFF, 0x00, 0xE0];
+        it.extend_from_slice(&(item.len() as u32).to_le_bytes());
+        it.extend(item);
+        seq.extend_from_slice(&[0x08, 0x00, 0x40, 0x11, b'S', b'Q', 0, 0]);
+        seq.extend_from_slice(&(it.len() as u32).to_le_bytes());
+        seq.extend(it);
+        let p = write(
+            "nested-group-length.dcm",
+            &part10("1.2.840.10008.1.2.1", &seq),
+        );
+        assert!(open_full(&p).is_ok());
     }
 }

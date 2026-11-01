@@ -610,8 +610,19 @@ src/
                     (parse, pixel length, series geometry, RTSTRUCT and REG
                     references), dupes.rs (exact copies by SOP UID and raw
                     elements, pixel twins by SHA-256 + position, the pixel
-                    index), journal.rs (manifests, journaled resumable apply,
-                    undo from kept copies)                                       DICOM
+                    index, the copies inside an import), journal.rs (manifests,
+                    journaled resumable apply checked against the dry run's
+                    SHA-256, undo from kept copies), remap.rs (typed UID maps -
+                    objects, studies, frames - chosen by where a UID sits; dry
+                    runs of rewrites, leftover and reference checks), relink.rs
+                    (a structure set onto an archived CT by pixel twins or z),
+                    objects.rs (RT objects matched by mapped, content, stamp
+                    or core fingerprints), anon.rs (pseudonymizing in place,
+                    the leftover token scan, the PHI report), reorg.rs
+                    (pacs-rules.toml, the naming rules, the sort plan),
+                    catalog_fix.rs (one patient entry per folder, study
+                    labels)                                                      DICOM
+  pathlen.rs        the 259-character limit every written path is held to       DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
   testdata.rs       the bundled real patient (data-test/) fetched from GitHub:
                     git trees listing, raw downloads, resumable                  Sim
@@ -749,8 +760,10 @@ src/
                       (2D/3D), fourd, analysis, output, archive (the
                       station's PACS listed under aliases or codes, paged or
                       summarised, a study described from its headers, opened
-                      through the gate), curation (audit, duplicates,
-                      references, quarantine, patient identity, apply / undo
+                      through the gate), curation/ (audit, duplicates,
+                      references, quarantine, patient identity, relink and
+                      remap, RT dedupe, merges, PHI report and pseudonymize,
+                      demographics, reorganize, catalog labels, apply / undo
                       of manifests, within the [pacs] folders)
     prompts.rs        the heart_target_propagation prompt, the doc resources
     audit             the call log (the shared crate::audit)
@@ -1319,14 +1332,19 @@ own sam2 package, is gone with it, and the port's fidelity claim rests on
 the per-operation fixtures, the synthesized-checkpoint forward passes and
 the runs against the real weights, which are `#[ignore]`d.
 
-Three suites need the `mcp` feature: **workflow** runs the 4D pipeline
+Four suites need the `mcp` feature: **workflow** runs the 4D pipeline
 headless on a three-phase phantom whose target moves 0 / 6 / 3 mm and checks
 the recovered motion; **mcp_tools** runs the heart sequence through the
 server's core (register, propagate, propagate onto a group, motion, DVH,
 export, re-open) and saved workflows through `list_workflows` /
 `run_workflow`, a batch included; **mcp_phi** gives the phantom a patient's name and asserts
 that no tool, no error path and no protocol frame of the real executable ever
-carries it.
+carries it; **curation** takes an archived study and a re-anonymized,
+identified copy of it (a made-up identity) through every curation tool - pixel
+twins and RT copies, a relinked structure set, a remap, the PHI scan and its
+refusal, a pseudonymization, a sort into the archive's names, a merge, the
+catalog's labels - each write applied and undone back to the byte, and no
+answer ever carrying the identity.
 
 Two suites need the `pacs-server` feature and start real servers on loopback
 ports (TLS, a state folder and an archive of their own under `target/`):
@@ -1341,6 +1359,6 @@ server dropped) and a task run end to end.
 
 ```
 cargo test --release
-cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
+cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi --test curation
 cargo test --features pacs-server --test pacs_server --test pacs_mirror
 ```

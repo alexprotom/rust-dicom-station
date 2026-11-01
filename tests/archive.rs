@@ -873,3 +873,62 @@ fn a_rescan_follows_files_rewritten_in_place_and_dates_a_study_by_its_earliest_f
     assert_eq!(st.date, "20251201", "the earliest session's date");
     assert_eq!(st.description, "Procedure #1");
 }
+
+/// A registration between frames of reference no loaded series has (a
+/// setup system's room frames) loads all the same, and the load says so
+/// once; a file with a private element whose length runs past the end of
+/// the file loads past it.
+#[test]
+fn a_registration_to_unknown_frames_and_a_broken_private_element_still_load() {
+    use dicom_dictionary_std::tags;
+    use rust_dicom_station::curation::raw::{encode_text, rewrite_file, RawFile};
+    let root = scratch("test_archive_unknown_frames");
+    gen_test_data::generate(&root, &GenParams::default(), &Progress::default()).unwrap();
+    let files: Vec<std::path::PathBuf> = rust_dicom_station::curation::files_under(&root);
+    let reg = files
+        .iter()
+        .find(|f| {
+            RawFile::read(f)
+                .ok()
+                .and_then(|r| r.text(tags::MODALITY))
+                .as_deref()
+                == Some("REG")
+        })
+        .expect("the generator writes a REG");
+    rewrite_file(reg, &mut |at| {
+        (at.tag == tags::FRAME_OF_REFERENCE_UID).then(|| encode_text(at.vr, "2.25.424242"))
+    })
+    .unwrap();
+    // A CT slice whose last element is a private one claiming 5000 bytes.
+    let ct = files
+        .iter()
+        .find(|f| f.file_name().unwrap().to_string_lossy().starts_with("CT_"))
+        .unwrap();
+    let mut bytes = std::fs::read(ct).unwrap();
+    let r = RawFile::parse(bytes.clone()).unwrap();
+    let explicit = r.elements[0].explicit;
+    if explicit {
+        bytes.extend_from_slice(&[0xF1, 0x01, 0x26, 0x10, b'U', b'N', 0, 0]);
+    } else {
+        bytes.extend_from_slice(&[0xF1, 0x01, 0x26, 0x10]);
+    }
+    bytes.extend_from_slice(&5000u32.to_le_bytes());
+    bytes.extend_from_slice(&[1, 2, 3, 4]);
+    std::fs::write(ct, &bytes).unwrap();
+    let study = loader::load_directory(&root, &Progress::default()).unwrap();
+    assert_eq!(study.registrations.len(), 1, "{:?}", study.warnings);
+    assert!(
+        study
+            .warnings
+            .iter()
+            .any(|w| w.contains("frames of reference no loaded series has")),
+        "{:?}",
+        study.warnings
+    );
+    let ct_files: usize = study.series.iter().map(|s| s.files.len()).sum();
+    assert_eq!(
+        ct_files, 40,
+        "the slice with the broken element is read: {:?}",
+        study.warnings
+    );
+}

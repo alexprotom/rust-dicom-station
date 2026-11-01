@@ -328,6 +328,9 @@ pub struct LoadedStudy {
     pub setups: Vec<crate::setup::SetupResult>,
     /// 4D sub-studies recognised among (or built by hand from) `series`.
     pub fourd_groups: Vec<crate::fourd::FourDGroup>,
+    /// Respiratory traces kept out of `planar_images` (placeholder captures
+    /// naming the 4D series they belong to, [`crate::fourd::RespTrace`]).
+    pub resp_traces: Vec<crate::fourd::RespTrace>,
     pub warnings: Vec<String>,
     pub default_window: (f32, f32),
 }
@@ -350,6 +353,7 @@ impl Default for LoadedStudy {
             reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
+            resp_traces: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
         }
@@ -865,6 +869,17 @@ fn load_files_with(
             crate::report::PageObject::Report(r) => reports.push(r),
         }
     }
+    // A respiratory trace is no image to look at: kept for its 4D group.
+    let mut resp_traces = Vec::new();
+    planar_images.retain(
+        |img: &PlanarImage| match crate::fourd::RespTrace::of_image(img) {
+            Some(t) => {
+                resp_traces.push(t);
+                false
+            }
+            None => true,
+        },
+    );
     reports.extend(parse_group(
         &report_files,
         "report",
@@ -886,6 +901,52 @@ fn load_files_with(
             "REG {} is a deformable registration - only its rigid matrices are read",
             r.label
         ));
+    }
+    // Registrations between frames of reference no loaded series has (a
+    // setup system's room frames exist in no image): opened as they are,
+    // and said once - with how many still name loaded images through their
+    // referenced series and instances, which is how they can be applied.
+    if !image_series.is_empty() {
+        let frames: std::collections::HashSet<&str> = image_series
+            .iter()
+            .map(|s| s.frame_of_reference_uid.as_str())
+            .filter(|f| !f.is_empty())
+            .collect();
+        let series: std::collections::HashSet<&str> =
+            image_series.iter().map(|s| s.uid.as_str()).collect();
+        let lost: Vec<&SpatialReg> = registrations
+            .iter()
+            .filter(|r| {
+                let mut fors = r
+                    .items
+                    .iter()
+                    .map(|i| i.for_uid.as_str())
+                    .chain([
+                        r.frame_of_reference_uid.as_str(),
+                        r.grid_source_for_uid.as_str(),
+                    ])
+                    .filter(|f| !f.is_empty())
+                    .peekable();
+                fors.peek().is_some() && fors.all(|f| !frames.contains(f))
+            })
+            .collect();
+        if let Some(first) = lost.first() {
+            let by_images = lost
+                .iter()
+                .filter(|r| r.references.iter().any(|u| series.contains(u.as_str())))
+                .count();
+            warnings.push(format!(
+                "{} registration(s) map between frames of reference no loaded series has \
+                 (the first: {}); opened as they are{}",
+                lost.len(),
+                first.label,
+                if by_images > 0 {
+                    format!(", {by_images} of them naming loaded series through their references")
+                } else {
+                    String::new()
+                }
+            ));
+        }
     }
     let treat_records = parse_group(
         &record_files,
@@ -919,6 +980,7 @@ fn load_files_with(
         doses,
         plans,
         planar_images,
+        resp_traces,
         registrations,
         treat_records,
         reports,
@@ -1422,6 +1484,11 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
         });
         if !dup {
             dest.doses.push(d);
+        }
+    }
+    for t in src.resp_traces {
+        if !dest.resp_traces.contains(&t) {
+            dest.resp_traces.push(t);
         }
     }
     for img in src.planar_images {

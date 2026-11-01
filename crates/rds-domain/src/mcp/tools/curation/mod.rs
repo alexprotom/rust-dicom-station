@@ -27,8 +27,18 @@ use serde_json::{json, Value};
 
 use super::super::Core;
 use crate::archive::catalog;
+use crate::curation::remap::UidMaps;
 use crate::curation::{self, audit, dupes, journal, raw};
 use crate::progress::Progress;
+
+mod anon;
+mod catalog_tools;
+mod remap;
+mod reorg;
+pub use anon::*;
+pub use catalog_tools::*;
+pub use remap::*;
+pub use reorg::*;
 
 /// The most files a finding lists; the rest are counted.
 const FILES_SHOWN: usize = 5;
@@ -57,6 +67,8 @@ fn writable(core: &Core) -> Vec<PathBuf> {
     pacs.roots
         .iter()
         .chain(pacs.quarantine.iter())
+        // Attachments moved to the records folder.
+        .chain(pacs.records.iter())
         .filter_map(|r| r.canonicalize().ok().map(plain))
         .collect()
 }
@@ -84,7 +96,21 @@ fn known(core: &Core) -> audit::Known {
             let c = catalog::load(main);
             for (uid, s) in &c.series {
                 k.series.insert(uid.clone());
+                k.studies.insert(s.study.clone());
                 k.sops.extend(s.files.iter().map(|f| f.4.clone()));
+            }
+        }
+    }
+    // The pixel index knows the [pacs] roots' files, frames of reference too.
+    if let Ok(rec) = core.session.config.pacs.records() {
+        for e in dupes::PixelIndex::load(rec).files.into_values() {
+            k.sops.insert(e.sop);
+            k.series.insert(e.series);
+            if !e.study.is_empty() {
+                k.studies.insert(e.study);
+            }
+            if !e.frame.is_empty() {
+                k.frames.insert(e.frame);
             }
         }
     }
@@ -186,6 +212,15 @@ pub struct DuplicatesArgs {
     /// PatientName and PatientID (group lengths are always left out).
     #[serde(default)]
     pub ignore_tags: Option<Vec<String>>,
+    /// A pixel twin counts only between files of one patient folder (the
+    /// source's first-level folder, through pacs-rules.toml, against the
+    /// archive's cohort/patient folder). Default true.
+    #[serde(default)]
+    pub same_patient: Option<bool>,
+    /// Which of the copies inside the source to keep, by words in their
+    /// paths, best first; default full, case, plan.
+    #[serde(default)]
+    pub prefer: Option<Vec<String>>,
     /// Also plan moving the copies (series judged identical or pixel-twin)
     /// to the quarantine folder: returns a manifest for apply_manifest.
     #[serde(default)]
@@ -226,7 +261,40 @@ pub fn find_duplicates(core: &mut Core, a: DuplicatesArgs, p: &Progress) -> Resu
     let target_files = curation::files_under(&against);
     let (indexed, read) = index.refresh(&target_files, p)?;
     index.save(&rec)?;
-    let verdicts = dupes::find(&curation::files_under(&source), &indexed, &ignore, p)?;
+    let rules = curation::reorg::Rules::load(&rec)?;
+    let src_files = curation::files_under(&source);
+    let src = facts_of(&src_files, true, p)?;
+    let patient_below = |base: &Path, f: &Path, depth: usize| -> Option<String> {
+        let parts: Vec<String> = f
+            .strip_prefix(base)
+            .ok()?
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        (parts.len() > depth + 1).then(|| parts[depth].clone())
+    };
+    // The archive: cohort / patient / study / series / file.
+    let same = |s: &Path, t: &Path| -> bool {
+        let sp = patient_below(&source, s, 0).map(|f| rules.patient_code("", &f));
+        let tp = patient_below(&against, t, 1).or_else(|| patient_below(&against, t, 0));
+        match (sp, tp) {
+            (Some(a), Some(b)) => curation::reorg::code_key(&a) == curation::reorg::code_key(&b),
+            _ => true,
+        }
+    };
+    let verdicts = if a.same_patient.unwrap_or(true) {
+        dupes::find_in(&src, &indexed, &ignore, &same)
+    } else {
+        dupes::find_in(&src, &indexed, &ignore, &dupes::any_patient)
+    };
+    let prefer = a.prefer.clone().unwrap_or_else(dupes::default_prefer);
+    let inside = dupes::inside(&src, &prefer);
+    let (maps, splits) = dupes::twin_maps(&verdicts);
+    let map_id = if maps.is_empty() {
+        None
+    } else {
+        Some(save_map(core, "twins", &maps)?)
+    };
     let count = |v: &str| verdicts.iter().filter(|x| x.verdict == v).count();
     let mut out = json!({
         "source": source.display().to_string(),
@@ -241,6 +309,16 @@ pub fn find_duplicates(core: &mut Core, a: DuplicatesArgs, p: &Progress) -> Resu
         "new": count("new"),
         "copies": verdicts.iter().map(|v| v.exact + v.twins).sum::<usize>(),
         "internal_twins": verdicts.iter().map(|v| v.internal_twins).sum::<usize>(),
+        "inside": {
+            "same_sop_identical": inside.same_sop_identical.len(),
+            "same_sop_versions": inside.same_sop_versions.len(),
+            "versioned_sops": inside.versioned_sops,
+            "twin_copies": inside.twin_copies.len(),
+            "twin_series": inside.twin_series.iter().map(|(c, k)| json!({"copy": c, "kept": k})).collect::<Vec<_>>(),
+        },
+        "splits": splits,
+        "uid_map": map_id,
+        "uid_map_entries": maps.len(),
         "verdicts": verdicts.iter().map(|v| json!({
             "series": v.series,
             "modality": v.modality,
@@ -258,6 +336,11 @@ pub fn find_duplicates(core: &mut Core, a: DuplicatesArgs, p: &Progress) -> Resu
             .iter()
             .filter(|v| matches!(v.verdict, "identical" | "pixel-twin"))
             .flat_map(|v| v.copies.iter().cloned())
+            .chain(inside.same_sop_identical.iter().cloned())
+            .chain(inside.same_sop_versions.iter().cloned())
+            .chain(inside.twin_copies.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect();
         let reason = if a.reason.trim().is_empty() {
             format!("copies of files in {}", against.display())
@@ -319,9 +402,23 @@ fn plan_quarantine(core: &Core, files: &[PathBuf], reason: &str) -> Result<Value
 }
 
 fn save_manifest(core: &Core, tool: &str, reason: &str, ops: Vec<journal::Op>) -> Result<Value> {
+    save_manifest_with(core, tool, reason, ops, UidMaps::default(), Vec::new())
+}
+
+/// [`save_manifest`] with the UID maps its rewrites apply and what the
+/// planning noticed.
+fn save_manifest_with(
+    core: &Core,
+    tool: &str,
+    reason: &str,
+    ops: Vec<journal::Op>,
+    maps: UidMaps,
+    noticed: Vec<String>,
+) -> Result<Value> {
     let rec = records(core)?;
     let roots = writable(core);
-    let warnings = journal::check_paths(&ops, &|p| may_write(&roots, p))?;
+    let mut warnings = journal::check_paths(&ops, &|p| may_write(&roots, p))?;
+    warnings.extend(noticed);
     let (d, t) = crate::dicom_export::today();
     let m = journal::Manifest {
         id: journal::new_id(tool),
@@ -330,6 +427,7 @@ fn save_manifest(core: &Core, tool: &str, reason: &str, ops: Vec<journal::Op>) -
         created: format!("{d}T{t}"),
         ops,
         warnings,
+        maps,
     };
     journal::save(&rec, &m)?;
     let preview: Vec<Value> = m
@@ -345,12 +443,20 @@ fn save_manifest(core: &Core, tool: &str, reason: &str, ops: Vec<journal::Op>) -
                 "rewrite": path.display().to_string(),
                 "tags": tags.iter().map(|(t, _)| t).collect::<Vec<_>>(),
             }),
+            journal::Op::Rewrite { path, changes, .. } => json!({
+                "rewrite": path.display().to_string(),
+                "set": changes.set.iter().map(|(t, _)| t).collect::<Vec<_>>(),
+                "remove": changes.remove,
+                "remove_private": changes.remove_private,
+                "remap": changes.remap,
+            }),
         })
         .collect();
     Ok(json!({
         "manifest": m.id,
         "operations": m.ops.len(),
         "warnings": m.warnings,
+        "uid_map_entries": m.maps.len(),
         "first_operations": preview,
         "next": "apply_manifest with this id does it; nothing has been changed yet",
     }))
@@ -439,7 +545,7 @@ pub fn set_patient_identity(core: &mut Core, a: IdentityArgs, p: &Progress) -> R
     let planned: Vec<(PathBuf, Option<String>)> = files
         .par_iter()
         .map(|f| match raw::RawFile::read(f) {
-            Ok(r) if !r.elements.is_empty() => {
+            Ok(r) if r.is_dicom() => {
                 if let Err(e) = r.rewritable() {
                     return (f.clone(), Some(format!("{e:#}")));
                 }

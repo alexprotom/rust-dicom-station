@@ -263,7 +263,7 @@ jobs:
           tool: nextest
 
       - name: cargo nextest (mcp)
-        run: cargo nextest run --no-default-features --features mcp --test workflow --test mcp_tools --test mcp_phi ${{ env.NO_RUN }}
+        run: cargo nextest run --no-default-features --features mcp --test workflow --test mcp_tools --test mcp_phi --test curation ${{ env.NO_RUN }}
 
   # The PACS server (`rds-pacs`) and its two suites live behind the
   # `pacs-server` feature, as the MCP server lives behind `mcp`: the viewer's

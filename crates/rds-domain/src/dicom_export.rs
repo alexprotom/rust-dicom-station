@@ -459,6 +459,7 @@ pub(crate) fn apply(o: &mut InMemDicomObject, set: &[(Tag, VR, String)]) {
 }
 
 pub(crate) fn write_object(obj: InMemDicomObject, sop_class: &str, path: &Path) -> Result<()> {
+    crate::pathlen::check(path)?;
     let file_obj = obj
         .with_meta(
             FileMetaTableBuilder::new()
@@ -1111,6 +1112,7 @@ pub fn copy_patched(src: &Path, dst: &Path, set: &[(Tag, VR, String)]) -> Result
                 .media_storage_sop_instance_uid(&sop_uid),
         )
         .with_context(|| format!("rebuild the file meta of {}", src.display()))?;
+    crate::pathlen::check(dst)?;
     out.write_to_file(dst)
         .with_context(|| format!("write {}", dst.display()))?;
 

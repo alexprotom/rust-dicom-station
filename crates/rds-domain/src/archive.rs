@@ -178,6 +178,10 @@ pub struct PatientEntry {
     pub key: String,
     /// The name given in the PACS window; empty: none.
     pub label: String,
+    /// The files in their folder that are not DICOM (plan screenshots,
+    /// headerless detector frames): the catalog's `other` files whose
+    /// nearest patient folder is theirs.
+    pub attachments: Vec<PathBuf>,
 }
 
 impl PatientEntry {
@@ -305,6 +309,9 @@ pub struct ImportSummary {
     pub duplicates: usize,
     /// Files that were not readable as DICOM.
     pub skipped: usize,
+    /// Files left out because their place in the PACS would pass the path
+    /// limit ([`crate::pathlen`]).
+    pub too_long: usize,
     pub patients: usize,
     pub studies: usize,
 }
@@ -312,7 +319,7 @@ pub struct ImportSummary {
 impl ImportSummary {
     pub fn describe(&self) -> String {
         format!(
-            "{} file(s) filed under {} patient(s) / {} study(ies){}{}",
+            "{} file(s) filed under {} patient(s) / {} study(ies){}{}{}",
             self.stored,
             self.patients,
             self.studies,
@@ -323,6 +330,15 @@ impl ImportSummary {
             },
             if self.skipped > 0 {
                 format!(", {} not DICOM", self.skipped)
+            } else {
+                String::new()
+            },
+            if self.too_long > 0 {
+                format!(
+                    ", {} left out: their path would pass {} characters",
+                    self.too_long,
+                    crate::pathlen::MAX_PATH
+                )
             } else {
                 String::new()
             }
@@ -670,8 +686,28 @@ impl Archive {
                     studies,
                     key: key.to_string(),
                     label: p.label,
+                    attachments: Vec::new(),
                 },
             );
+        }
+        // The other files, each to the patient of the patient folder it lies
+        // in (`cohort/patient/...`, or `patient/...` directly in a storage
+        // folder), when that folder holds one patient's files.
+        let tops = catalog::top_folders(c);
+        for o in &c.other {
+            let Some(r) = map.get(&o.0) else { continue };
+            let root = &self.roots[*r];
+            let parts: Vec<&str> = o.1.split('/').collect();
+            let direct = tops.get(&(o.0, parts[0].to_string())) == Some(&catalog::TopKind::Patient);
+            let depth = if direct { 1 } else { 2 };
+            if parts.len() <= depth {
+                continue;
+            }
+            let folder = parts[..depth].iter().fold(root.clone(), |p, s| p.join(s));
+            let mut owners = patients.values_mut().filter(|p| p.dir.starts_with(&folder));
+            if let (Some(p), None) = (owners.next(), owners.next()) {
+                p.attachments.push(catalog::abs_of(root, &o.1));
+            }
         }
         let members = catalog::membership(c);
         let mut cohorts: Vec<CohortEntry> = Vec::new();
@@ -1329,6 +1365,7 @@ impl Archive {
         for (r, rel, path) in files {
             let below = path.strip_prefix(&from).unwrap_or(&path).to_path_buf();
             let target = dest_dir.join(below);
+            crate::pathlen::check(&target)?;
             if target == path {
                 sum.unchanged += 1;
                 continue;
@@ -1521,6 +1558,10 @@ impl Importer<'_> {
             }
             let home = self.home_of(&h);
             let dest = home.join(format!("{}.dcm", sanitize(&h.sop)));
+            if crate::pathlen::check(&dest).is_err() {
+                sum.too_long += 1;
+                continue;
+            }
             if dest.exists() {
                 // Filed before, and the catalog never heard of it.
                 sum.duplicates += 1;

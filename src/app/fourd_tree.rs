@@ -27,6 +27,9 @@ impl ViewerApp {
             return;
         };
         let title = format!("🎞 {}", group.name);
+        // The scanner's respiratory trace of the acquisition, when it wrote one.
+        let trace = crate::fourd::RespTrace::of_group(&study.resp_traces, group, &study.series)
+            .map(|t| t.label.clone());
         let resolved = group.resolve(&study.series);
         // (member index, series index, row label, series UID) for every
         // surviving member.
@@ -227,8 +230,13 @@ impl ViewerApp {
             }
         });
         resp.on_hover_text(format!(
-            "4D group · {} series: the phases in temporal order, then the reconstructions",
-            members.len()
+            "4D group · {} series: the phases in temporal order, then the reconstructions{}",
+            members.len(),
+            trace
+                .map(|t| format!(
+                    "\nRespiratory trace: {t} (the scanner's capture, not shown as an image)"
+                ))
+                .unwrap_or_default()
         ));
         if fourd.is_some() {
             self.fourd_action = fourd;

@@ -542,6 +542,7 @@ impl ViewerApp {
                 Vec::new()
             },
             fourd_groups: study.fourd_groups.clone(),
+            resp_traces: study.resp_traces.clone(),
             warnings: Vec::new(),
             default_window: study.default_window,
         }
@@ -854,6 +855,7 @@ mod tree_tests {
             series_instance_uid: String::new(),
             study_uid: study.into(),
             referenced_structset_uid: structset_sop.into(),
+            referenced_plan_uid: String::new(),
             beams: Vec::new(),
         }
     }
@@ -912,6 +914,7 @@ mod tree_tests {
             reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
+            resp_traces: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
         }

@@ -727,6 +727,26 @@ points at, so the tree says at a glance what the current selection is
 attached to. Nothing is claimed where the files do not say: a dose whose plan
 was not loaded carries no badge.
 
+**A reference that leads nowhere is a status, not a failure.** What is
+present loads; what an object names and the folder does not hold is said on
+its row with ⚠: a structure set whose planning CT is absent (*▶ ⚠ image
+series not loaded*), a dose without its plan (*▶ ⚠ plan not loaded*), a plan
+without its structure set, a verification plan whose clinical plan is absent
+(*▶ ⚠ its plan not loaded*; with it, *▶ verifies NAME*). A registration
+between frames of reference no loaded series has (a setup system's room
+frames) loads as it is, the load says so once among its warnings, and its
+pane names, in place of the frame, the workspaces whose series it references.
+A scanner's respiratory trace (Philips' 8 × 8 secondary capture whose
+description names the 4D series, *For Series: 201-222*) is no image: it is
+kept out of the Additional pane and named in the tooltip of the 4D group it
+belongs to.
+
+Files whose header the standard reader refuses are read past what is
+broken where the curation parser can tell what that is: a private element
+whose length runs past the end of the file (Philips' (01F1,1026)) is left
+out, a header that says implicit VR for an explicit data set is read by its
+bytes.
+
 **What the counts mean.** *RT structures (n)* and *Segmentations (n)* count
 the **sets and series** the study node holds, not their contents. The
 contents are counted on the row of the set or series they belong to: the one

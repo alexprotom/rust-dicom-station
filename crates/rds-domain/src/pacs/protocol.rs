@@ -288,6 +288,7 @@ impl UploadSummary {
             stored: self.stored,
             duplicates: self.duplicates,
             skipped: self.skipped,
+            too_long: 0,
             patients: self.patients,
             studies: self.studies,
         }

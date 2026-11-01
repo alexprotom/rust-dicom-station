@@ -930,6 +930,7 @@ mod layout_tests {
             reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
+            resp_traces: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
         }

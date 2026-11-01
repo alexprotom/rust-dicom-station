@@ -54,16 +54,23 @@ pub(super) struct SeriesRow {
 /// reports. Its other series (the planning CT, the plan) stay directly
 /// under the study. The viewer's data tree puts a day together by beam
 /// ([`crate::sessions`]); the catalog knows no references, so here it is
-/// the series' date alone. Any other study lists its series as they come.
+/// the series' date alone. A study without records whose series were made
+/// on more than one day (one StudyInstanceUID over weeks of sessions, each
+/// its own `Procedure #N`) has a row per session day the same way, holding
+/// all its dated series. Any other study lists its series as they come.
 pub(super) fn study_rows(series: Vec<SeriesRow>) -> Vec<TNode> {
     let day = |s: &SeriesRow| s.datetime.get(..8).map(str::to_string);
-    let days: std::collections::BTreeSet<String> = series
+    let mut days: std::collections::BTreeSet<String> = series
         .iter()
         .filter(|s| s.modality == "RTRECORD")
         .filter_map(day)
         .collect();
-    if days.is_empty() {
-        return series.into_iter().map(|s| s.node).collect();
+    let course = !days.is_empty();
+    if !course {
+        days = series.iter().filter_map(day).collect();
+        if days.len() < 2 {
+            return series.into_iter().map(|s| s.node).collect();
+        }
     }
     let of = days.len();
     let mut out: Vec<TNode> = Vec::new();
@@ -94,7 +101,12 @@ pub(super) fn study_rows(series: Vec<SeriesRow>) -> Vec<TNode> {
                 if files == 1 { "" } else { "s" }
             ),
             hover: format!(
-                "A treatment day: the series made that day, by the time they were made\n{}",
+                "{}: the series made that day, by the time they were made\n{}",
+                if course {
+                    "A treatment day"
+                } else {
+                    "A session"
+                },
                 kinds
                     .iter()
                     .map(|(m, k)| format!("{m} {k}"))
@@ -658,9 +670,18 @@ mod tests {
         assert_eq!(rows[3].text, "2024-09-17 · 2 of 2");
         let day: Vec<&str> = rows[3].children.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(day, ["ct-day", "rec2"], "in the order they were made");
-        // A study with no record is listed as it comes.
+        // A study of one day with no record is listed as it comes.
         let plain = study_rows(vec![row("ct", "CT", "20240903115855")]);
         assert_eq!(plain[0].key, "ct");
+        // One of several days without records: a session a day.
+        let sessions = study_rows(vec![
+            row("ct1", "CT", "20240903115855"),
+            row("reg", "REG", "20240910080000"),
+            row("ct2", "CT", "20240910081500"),
+        ]);
+        let keys: Vec<&str> = sessions.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["day:20240903", "day:20240910"]);
+        assert!(sessions[1].hover.starts_with("A session"));
 
         // A selection of a day is its series; a series under a day is the
         // study's series.

@@ -102,7 +102,10 @@ registrations, the records, the dose reports. The series of any other day
 (the planning CT, the plan) stay directly under the study. A day's row is
 selected, loaded, pulled or removed as its series are. It is the series'
 date alone - the catalog keeps no references; the viewer's data tree puts a
-day together by beam once it is loaded. A server of an earlier version
+day together by beam once it is loaded. A study without records whose
+series were made on more than one day - one Study Instance UID over weeks of
+sessions, each its own *Procedure #N* - has a row per **session** day the
+same way, all its dated series under them. A server of an earlier version
 sends no series dates, and its studies are listed as before.
 
 ## Names
@@ -167,6 +170,13 @@ the person decided: the cohorts, who is in which, the names given.
   (`.rds-pacs-catalog.lock`), reads the catalog afresh, changes it and puts
   it back in one rename, so a reader never sees half of it and neither
   writer loses the other's change.
+* A file that is not DICOM (a plan's screenshot, a detector's headerless
+  frame) is remembered as an *other* file, so it is not read again, and is
+  attached to the patient whose patient folder holds it (`cohort/patient/...`,
+  or a patient's folder directly in a storage folder): listings count a
+  patient's attachments. A DICOM file the standard reader refuses for a
+  broken private length or a header naming the wrong VR encoding is read
+  past it, and filed like any other.
 * Earlier versions wrote `STUDY.txt`, `PATIENT.txt` and `INDEX.txt` into
   every folder. A scan removes those, recognising them by name and content,
   so that a person's own file of the same name stays.
@@ -187,7 +197,8 @@ opens lists its folders, one is chosen (or a new one made inside it, with
 had below the folder that held them all, so a study's series folders arrive
 as series folders. Nothing is moved when a file of the same name is already
 at its place; folders left empty are removed. The catalog follows the move,
-so no header is read again.
+so no header is read again. No file is moved to a path over 259 characters,
+the limit much DICOM software on Windows still has.
 
 ## Filing
 
@@ -204,7 +215,8 @@ reader - the PACS server sending the study on - never takes half a file.
 
 Only the patient folder name comes from free text and so is sanitized:
 anything outside ASCII letters, digits, `.`, `-` and `_` becomes `_`, capped
-at 96 characters.
+at 96 characters. A file whose place would pass 259 characters is not filed
+and is counted as left out.
 
 ## Taking a selection into the viewer
 

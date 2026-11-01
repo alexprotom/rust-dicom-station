@@ -44,6 +44,8 @@ pub fn list_4d_groups(core: &mut Core, a: DatasetArgs, _p: &Progress) -> Result<
                     "series": series_no(&m.series_uid),
                 })).collect::<Vec<_>>(),
                 "default_reference": g.default_reference().map(|m| clean_text(&g.members[m].label)),
+                "respiratory_trace": crate::fourd::RespTrace::of_group(&ds.study.resp_traces, g, &ds.study.series)
+                    .map(|t| clean_text(&t.label)),
             })
         })
         .collect();

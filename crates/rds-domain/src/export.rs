@@ -1028,6 +1028,9 @@ pub fn run(
         }
     }
 
+    // Paths over 259 characters were refused as they were written; the
+    // ones near it are said.
+    warnings.extend(crate::pathlen::notes_under(root));
     progress.set("done");
     Ok(ExportSummary {
         files,

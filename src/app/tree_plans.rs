@@ -48,13 +48,14 @@ impl ViewerApp {
                             selected,
                             shown,
                             format!(
-                                "{}{}",
+                                "{}{}{}",
                                 if plan.label.is_empty() {
                                     "unnamed"
                                 } else {
                                     &plan.label
                                 },
-                                Self::structset_suffix(study, &plan.referenced_structset_uid)
+                                Self::structset_suffix(study, &plan.referenced_structset_uid),
+                                Self::plan_ref_suffix(&study.plans, &plan.referenced_plan_uid)
                             ),
                             current.as_ref() == Some(&me),
                         );
@@ -234,7 +235,26 @@ impl ViewerApp {
                     }
                 )
             })
-            .unwrap_or_else(|| " ▶ (plan not loaded)".to_string())
+            .unwrap_or_else(|| " ▶ ⚠ plan not loaded".to_string())
+    }
+
+    /// " ▶ verifies NAME" for the plan a verification plan names, or the badge
+    /// of a reference that leads nowhere.
+    fn plan_ref_suffix(plans: &[crate::rtplan::PlanInfo], sop: &str) -> String {
+        if sop.is_empty() {
+            return String::new();
+        }
+        match plans.iter().find(|p| p.sop_instance_uid == sop) {
+            Some(p) => format!(
+                " ▶ verifies {}",
+                if p.label.is_empty() {
+                    "unnamed"
+                } else {
+                    &p.label
+                }
+            ),
+            None => " ▶ ⚠ its plan not loaded".to_string(),
+        }
     }
 
     /// " ▶ structures NAME" for the set a plan was made on, or a word about
@@ -257,6 +277,6 @@ impl ViewerApp {
                     }
                 )
             })
-            .unwrap_or_else(|| " ▶ (structure set not loaded)".to_string())
+            .unwrap_or_else(|| " ▶ ⚠ structure set not loaded".to_string())
     }
 }

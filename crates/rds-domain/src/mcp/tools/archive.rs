@@ -208,6 +208,7 @@ pub fn list_archive(core: &mut Core, a: ListArchiveArgs, p: &Progress) -> Result
                     "series": series,
                     "files": c.files(),
                     "series_by_modality": modalities,
+                    "attachments": c.patients.iter().map(|p| p.attachments.len()).sum::<usize>(),
                 })
             })
             .collect();
@@ -246,6 +247,7 @@ pub fn list_archive(core: &mut Core, a: ListArchiveArgs, p: &Progress) -> Result
             json!({
                 "patient": listed_as(core, pt),
                 "studies": pt.studies.iter().map(study_json).collect::<Vec<_>>(),
+                "attachments": pt.attachments.len(),
             })
         })
         .collect();
@@ -268,6 +270,11 @@ pub fn list_archive(core: &mut Core, a: ListArchiveArgs, p: &Progress) -> Result
 pub struct ArchiveStudyArgs {
     /// The Study Instance UID, as list_archive gives it.
     pub study: String,
+    /// open_archive_study: only these series (Series Instance UIDs, as
+    /// describe_archive_study lists them) - a course study of thousands of
+    /// files opened a session at a time. Empty: all of it.
+    #[serde(default)]
+    pub series: Vec<String>,
 }
 
 /// The study `uid` names, with its patient, from a listing whose
@@ -350,11 +357,15 @@ pub fn describe_archive_study(core: &mut Core, a: ArchiveStudyArgs, p: &Progress
             let files = by_series.get(&se.series_uid).cloned().unwrap_or_default();
             let first = files.first().and_then(|f| head_facts(f));
             let mut v = json!({
+                "series_uid": se.series_uid,
                 "modality": se.modality,
                 "number": se.number.trim(),
                 "description": clean_text(&se.description),
                 "files": se.files,
             });
+            if se.datetime.len() >= 8 {
+                v["day"] = json!(crate::archive::show_date(&se.datetime[..8]));
+            }
             let Some(h) = first else {
                 v["class"] = json!("unreadable");
                 return v;
@@ -413,6 +424,21 @@ pub fn describe_archive_study(core: &mut Core, a: ArchiveStudyArgs, p: &Progress
     let mut out = study_json(&st);
     out["patient"] = json!(listed_as(core, &pt));
     out["series"] = json!(series);
+    // A course study: its sessions, a day each.
+    let mut days: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for se in st.series.iter().filter(|s| s.datetime.len() >= 8) {
+        let d = days.entry(se.datetime[..8].to_string()).or_default();
+        d.0 += 1;
+        d.1 += se.files;
+    }
+    if days.len() > 1 {
+        out["sessions"] = json!(days
+            .iter()
+            .map(
+                |(d, (n, f))| json!({"day": crate::archive::show_date(d), "series": n, "files": f})
+            )
+            .collect::<Vec<_>>());
+    }
     Ok(out)
 }
 
@@ -420,13 +446,23 @@ pub fn open_archive_study(core: &mut Core, a: ArchiveStudyArgs, p: &Progress) ->
     let ar = archive_of(core);
     let patients = patients_of(core, &ar, p)?;
     let (_, st) = find_study(&patients, &a.study)?;
+    let wanted: std::collections::HashSet<&str> = a.series.iter().map(|s| s.trim()).collect();
     let files: Vec<PathBuf> = ar
         .files_of(&[Pick::Study(st.study_uid.clone())])
         .into_iter()
+        .filter(|i| wanted.is_empty() || wanted.contains(i.series_uid.as_str()))
         .map(|i| i.path)
         .collect();
     if files.is_empty() {
-        bail!("the archive holds no file of study {}", st.study_uid);
+        bail!(
+            "the archive holds no file of study {}{}",
+            st.study_uid,
+            if wanted.is_empty() {
+                ""
+            } else {
+                " in the series named"
+            }
+        );
     }
     let origin = ar
         .find_study(&st.study_uid)

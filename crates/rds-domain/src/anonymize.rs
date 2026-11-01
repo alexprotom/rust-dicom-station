@@ -626,6 +626,7 @@ pub fn apply(
                 }
                 None => path.clone(),
             };
+            crate::pathlen::check(&out_path)?;
             // Write via a temp file so an error never corrupts the original.
             let tmp = out_path.with_extension("tmp_anon");
             out_obj

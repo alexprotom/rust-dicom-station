@@ -51,8 +51,9 @@ rmcp = { version = "3.2", optional = true, default-features = false, features = 
 # what that one needs (bodies streamed to disk, its listener, Ctrl+C).
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
 schemars = { version = "1", optional = true }
-# The patient-code patterns of the `pseudonymized` PHI policy (`mcp.toml`).
-regex = { version = "1", optional = true }
+# The patient-code patterns of the `pseudonymized` PHI policy (`mcp.toml`) and
+# the folder rules of `pacs-rules.toml` (curation); burn has it already.
+regex = "1"
 
 # ---- the remote archive, client side (every build, the mobile ones too) ----
 # `src/pacs/` talks to a PACS server (`rds-pacs`, below) over HTTPS through
@@ -105,6 +106,6 @@ default = ["gpu"]
 # 2D/3D projector's compute shader on the same device.
 gpu = ["rds-engines/gpu"]
 # The `mcp` module behind the MCP server executable.
-mcp = ["dep:rmcp", "dep:tokio", "dep:schemars", "dep:regex"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:schemars"]
 # The server half of the `pacs` module behind the PACS server executable.
 pacs-server = ["dep:axum", "dep:axum-server", "dep:tokio", "dep:rcgen", "dep:subtle", "dep:futures-util"]

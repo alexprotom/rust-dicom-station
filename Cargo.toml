@@ -107,6 +107,10 @@ required-features = ["mcp"]
 name = "mcp_tools"
 required-features = ["mcp"]
 
+[[test]]
+name = "curation"
+required-features = ["mcp"]
+
 [[bin]]
 name = "rds-pacs"
 path = "src/bin/rds-pacs.rs"

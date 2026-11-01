@@ -56,6 +56,80 @@ pub struct Member {
     pub percent: Option<f32>,
 }
 
+/// A scanner's respiratory trace for a 4D acquisition: Philips writes it as
+/// a secondary capture of 8 × 8 placeholder pixels, one per 4D series, whose
+/// SeriesDescription names the series it is the trace of ("For Series:
+/// 201-222"). It is no image to look at (every copy is the same picture),
+/// so it is kept out of the image views and offered to the 4D group whose
+/// series numbers it names ([`RespTrace::of_group`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RespTrace {
+    /// The SeriesDescription, as written.
+    pub label: String,
+    /// The series numbers it names, first and last.
+    pub series: (i64, i64),
+    pub sop_instance_uid: String,
+    pub study_uid: String,
+}
+
+impl RespTrace {
+    /// The trace a planar image is, if it is one: an additional object of
+    /// 64 pixels or fewer whose description names a series range.
+    pub fn of_image(img: &crate::extras::PlanarImage) -> Option<RespTrace> {
+        if img.kind != crate::extras::PlanarKind::Additional || img.rows * img.cols > 64 {
+            return None;
+        }
+        let series = series_range(&img.label)?;
+        Some(RespTrace {
+            label: img.label.clone(),
+            series,
+            sop_instance_uid: img.sop_instance_uid.clone(),
+            study_uid: img.study_uid.clone(),
+        })
+    }
+
+    /// The trace among `traces` of `group`: of its study, naming the series
+    /// numbers of its phases.
+    pub fn of_group<'a>(
+        traces: &'a [RespTrace],
+        group: &FourDGroup,
+        series: &[SeriesInfo],
+    ) -> Option<&'a RespTrace> {
+        let numbers: Vec<i64> = group
+            .resolve(series)
+            .into_iter()
+            .flatten()
+            .filter_map(|i| series[i].series_number)
+            .collect();
+        traces.iter().find(|t| {
+            (t.study_uid.is_empty() || t.study_uid == group.study_uid)
+                && !numbers.is_empty()
+                && numbers
+                    .iter()
+                    .any(|n| (t.series.0..=t.series.1).contains(n))
+        })
+    }
+}
+
+/// `For Series: 201-222` (or `201–222`, `201 to 222`, one number) as the
+/// first and last series number.
+fn series_range(label: &str) -> Option<(i64, i64)> {
+    let l = label.to_lowercase();
+    let at = l.find("for series")?;
+    let rest = &l[at + "for series".len()..];
+    let nums: Vec<i64> = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .take(2)
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    match nums.as_slice() {
+        [a] => Some((*a, *a)),
+        [a, b] => Some(((*a).min(*b), (*a).max(*b))),
+        _ => None,
+    }
+}
+
 /// A group of image series that form one 4D acquisition.
 #[derive(Clone, Debug)]
 pub struct FourDGroup {
@@ -837,6 +911,43 @@ mod tests {
         assert!(
             labels[0].starts_with('0') && labels[9].starts_with("90"),
             "{labels:?}"
+        );
+    }
+
+    /// Philips writes one UID as both the SeriesInstanceUID and the
+    /// FrameOfReferenceUID of a 4D phase; grouping goes by series, and the
+    /// scanner's respiratory trace finds its group by series number.
+    #[test]
+    fn a_philips_4d_whose_series_uids_are_its_frames_groups_and_finds_its_trace() {
+        let phases: Vec<SeriesInfo> = (0..4)
+            .map(|i| {
+                let uid = format!("1.3.46.670589.33.1.{i}");
+                let mut s = series(&uid, &format!("Thorax 4D {}%", i * 25), "1.2", "CT");
+                s.frame_of_reference_uid = uid.clone();
+                s.series_number = Some(201 + i as i64);
+                s
+            })
+            .collect();
+        let groups = detect(&phases);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].resolve(&phases).iter().flatten().count(), 4);
+        assert_eq!(series_range("For Series: 201-222"), Some((201, 222)));
+        assert_eq!(series_range("Resp wave for series 205"), Some((205, 205)));
+        assert_eq!(series_range("Thorax"), None);
+        let trace = RespTrace {
+            label: "For Series: 201-222".into(),
+            series: (201, 222),
+            sop_instance_uid: "9".into(),
+            study_uid: "1.2".into(),
+        };
+        let other = RespTrace {
+            series: (301, 310),
+            ..trace.clone()
+        };
+        let traces = [other, trace.clone()];
+        assert_eq!(
+            RespTrace::of_group(&traces, &groups[0], &phases),
+            Some(&trace)
         );
     }
 }

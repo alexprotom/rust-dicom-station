@@ -35,6 +35,8 @@ pub struct Facts {
     /// ImagePositionPatient, ImageOrientationPatient.
     pub position: Option<[f64; 3]>,
     pub orientation: Option<[f64; 6]>,
+    /// PixelSpacing (row, column).
+    pub spacing: Option<[f64; 2]>,
     pub rows: u32,
     pub cols: u32,
     pub frames: u32,
@@ -96,15 +98,26 @@ pub fn read(path: &Path, hash: bool) -> Facts {
         }
     };
     if f.elements.is_empty() {
-        out.unreadable = Some(
-            f.problems
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "no data set".into()),
-        );
+        let why = f
+            .problems
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "no data set".into());
+        // Without the header, nothing that parses: not DICOM at all.
+        out.unreadable = Some(if f.part10 {
+            why
+        } else {
+            format!("not DICOM: {why}")
+        });
         return out;
     }
     let t = |tag| f.text(tag).unwrap_or_default();
+    // Without the `DICM` header, bytes that happen to parse are DICOM only
+    // when they name an instance (a screenshot's do not).
+    if !f.is_dicom() {
+        out.unreadable = Some("not DICOM: no file header and no SOP Instance UID".into());
+        return out;
+    }
     out.problems = f.problems.clone();
     out.transfer_syntax = f.transfer_syntax.clone();
     out.sop_class = t(tags::SOP_CLASS_UID);
@@ -118,6 +131,10 @@ pub fn read(path: &Path, hash: bool) -> Facts {
     let ipp = nums(&t(tags::IMAGE_POSITION_PATIENT));
     if ipp.len() == 3 {
         out.position = Some([ipp[0], ipp[1], ipp[2]]);
+    }
+    let ps = nums(&t(tags::PIXEL_SPACING));
+    if ps.len() == 2 {
+        out.spacing = Some([ps[0], ps[1]]);
     }
     let iop = nums(&t(tags::IMAGE_ORIENTATION_PATIENT));
     if iop.len() == 6 {

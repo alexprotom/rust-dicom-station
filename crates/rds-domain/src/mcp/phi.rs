@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use dicom_core::Tag;
-use dicom_dictionary_std::tags;
 use rayon::prelude::*;
 use serde_json::Value;
 
@@ -107,22 +106,8 @@ pub fn sample_files(study: &LoadedStudy, dir: Option<&Path>) -> Vec<PathBuf> {
 /// value refuses the dataset; under the others they are identifying like
 /// the anonymizer's own list. Staff who work the machines (OperatorsName)
 /// are kept, as the archive keeps them, and redacted on the way out.
-#[allow(deprecated)] // retired tags (OtherPatientIDs, MedicalRecordLocator) still occur
-pub const REMOVED: &[(Tag, &str)] = &[
-    (tags::OTHER_PATIENT_NAMES, "OtherPatientNames"),
-    (tags::OTHER_PATIENT_I_DS, "OtherPatientIDs"),
-    (tags::OTHER_PATIENT_I_DS_SEQUENCE, "OtherPatientIDsSequence"),
-    (tags::PATIENT_BIRTH_NAME, "PatientBirthName"),
-    (tags::PATIENT_MOTHER_BIRTH_NAME, "PatientMotherBirthName"),
-    (tags::PATIENT_ADDRESS, "PatientAddress"),
-    (tags::PATIENT_TELEPHONE_NUMBERS, "PatientTelephoneNumbers"),
-    (tags::MEDICAL_RECORD_LOCATOR, "MedicalRecordLocator"),
-    (tags::ISSUER_OF_PATIENT_ID, "IssuerOfPatientID"),
-    (tags::REFERRING_PHYSICIAN_NAME, "ReferringPhysicianName"),
-    (tags::PERFORMING_PHYSICIAN_NAME, "PerformingPhysicianName"),
-    (tags::PHYSICIANS_OF_RECORD, "PhysiciansOfRecord"),
-    (tags::PATIENT_COMMENTS, "PatientComments"),
-];
+/// (The list lives with the pseudonymizer, [`crate::curation::anon`].)
+pub use crate::curation::anon::REMOVED;
 
 /// The value of `tag` as text, or `"(sequence)"` for a sequence that holds
 /// an item (its contents are identifying by where they sit).
