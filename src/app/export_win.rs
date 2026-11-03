@@ -159,7 +159,9 @@ fn run_options(ui: &mut egui::Ui, plan: &mut ExportPlan) {
         ui.radio_value(&mut mode, UidMode::Keep, "keep the original UIDs")
             .on_hover_text(
                 "The export is the same study: re-importing it where it came from updates \
-                 that study, and references from objects outside the export still resolve.",
+                 that study, and references from objects outside the export still resolve. \
+                 RT objects are written anew, so they get new UIDs either way and name \
+                 their source.",
             );
         ui.radio_value(&mut mode, UidMode::New, "generate new UIDs")
             .on_hover_text(

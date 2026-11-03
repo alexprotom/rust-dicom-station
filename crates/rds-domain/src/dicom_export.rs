@@ -458,7 +458,28 @@ pub(crate) fn apply(o: &mut InMemDicomObject, set: &[(Tag, VR, String)]) {
     }
 }
 
+/// Name the object an RT object was written from: Source Instance Sequence
+/// (0042,0013) with its class and instance, and a Derivation Description.
+/// An object the station writes anew carries UIDs of its own, and this is
+/// how it still says where it came from.
+pub(crate) fn put_source(o: &mut InMemDicomObject, class: &str, uid: &str) {
+    let mut item = InMemDicomObject::new_empty();
+    put_str(&mut item, tags::REFERENCED_SOP_CLASS_UID, VR::UI, class);
+    put_str(&mut item, tags::REFERENCED_SOP_INSTANCE_UID, VR::UI, uid);
+    put_seq(o, tags::SOURCE_INSTANCE_SEQUENCE, vec![item]);
+    put_str(
+        o,
+        tags::DERIVATION_DESCRIPTION,
+        VR::ST,
+        format!(
+            "Written by Rust DICOM Station {} from {uid}",
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
+}
+
 pub(crate) fn write_object(obj: InMemDicomObject, sop_class: &str, path: &Path) -> Result<()> {
+    crate::pathlen::check(path)?;
     let file_obj = obj
         .with_meta(
             FileMetaTableBuilder::new()
@@ -1111,6 +1132,7 @@ pub fn copy_patched(src: &Path, dst: &Path, set: &[(Tag, VR, String)]) -> Result
                 .media_storage_sop_instance_uid(&sop_uid),
         )
         .with_context(|| format!("rebuild the file meta of {}", src.display()))?;
+    crate::pathlen::check(dst)?;
     out.write_to_file(dst)
         .with_context(|| format!("write {}", dst.display()))?;
 

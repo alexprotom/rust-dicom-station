@@ -38,6 +38,8 @@
 //! folder holds it already.
 
 pub mod catalog;
+pub mod fourd;
+pub mod tags;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -65,6 +67,8 @@ pub struct SeriesEntry {
     /// When it was made, `YYYYMMDDHHMMSS`; empty when no file says
     /// ([`catalog::SeriesRec::datetime`]).
     pub datetime: String,
+    /// The 4D set it is in, and as what ([`fourd`]).
+    pub fourd: Option<fourd::SeriesFourD>,
 }
 
 impl SeriesEntry {
@@ -110,6 +114,10 @@ pub struct StudyEntry {
     /// The name given in the PACS window; empty: none.
     pub label: String,
     pub series: Vec<SeriesEntry>,
+    /// Its 4D sets ([`fourd`]).
+    pub fourd: Vec<fourd::StudyFourD>,
+    /// Series that say "4D" with no set to go with.
+    pub fourd_orphans: Vec<fourd::Orphan>,
 }
 
 /// `20260827` as `2026-08-27`; anything else as it is.
@@ -178,6 +186,10 @@ pub struct PatientEntry {
     pub key: String,
     /// The name given in the PACS window; empty: none.
     pub label: String,
+    /// The files in their folder that are not DICOM (plan screenshots,
+    /// headerless detector frames): the catalog's `other` files whose
+    /// nearest patient folder is theirs.
+    pub attachments: Vec<PathBuf>,
 }
 
 impl PatientEntry {
@@ -305,6 +317,9 @@ pub struct ImportSummary {
     pub duplicates: usize,
     /// Files that were not readable as DICOM.
     pub skipped: usize,
+    /// Files left out because their place in the PACS would pass the path
+    /// limit ([`crate::pathlen`]).
+    pub too_long: usize,
     pub patients: usize,
     pub studies: usize,
 }
@@ -312,7 +327,7 @@ pub struct ImportSummary {
 impl ImportSummary {
     pub fn describe(&self) -> String {
         format!(
-            "{} file(s) filed under {} patient(s) / {} study(ies){}{}",
+            "{} file(s) filed under {} patient(s) / {} study(ies){}{}{}",
             self.stored,
             self.patients,
             self.studies,
@@ -323,6 +338,15 @@ impl ImportSummary {
             },
             if self.skipped > 0 {
                 format!(", {} not DICOM", self.skipped)
+            } else {
+                String::new()
+            },
+            if self.too_long > 0 {
+                format!(
+                    ", {} left out: their path would pass {} characters",
+                    self.too_long,
+                    crate::pathlen::MAX_PATH
+                )
             } else {
                 String::new()
             }
@@ -599,6 +623,7 @@ impl Archive {
                 files: sops.len(),
                 dir: common_dir(paths.iter().map(PathBuf::as_path)),
                 datetime: s.datetime.clone(),
+                fourd: s.fourd.clone(),
             };
             by_study
                 .entry(s.study.as_str())
@@ -644,6 +669,8 @@ impl Archive {
                 dir: common_dir(paths.iter().map(PathBuf::as_path)),
                 label: st.label.clone(),
                 series: series.into_iter().map(|(s, _)| s).collect(),
+                fourd: st.fourd.clone(),
+                fourd_orphans: st.fourd_orphans.clone(),
             };
             by_patient
                 .entry(st.patient.as_str())
@@ -670,8 +697,28 @@ impl Archive {
                     studies,
                     key: key.to_string(),
                     label: p.label,
+                    attachments: Vec::new(),
                 },
             );
+        }
+        // The other files, each to the patient of the patient folder it lies
+        // in (`cohort/patient/...`, or `patient/...` directly in a storage
+        // folder), when that folder holds one patient's files.
+        let tops = catalog::top_folders(c);
+        for o in &c.other {
+            let Some(r) = map.get(&o.0) else { continue };
+            let root = &self.roots[*r];
+            let parts: Vec<&str> = o.1.split('/').collect();
+            let direct = tops.get(&(o.0, parts[0].to_string())) == Some(&catalog::TopKind::Patient);
+            let depth = if direct { 1 } else { 2 };
+            if parts.len() <= depth {
+                continue;
+            }
+            let folder = parts[..depth].iter().fold(root.clone(), |p, s| p.join(s));
+            let mut owners = patients.values_mut().filter(|p| p.dir.starts_with(&folder));
+            if let (Some(p), None) = (owners.next(), owners.next()) {
+                p.attachments.push(catalog::abs_of(root, &o.1));
+            }
         }
         let members = catalog::membership(c);
         let mut cohorts: Vec<CohortEntry> = Vec::new();
@@ -1329,6 +1376,7 @@ impl Archive {
         for (r, rel, path) in files {
             let below = path.strip_prefix(&from).unwrap_or(&path).to_path_buf();
             let target = dest_dir.join(below);
+            crate::pathlen::check(&target)?;
             if target == path {
                 sum.unchanged += 1;
                 continue;
@@ -1521,6 +1569,10 @@ impl Importer<'_> {
             }
             let home = self.home_of(&h);
             let dest = home.join(format!("{}.dcm", sanitize(&h.sop)));
+            if crate::pathlen::check(&dest).is_err() {
+                sum.too_long += 1;
+                continue;
+            }
             if dest.exists() {
                 // Filed before, and the catalog never heard of it.
                 sum.duplicates += 1;
@@ -1613,7 +1665,7 @@ impl Importer<'_> {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
-                catalog::add_file(c, h, FileRec(r, rel, *bytes, mtime, h.sop.clone()));
+                catalog::add_file(c, h, FileRec(r, rel, *bytes, mtime, h.sop.clone(), h.z));
             }
             catalog::prune(c);
             catalog::ensure_cohorts(c);

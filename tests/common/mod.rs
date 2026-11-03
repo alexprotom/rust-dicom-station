@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+pub mod fourd;
+
 use std::path::{Path, PathBuf};
 
 use dicom_core::{Tag, VR};

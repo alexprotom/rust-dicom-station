@@ -101,17 +101,18 @@ pub struct StructureSet {
     pub frame_of_reference_uid: String,
     /// SOP Instance UID of this structure set (referenced by RTPLANs).
     pub sop_instance_uid: String,
-    /// Series Instance UID of this object's own series. Kept so that an
-    /// export asked to preserve the identifiers really preserves them: an
-    /// archive files an instance under its series, and the same instance
-    /// arriving under a different one is a different object to it.
+    /// Series Instance UID of this object's own series, as read. An export
+    /// writes the set anew under fresh UIDs and names this one as its
+    /// source ([`crate::export::ExportPlan::sync_format_uids`]).
     pub series_instance_uid: String,
     /// Study this structure set belongs to.
     pub study_uid: String,
     /// Image series the contours were drawn on
     /// (ReferencedFrameOfReference ▶ RTReferencedStudy ▶ RTReferencedSeries).
     pub referenced_series_uid: String,
-    /// Source file name (disambiguates multiple sets with equal labels).
+    /// Source file name (disambiguates multiple sets with equal labels);
+    /// empty or one of [`StructureSet::MADE_HERE`] for a set the station
+    /// made.
     pub file_name: String,
     /// Read-only: the geometry of this set may not be edited.
     ///
@@ -122,6 +123,18 @@ pub struct StructureSet {
     /// trail behind it, and the interface says so.
     pub locked: bool,
     pub rois: Vec<Roi>,
+}
+
+impl StructureSet {
+    /// The `file_name` of the sets the station makes: drawn by hand,
+    /// painted, filled by a workflow.
+    pub const MADE_HERE: [&'static str; 3] = ["drawn-contours", "painted-segmentation", "workflow"];
+
+    /// Was this set read from a file (so its SOP Instance UID is one a file
+    /// carries)?
+    pub fn read_from_file(&self) -> bool {
+        !self.file_name.is_empty() && !Self::MADE_HERE.contains(&self.file_name.as_str())
+    }
 }
 
 /// ROI Observation Label (3006,0085). Retired from the standard, which is

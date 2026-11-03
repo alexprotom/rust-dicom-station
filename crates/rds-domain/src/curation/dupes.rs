@@ -13,11 +13,20 @@
 //!   ImagePositionPatient as a file of the archive. Secondary captures and
 //!   placeholder images (64 pixels or fewer: Philips' respiratory-wave
 //!   captures are one picture in every 4D series) are left out.
+//! * **value twin** (`hu-twin`) - a copy re-written by another program
+//!   (plastimatch) keeps the Hounsfield units but not the bytes: another
+//!   rescale, another pixel representation, every UID new. Its values are
+//!   the same, so a file whose pixels match nothing is matched by the hash
+//!   of its values ([`Facts::value_hash`]) at the same position.
 //!
 //! Verdicts are per source series: `identical` (every file an exact copy),
-//! `pixel-twin` (every file a twin, all of one archive series), `partial`
-//! (some files copies, some not), `ambiguous` (twins spread over more than
-//! one archive series: never merged on that basis), `new` (none). Twins
+//! `pixel-twin` (every file a twin, all of one archive series), `hu-twin`
+//! (likewise, some of them by their values only), `partial` (some files
+//! copies, some not), `ambiguous` (twins spread over more than one archive
+//! series: never merged on that basis), `new` (none). A slice can be in
+//! several archive series (the phases of a GE 4DCT share byte-identical
+//! edge slices): a series is matched to the one archive series that holds
+//! *all* its copies, and is ambiguous only when no single one does. Twins
 //! *inside* the source - the same CT re-exported with every plan - are
 //! counted as well.
 //!
@@ -43,7 +52,19 @@ pub struct Indexed {
     pub mtime: i64,
     pub sop: String,
     pub series: String,
+    /// The Study Instance UID and Frame of Reference UID (for the UID maps
+    /// a twin gives, [`twin_maps`]).
+    #[serde(default)]
+    pub study: String,
+    #[serde(default)]
+    pub frame: String,
+    /// The SOP Class UID (for the RT objects of [`super::objects`]).
+    #[serde(default)]
+    pub class: String,
     pub hash: Option<String>,
+    /// [`Facts::value_hash`].
+    #[serde(default)]
+    pub values: Option<String>,
     /// ImagePositionPatient, rounded to 0.001 mm, as text.
     pub position: Option<String>,
     /// Kept out of the pixel-twin logic ([`Facts::twin_candidate`]).
@@ -53,10 +74,16 @@ pub struct Indexed {
 /// Path → what it held when last read.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PixelIndex {
+    /// [`INDEX_VERSION`]: an index of an older version is read again whole.
+    #[serde(default)]
+    pub version: u32,
     pub files: BTreeMap<String, Indexed>,
 }
 
 pub const INDEX_FILE: &str = "pixel-index.json";
+/// 3: entries carry their study, frame of reference and SOP class.
+/// 4: and the hash of their values ([`Indexed::values`]).
+pub const INDEX_VERSION: u32 = 4;
 
 fn mtime(path: &Path) -> (u64, i64) {
     let m = std::fs::metadata(path).ok();
@@ -78,7 +105,11 @@ impl PixelIndex {
         std::fs::read_to_string(records.join(INDEX_FILE))
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+            .filter(|i: &PixelIndex| i.version == INDEX_VERSION)
+            .unwrap_or(PixelIndex {
+                version: INDEX_VERSION,
+                files: BTreeMap::new(),
+            })
     }
 
     /// Written whole, through a temporary file and a rename.
@@ -128,7 +159,11 @@ impl PixelIndex {
                         candidate: x.twin_candidate(),
                         sop: x.sop,
                         series: x.series,
+                        study: x.study,
+                        frame: x.frame,
+                        class: x.sop_class,
                         hash: x.pixel_hash,
+                        values: x.value_hash,
                         position: position_key(x.position),
                     },
                 )
@@ -181,10 +216,13 @@ pub struct SeriesVerdict {
     pub series: String,
     pub modality: String,
     pub files: usize,
-    /// `identical`, `pixel-twin`, `partial`, `ambiguous`, `new`.
+    /// `identical`, `pixel-twin`, `hu-twin`, `partial`, `ambiguous`, `new`.
     pub verdict: &'static str,
     pub exact: usize,
+    /// Twins of any kind, and of those the ones matched by their values
+    /// only.
     pub twins: usize,
+    pub value_twins: usize,
     /// Same SOP Instance UID as an archive file, other content.
     pub same_uid_other_content: usize,
     /// The archive series its copies are in, with how many each.
@@ -194,13 +232,37 @@ pub struct SeriesVerdict {
     /// The source files that are copies (exact or twin).
     #[serde(skip)]
     pub copies: Vec<PathBuf>,
+    /// Each copy with the archive file it copies.
+    #[serde(skip)]
+    pub pairs: Vec<Pair>,
 }
 
-/// Find the copies of `source`'s files in `against`.
+/// A source file and the archive file it is a copy of: their UIDs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pair {
+    pub path: PathBuf,
+    pub sop: String,
+    pub series: String,
+    pub study: String,
+    pub frame: String,
+    pub target_path: PathBuf,
+    pub target: Indexed,
+}
+
+/// Any two files may be of one patient: the default of [`find`]'s
+/// `same_patient`.
+pub fn any_patient(_: &Path, _: &Path) -> bool {
+    true
+}
+
+/// Find the copies of `source`'s files in `against`. `same_patient(source
+/// file, archive file)` says whether the two can be of one patient (by
+/// their folders): a pixel twin counts only then.
 pub fn find(
     source: &[PathBuf],
     against: &[(PathBuf, Indexed)],
     ignore: &[Tag],
+    same_patient: &(dyn Fn(&Path, &Path) -> bool + Sync),
     p: &Progress,
 ) -> anyhow::Result<Vec<SeriesVerdict>> {
     p.set("Reading the source");
@@ -208,12 +270,47 @@ pub fn find(
     if p.cancelled() {
         anyhow::bail!(CANCELLED);
     }
+    Ok(find_in(&src, against, ignore, same_patient))
+}
+
+/// Archive files by (hash, position).
+type Lookup<'a> = HashMap<(&'a str, &'a str), Vec<&'a (PathBuf, Indexed)>>;
+
+/// The archive files with this hash at this position that `keep` allows.
+fn twins_in<'a>(
+    table: &Lookup<'a>,
+    hash: Option<&str>,
+    pos: &str,
+    keep: &dyn Fn(&Path) -> bool,
+) -> Vec<&'a (PathBuf, Indexed)> {
+    hash.and_then(|h| table.get(&(h, pos)))
+        .map(|list| list.iter().copied().filter(|a| keep(&a.0)).collect())
+        .unwrap_or_default()
+}
+
+/// [`find`] on facts already read (with their pixel hashes).
+pub fn find_in(
+    src: &[Facts],
+    against: &[(PathBuf, Indexed)],
+    ignore: &[Tag],
+    same_patient: &(dyn Fn(&Path, &Path) -> bool + Sync),
+) -> Vec<SeriesVerdict> {
     let by_sop: HashMap<&str, &(PathBuf, Indexed)> =
         against.iter().map(|a| (a.1.sop.as_str(), a)).collect();
-    let mut by_pixels: HashMap<(&str, &str), Vec<&(PathBuf, Indexed)>> = HashMap::new();
+    let mut by_pixels: Lookup = HashMap::new();
+    let mut by_values: Lookup = HashMap::new();
     for a in against.iter().filter(|a| a.1.candidate) {
-        if let (Some(h), Some(pos)) = (&a.1.hash, &a.1.position) {
+        let Some(pos) = &a.1.position else {
+            continue;
+        };
+        if let Some(h) = &a.1.hash {
             by_pixels
+                .entry((h.as_str(), pos.as_str()))
+                .or_default()
+                .push(a);
+        }
+        if let Some(h) = &a.1.values {
+            by_values
                 .entry((h.as_str(), pos.as_str()))
                 .or_default()
                 .push(a);
@@ -229,12 +326,15 @@ pub fn find(
                 .insert(f.series.clone());
         }
     }
-    p.set("Comparing");
-    // Per file: exact, same uid other content, twin of series, or new.
-    enum Kind {
-        Exact(String),
+    // Per file: exact, same uid other content, twin (of the archive files
+    // listed, by bytes or by values), or new.
+    enum Kind<'a> {
+        Exact(&'a (PathBuf, Indexed)),
         OtherContent,
-        Twin(String),
+        Twin {
+            of: Vec<&'a (PathBuf, Indexed)>,
+            by_values: bool,
+        },
         New,
     }
     let kinds: Vec<Kind> = src
@@ -245,29 +345,44 @@ pub fn find(
             }
             if let Some(a) = by_sop.get(f.sop.as_str()) {
                 return match same_content(&f.path, &a.0, ignore) {
-                    Ok(true) => Kind::Exact(a.1.series.clone()),
+                    Ok(true) => Kind::Exact(a),
                     _ => Kind::OtherContent,
                 };
             }
-            if f.twin_candidate() {
-                if let (Some(h), Some(pos)) = (&f.pixel_hash, position_key(f.position)) {
-                    if let Some(list) = by_pixels.get(&(h.as_str(), pos.as_str())) {
-                        let series: BTreeSet<&str> =
-                            list.iter().map(|a| a.1.series.as_str()).collect();
-                        if let Some(s) = series.iter().next().filter(|_| series.len() == 1) {
-                            return Kind::Twin(s.to_string());
-                        }
-                        // Two archive series with these pixels at this
-                        // position: a twin of each, of neither for sure.
-                        return Kind::Twin(format!("{} series", series.len()));
-                    }
-                }
+            if !f.twin_candidate() {
+                return Kind::New;
+            }
+            let Some(pos) = position_key(f.position) else {
+                return Kind::New;
+            };
+            let look = |table, h: &Option<String>| {
+                twins_in(table, h.as_deref(), &pos, &|a| same_patient(&f.path, a))
+            };
+            let of = look(&by_pixels, &f.pixel_hash);
+            if !of.is_empty() {
+                return Kind::Twin {
+                    of,
+                    by_values: false,
+                };
+            }
+            let of = look(&by_values, &f.value_hash);
+            if !of.is_empty() {
+                return Kind::Twin {
+                    of,
+                    by_values: true,
+                };
             }
             Kind::New
         })
         .collect();
     let mut by_series: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (i, f) in src.iter().enumerate() {
+    // Files that are not DICOM are no series (an attachment is reported by
+    // the tools that move it).
+    for (i, f) in src
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.unreadable.is_none())
+    {
         by_series.entry(f.series.as_str()).or_default().push(i);
     }
     let mut out = Vec::new();
@@ -279,23 +394,74 @@ pub fn find(
             verdict: "new",
             exact: 0,
             twins: 0,
+            value_twins: 0,
             same_uid_other_content: 0,
             matches: BTreeMap::new(),
             internal_twins: 0,
             copies: Vec::new(),
+            pairs: Vec::new(),
         };
+        // The archive series that hold every copy of this series: a slice
+        // found in several (a GE phase's edge slice is in its neighbour
+        // too) goes to the one that holds all the others.
+        let mut common: Option<BTreeSet<&str>> = None;
+        for &i in &idx {
+            let here: BTreeSet<&str> = match &kinds[i] {
+                Kind::Exact(a) => [a.1.series.as_str()].into(),
+                Kind::Twin { of, .. } => of.iter().map(|a| a.1.series.as_str()).collect(),
+                _ => continue,
+            };
+            common = Some(match common {
+                None => here,
+                Some(c) => c.intersection(&here).copied().collect(),
+            });
+        }
+        let only = common
+            .filter(|c| c.len() == 1)
+            .and_then(|c| c.into_iter().next());
         for &i in &idx {
             let f = &src[i];
+            let pair = |a: &(PathBuf, Indexed)| Pair {
+                path: f.path.clone(),
+                sop: f.sop.clone(),
+                series: f.series.clone(),
+                study: f.study.clone(),
+                frame: f.frame.clone(),
+                target_path: a.0.clone(),
+                target: a.1.clone(),
+            };
             match &kinds[i] {
-                Kind::Exact(s) => {
+                Kind::Exact(a) => {
                     v.exact += 1;
-                    *v.matches.entry(s.clone()).or_default() += 1;
+                    *v.matches.entry(a.1.series.clone()).or_default() += 1;
                     v.copies.push(f.path.clone());
+                    v.pairs.push(pair(a));
                 }
-                Kind::Twin(s) => {
+                Kind::Twin { of, by_values } => {
                     v.twins += 1;
-                    *v.matches.entry(s.clone()).or_default() += 1;
+                    if *by_values {
+                        v.value_twins += 1;
+                    }
                     v.copies.push(f.path.clone());
+                    let series: BTreeSet<&str> = of.iter().map(|a| a.1.series.as_str()).collect();
+                    let target = match (series.len(), only) {
+                        (1, _) => Some(of[0]),
+                        (_, Some(s)) => of.iter().copied().find(|a| a.1.series == s),
+                        _ => None,
+                    };
+                    match target {
+                        Some(a) => {
+                            *v.matches.entry(a.1.series.clone()).or_default() += 1;
+                            v.pairs.push(pair(a));
+                        }
+                        // In several archive series, and no one of them
+                        // holds the rest: a twin of each, of neither for sure.
+                        None => {
+                            *v.matches
+                                .entry(format!("{} series", series.len()))
+                                .or_default() += 1
+                        }
+                    }
                 }
                 Kind::OtherContent => v.same_uid_other_content += 1,
                 Kind::New => {}
@@ -313,6 +479,8 @@ pub fn find(
             "ambiguous"
         } else if v.exact == v.files {
             "identical"
+        } else if copies == v.files && v.value_twins > 0 {
+            "hu-twin"
         } else if copies == v.files {
             "pixel-twin"
         } else {
@@ -320,7 +488,183 @@ pub fn find(
         };
         out.push(v);
     }
-    Ok(out)
+    out
+}
+
+/// A split found while mapping: one source study (or frame of reference)
+/// whose copies lie in several archive ones.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Split {
+    /// `study` or `frame`.
+    pub kind: &'static str,
+    pub source: String,
+    pub targets: Vec<String>,
+}
+
+/// The UID maps the copies of whole series give: every copy's SOP, series,
+/// study and frame of reference to its archive file's. Only series judged
+/// `identical`, `pixel-twin` or `hu-twin` count (a partial or ambiguous one says
+/// nothing for sure). A source study or frame of reference whose copies lie
+/// in two archive studies or frames is not mapped: it is returned as a
+/// [`Split`] - an earlier split of one study in the archive (for
+/// `merge_studies` / `merge_frames`), or two patients.
+pub fn twin_maps(verdicts: &[SeriesVerdict]) -> (super::remap::UidMaps, Vec<Split>) {
+    use super::remap::{UidKind, UidMaps};
+    let mut maps = UidMaps::default();
+    let mut studies: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut frames: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for v in verdicts
+        .iter()
+        .filter(|v| matches!(v.verdict, "identical" | "pixel-twin" | "hu-twin"))
+    {
+        for p in &v.pairs {
+            let _ = maps.insert(UidKind::Object, &p.sop, &p.target.sop);
+            let _ = maps.insert(UidKind::Object, &p.series, &p.target.series);
+            if !p.study.is_empty() && !p.target.study.is_empty() {
+                studies.entry(&p.study).or_default().insert(&p.target.study);
+            }
+            if !p.frame.is_empty() && !p.target.frame.is_empty() {
+                frames.entry(&p.frame).or_default().insert(&p.target.frame);
+            }
+        }
+    }
+    let mut splits = Vec::new();
+    for (kind, name, m) in [
+        (UidKind::Study, "study", &studies),
+        (UidKind::Frame, "frame", &frames),
+    ] {
+        for (from, to) in m {
+            if to.len() == 1 {
+                let _ = maps.insert(kind, from, to.iter().next().unwrap());
+            } else {
+                splits.push(Split {
+                    kind: name,
+                    source: from.to_string(),
+                    targets: to.iter().map(|s| s.to_string()).collect(),
+                });
+            }
+        }
+    }
+    (maps, splits)
+}
+
+/// The copies inside one folder: files with one SOP Instance UID (the same
+/// bytes, or versions of one object), and pixel twins across its series
+/// (the same CT re-exported with every plan).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Inside {
+    /// Byte-identical repeats of a SOP Instance UID, beyond the first.
+    pub same_sop_identical: Vec<PathBuf>,
+    /// Versions of one SOP Instance UID with other content: all but the
+    /// largest (the most complete).
+    pub same_sop_versions: Vec<PathBuf>,
+    /// How many SOP Instance UIDs have versions.
+    pub versioned_sops: usize,
+    /// Files of series whose every image is a twin of a file of a series
+    /// kept instead (the canonical copy).
+    pub twin_copies: Vec<PathBuf>,
+    /// Source series judged copies of another source series: (copy, kept).
+    pub twin_series: Vec<(String, String)>,
+}
+
+/// Rank a path by `prefer`: the index of the first word (lower case) its
+/// text contains, words not found after all of them.
+fn rank(path: &Path, prefer: &[String]) -> usize {
+    let s = path.to_string_lossy().to_lowercase();
+    prefer
+        .iter()
+        .position(|w| !w.is_empty() && s.contains(&w.to_lowercase()))
+        .unwrap_or(prefer.len())
+}
+
+/// The default order of preference between internal copies: a full
+/// export over a case copy over the copies in plan folders.
+pub fn default_prefer() -> Vec<String> {
+    vec!["full".into(), "case".into(), "plan".into()]
+}
+
+/// Find the copies inside `src`. Among pixel-twin series the one kept is
+/// the best ranked by `prefer` ([`default_prefer`]), then the one with
+/// more files, then by path.
+pub fn inside(src: &[Facts], prefer: &[String]) -> Inside {
+    let mut out = Inside::default();
+    // One SOP UID in several files.
+    let mut by_sop: BTreeMap<&str, Vec<&Facts>> = BTreeMap::new();
+    for f in src.iter().filter(|f| !f.sop.is_empty()) {
+        by_sop.entry(f.sop.as_str()).or_default().push(f);
+    }
+    for list in by_sop.values().filter(|l| l.len() > 1) {
+        let mut list = list.clone();
+        list.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.path.cmp(&b.path)));
+        let keep = list[0];
+        let mut versions = false;
+        for f in &list[1..] {
+            if same_content(&keep.path, &f.path, &[]).unwrap_or(false) {
+                out.same_sop_identical.push(f.path.clone());
+            } else {
+                versions = true;
+                out.same_sop_versions.push(f.path.clone());
+            }
+        }
+        out.versioned_sops += versions as usize;
+    }
+    // Pixel twins across series: a series all of whose candidate images
+    // have a twin in one other series.
+    let mut series: BTreeMap<&str, Vec<&Facts>> = BTreeMap::new();
+    for f in src.iter().filter(|f| f.twin_candidate()) {
+        series.entry(f.series.as_str()).or_default().push(f);
+    }
+    type Key = (Option<String>, Option<String>);
+    let key = |f: &Facts| -> Key { (f.pixel_hash.clone(), position_key(f.position)) };
+    let mut holders: HashMap<Key, BTreeSet<&str>> = HashMap::new();
+    for (s, files) in &series {
+        for f in files {
+            holders.entry(key(f)).or_default().insert(s);
+        }
+    }
+    let first_path = |s: &str| {
+        series[s]
+            .iter()
+            .map(|f| f.path.clone())
+            .min()
+            .unwrap_or_default()
+    };
+    // A series ranks by its best-ranked file (a full export's folder may
+    // hold other folders too), then by size, then by path.
+    let order = |s: &str| {
+        let best = series[s]
+            .iter()
+            .map(|f| rank(&f.path, prefer))
+            .min()
+            .unwrap_or(prefer.len());
+        (best, std::cmp::Reverse(series[s].len()), first_path(s))
+    };
+    for (s, files) in &series {
+        // The other series that hold every image of this one.
+        let mut common: Option<BTreeSet<&str>> = None;
+        for f in files {
+            let others: BTreeSet<&str> = holders[&key(f)]
+                .iter()
+                .copied()
+                .filter(|o| o != s)
+                .collect();
+            common = Some(match common {
+                None => others,
+                Some(c) => c.intersection(&others).copied().collect(),
+            });
+        }
+        // Kept instead: the best of those, when it is better than this one.
+        let kept = common
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| series[o].len() >= files.len())
+            .min_by_key(|o| order(o));
+        if let Some(k) = kept.filter(|k| order(k) < order(s)) {
+            out.twin_series.push((s.to_string(), k.to_string()));
+            out.twin_copies.extend(files.iter().map(|f| f.path.clone()));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -432,7 +776,14 @@ mod tests {
             0,
             "read once"
         );
-        let v = find(&source, &against, &default_ignored(), &Progress::default()).unwrap();
+        let v = find(
+            &source,
+            &against,
+            &default_ignored(),
+            &any_patient,
+            &Progress::default(),
+        )
+        .unwrap();
         let of = |s: &str| v.iter().find(|x| x.series == s).unwrap();
         assert_eq!(of("1.1").verdict, "identical");
         assert_eq!(of("1.1").exact, 3);
@@ -444,5 +795,192 @@ mod tests {
         assert_eq!(of("9.3").internal_twins, 1);
         // PatientID counts when it is not left out.
         assert!(!same_content(&source[0], &archive[0], &[]).unwrap());
+    }
+
+    /// A RayStation-style export: the full export's CT re-exported in a plan
+    /// folder under new UIDs, and one SOP written twice (once the same, once
+    /// a fuller version).
+    #[test]
+    fn copies_inside_an_import_keep_the_full_export() {
+        let d = std::env::temp_dir().join("rds_dupes_inside");
+        let _ = std::fs::remove_dir_all(&d);
+        let mut files = Vec::new();
+        for z in 0..3 {
+            files.push(ct(
+                &d.join("full"),
+                &format!("f{z}"),
+                &format!("5.1.{z}"),
+                "5.1",
+                z as f64,
+                30,
+                "x",
+            ));
+            files.push(ct(
+                &d.join("plan_1"),
+                &format!("p{z}"),
+                &format!("6.1.{z}"),
+                "6.1",
+                z as f64,
+                30,
+                "x",
+            ));
+        }
+        // The same file twice, and a version of another with more in it.
+        let twice = d.join("again/f0");
+        std::fs::create_dir_all(twice.parent().unwrap()).unwrap();
+        std::fs::copy(&files[0], &twice).unwrap();
+        files.push(twice.clone());
+        let fuller = ct(
+            &d.join("again"),
+            "f1",
+            "5.1.1",
+            "5.1",
+            1.0,
+            30,
+            "x-longer-id",
+        );
+        files.push(fuller);
+        let src: Vec<Facts> = files.iter().map(|f| facts::read(f, true)).collect();
+        let r = inside(&src, &default_prefer());
+        assert_eq!(r.twin_series, vec![("6.1".to_string(), "5.1".to_string())]);
+        assert_eq!(r.twin_copies.len(), 3);
+        assert!(r
+            .twin_copies
+            .iter()
+            .all(|p| p.to_string_lossy().contains("plan_1")));
+        assert_eq!(r.same_sop_identical.len(), 1);
+        assert_eq!(r.same_sop_versions.len(), 1);
+        assert_eq!(r.versioned_sops, 1);
+    }
+
+    /// The `ct` slice with its values stored another way: each stored value
+    /// `shift` higher and RescaleIntercept `-shift`, as a program that
+    /// re-encodes a series writes it.
+    #[allow(clippy::too_many_arguments)]
+    fn ct_shifted(
+        dir: &Path,
+        name: &str,
+        sop: &str,
+        series: &str,
+        z: f64,
+        pixels: u8,
+        shift: u8,
+    ) -> PathBuf {
+        let p = ct(dir, name, sop, series, z, pixels.wrapping_add(shift), "x");
+        let f = RawFile::read(&p).unwrap();
+        let mut d: Vec<u8> = Vec::new();
+        let mut put = false;
+        for e in &f.elements {
+            if !put && e.tag > Tag(0x0028, 0x1052) {
+                d.extend(ex(
+                    Tag(0x0028, 0x1052),
+                    "DS",
+                    &encode_text(VR::DS, &format!("-{shift}")),
+                ));
+                d.extend(ex(Tag(0x0028, 0x1053), "DS", &encode_text(VR::DS, "1")));
+                put = true;
+            }
+            d.extend_from_slice(&f.bytes[e.start..e.end]);
+        }
+        std::fs::write(&p, part10(TS_EXPLICIT, &d)).unwrap();
+        p
+    }
+
+    /// A copy re-encoded with the same values is a `hu-twin`; a series
+    /// whose edge slice another archive series has too goes to the one
+    /// that holds all its slices.
+    #[test]
+    fn re_encoded_copies_and_shared_edge_slices_find_their_series() {
+        let d = std::env::temp_dir().join("rds_dupes_hu");
+        let _ = std::fs::remove_dir_all(&d);
+        let (arc, src) = (d.join("archive"), d.join("import"));
+        let mut archive = Vec::new();
+        // Two phases of a 4DCT: phase B starts with the slice phase A
+        // ends with, byte for byte.
+        for z in 0..3 {
+            archive.push(ct(
+                &arc,
+                &format!("a{z}"),
+                &format!("1.1.{z}"),
+                "1.1",
+                z as f64,
+                10,
+                "x",
+            ));
+        }
+        for z in 2..5 {
+            let px = if z == 2 { 10 } else { 60 };
+            archive.push(ct(
+                &arc,
+                &format!("b{z}"),
+                &format!("1.2.{z}"),
+                "1.2",
+                z as f64,
+                px,
+                "x",
+            ));
+        }
+        // A third series, for the re-encoded copy.
+        for z in 0..2 {
+            archive.push(ct(
+                &arc,
+                &format!("c{z}"),
+                &format!("1.3.{z}"),
+                "1.3",
+                z as f64,
+                120,
+                "x",
+            ));
+        }
+        let mut source = Vec::new();
+        for z in 2..5 {
+            let px = if z == 2 { 10 } else { 60 };
+            source.push(ct(
+                &src,
+                &format!("b{z}"),
+                &format!("9.2.{z}"),
+                "9.2",
+                z as f64,
+                px,
+                "y",
+            ));
+        }
+        for z in 0..2 {
+            source.push(ct_shifted(
+                &src,
+                &format!("c{z}"),
+                &format!("9.3.{z}"),
+                "9.3",
+                z as f64,
+                120,
+                7,
+            ));
+        }
+        let mut index = PixelIndex::default();
+        let (against, _) = index.refresh(&archive, &Progress::default()).unwrap();
+        let v = find(
+            &source,
+            &against,
+            &default_ignored(),
+            &any_patient,
+            &Progress::default(),
+        )
+        .unwrap();
+        let of = |s: &str| v.iter().find(|x| x.series == s).unwrap();
+        assert_eq!(of("9.2").verdict, "pixel-twin", "{:?}", of("9.2").matches);
+        assert_eq!(of("9.2").matches.get("1.2"), Some(&3));
+        assert_eq!(of("9.2").pairs.len(), 3);
+        let c = of("9.3");
+        assert_eq!((c.verdict, c.value_twins), ("hu-twin", 2));
+        assert_eq!(c.matches.get("1.3"), Some(&2));
+        // The bytes differ, the values do not.
+        let (x, y) = (
+            facts::read(&source[3], true),
+            facts::read(&archive[6], true),
+        );
+        assert_ne!(x.pixel_hash, y.pixel_hash);
+        assert_eq!(x.value_hash, y.value_hash);
+        let (maps, _) = twin_maps(&v);
+        assert!(!maps.is_empty(), "a hu twin maps its UIDs like any twin");
     }
 }

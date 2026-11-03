@@ -20,11 +20,17 @@
 //! about the protocol, and nothing here returns a patient's name or ID -
 //! the findings name files, UIDs and tags.
 
+pub mod anon;
 pub mod audit;
+pub mod catalog_fix;
 pub mod dupes;
 pub mod facts;
 pub mod journal;
+pub mod objects;
 pub mod raw;
+pub mod relink;
+pub mod remap;
+pub mod reorg;
 
 /// The DICOM files under `dir`, sorted: every file whose header reads,
 /// whatever its name.

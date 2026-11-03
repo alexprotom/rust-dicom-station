@@ -332,7 +332,7 @@ impl ViewerApp {
                     .map(|s| s.study_uid.clone())
                     .unwrap_or_default(),
                 referenced_series_uid: active_series.map(|s| s.uid.clone()).unwrap_or_default(),
-                file_name: "drawn-contours".into(),
+                file_name: crate::rtstruct::StructureSet::MADE_HERE[0].into(),
                 locked: false,
                 rois: vec![roi],
             });

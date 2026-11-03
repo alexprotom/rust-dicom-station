@@ -780,9 +780,9 @@ fn a_series_knows_when_it_was_made_and_an_older_catalog_learns_it() {
     // The catalog as version 1 wrote it: no time, a name given by hand.
     let cat = archive.catalog_path();
     let text = std::fs::read_to_string(&cat).unwrap();
-    assert!(text.contains("\"version\": 2"), "{text}");
+    assert!(text.contains("\"version\": 3"), "{text}");
     let old = text
-        .replace("\"version\": 2", "\"version\": 1")
+        .replace("\"version\": 3", "\"version\": 1")
         .replace("\"datetime\":\"20240917103701\"", "\"label\":\"Daily\"")
         .replacen("\"label\":\"\",", "", 1);
     assert!(
@@ -796,7 +796,7 @@ fn a_series_knows_when_it_was_made_and_an_older_catalog_learns_it() {
     assert_eq!(series.label, "Daily", "the person's name for it is kept");
     assert!(std::fs::read_to_string(&cat)
         .unwrap()
-        .contains("\"version\": 2"));
+        .contains("\"version\": 3"));
 }
 
 /// A file rewritten in place (its study and patient changed, as a merge or
@@ -872,4 +872,213 @@ fn a_rescan_follows_files_rewritten_in_place_and_dates_a_study_by_its_earliest_f
     assert_eq!(st.series.len(), 2, "both series under the study they name");
     assert_eq!(st.date, "20251201", "the earliest session's date");
     assert_eq!(st.description, "Procedure #1");
+}
+
+/// A registration between frames of reference no loaded series has (a
+/// setup system's room frames) loads all the same, and the load says so
+/// once; a file with a private element whose length runs past the end of
+/// the file loads past it.
+#[test]
+fn a_registration_to_unknown_frames_and_a_broken_private_element_still_load() {
+    use dicom_dictionary_std::tags;
+    use rust_dicom_station::curation::raw::{encode_text, rewrite_file, RawFile};
+    let root = scratch("test_archive_unknown_frames");
+    gen_test_data::generate(&root, &GenParams::default(), &Progress::default()).unwrap();
+    let files: Vec<std::path::PathBuf> = rust_dicom_station::curation::files_under(&root);
+    let reg = files
+        .iter()
+        .find(|f| {
+            RawFile::read(f)
+                .ok()
+                .and_then(|r| r.text(tags::MODALITY))
+                .as_deref()
+                == Some("REG")
+        })
+        .expect("the generator writes a REG");
+    rewrite_file(reg, &mut |at| {
+        (at.tag == tags::FRAME_OF_REFERENCE_UID).then(|| encode_text(at.vr, "2.25.424242"))
+    })
+    .unwrap();
+    // A CT slice whose last element is a private one claiming 5000 bytes.
+    let ct = files
+        .iter()
+        .find(|f| f.file_name().unwrap().to_string_lossy().starts_with("CT_"))
+        .unwrap();
+    let mut bytes = std::fs::read(ct).unwrap();
+    let r = RawFile::parse(bytes.clone()).unwrap();
+    let explicit = r.elements[0].explicit;
+    if explicit {
+        bytes.extend_from_slice(&[0xF1, 0x01, 0x26, 0x10, b'U', b'N', 0, 0]);
+    } else {
+        bytes.extend_from_slice(&[0xF1, 0x01, 0x26, 0x10]);
+    }
+    bytes.extend_from_slice(&5000u32.to_le_bytes());
+    bytes.extend_from_slice(&[1, 2, 3, 4]);
+    std::fs::write(ct, &bytes).unwrap();
+    let study = loader::load_directory(&root, &Progress::default()).unwrap();
+    assert_eq!(study.registrations.len(), 1, "{:?}", study.warnings);
+    assert!(
+        study
+            .warnings
+            .iter()
+            .any(|w| w.contains("frames of reference no loaded series has")),
+        "{:?}",
+        study.warnings
+    );
+    let ct_files: usize = study.series.iter().map(|s| s.files.len()).sum();
+    assert_eq!(
+        ct_files, 40,
+        "the slice with the broken element is read: {:?}",
+        study.warnings
+    );
+}
+
+/// A staging folder's copies (the same UIDs under the source's own patient
+/// codes) are never indexed; once copies filed under a series are gone,
+/// the next scan reads the series again from its files; a study whose
+/// files all lie in one patient's folder is that patient's.
+#[test]
+fn staging_copies_stay_out_and_a_study_follows_its_files_and_its_folder() {
+    use rust_dicom_station::archive::catalog;
+    let root = scratch("test_archive_staging");
+    let p2 = ("P01-002", "P01-002");
+    for k in 0..2 {
+        tiny(
+            &root.join(format!("Trial/P01-002/S1/CT/{k}.dcm")),
+            p2,
+            "7.1",
+            "7.1.1",
+            &format!("7.1.1.{k}"),
+            "CT",
+        );
+        // The same files in an import still waiting to be sorted.
+        tiny(
+            &root.join(format!("to_be_sorted/Liver/{k}.dcm")),
+            ("Liver", "Liver"),
+            "7.1",
+            "7.1.1",
+            &format!("7.1.1.{k}"),
+            "CT",
+        );
+    }
+    tiny(
+        &root.join("Trial/P01-003/S1/CT/0.dcm"),
+        ("P01-003", "P01-003"),
+        "7.2",
+        "7.2.1",
+        "7.2.1.0",
+        "CT",
+    );
+    // A study sorted into P01-003's folder whose files still carry the
+    // pseudonym of the export it came from.
+    tiny(
+        &root.join("Trial/P01-003/S2/CT/0.dcm"),
+        ("Pancreas", "Pancreas"),
+        "7.3",
+        "7.3.1",
+        "7.3.1.0",
+        "CT",
+    );
+    let archive = Archive::new(&root);
+    let keys = |a: &Archive| -> Vec<(String, usize)> {
+        a.scan_tree(&Progress::default())
+            .unwrap()
+            .patients()
+            .iter()
+            .map(|p| (p.key.clone(), p.studies.len()))
+            .collect()
+    };
+    assert_eq!(
+        keys(&archive),
+        [("P01-002".to_string(), 1), ("P01-003".to_string(), 2)],
+        "no pseudonym patient, the sorted study under its folder's patient"
+    );
+    let c = catalog::load(&root);
+    assert_eq!(c.series["7.1.1"].files.len(), 2, "the copies are not filed");
+
+    // An import folder of another name is filed until the person says to
+    // ignore it; a copy filed under a sorted series takes its study along.
+    tiny(
+        &root.join("incoming/a.dcm"),
+        ("Liver", "Liver"),
+        "7.1",
+        "7.1.1",
+        "7.1.1.9",
+        "CT",
+    );
+    archive.refresh(&Progress::default()).unwrap();
+    assert_eq!(catalog::load(&root).series["7.1.1"].files.len(), 3);
+    catalog::update(&root, |c| {
+        c.ignore.push("Incom*".into());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        keys(&archive),
+        [("P01-002".to_string(), 1), ("P01-003".to_string(), 2)],
+        "the series is read again from the files left, its study P01-002's"
+    );
+    let c = catalog::load(&root);
+    assert_eq!(c.series["7.1.1"].files.len(), 2);
+    assert_eq!(c.studies["7.1"].patient, "P01-002");
+    assert_eq!(c.ignore, ["Incom*"], "the person's patterns are kept");
+    assert!(catalog::is_ignored_folder("Pryanick-PACS-duplicates", &[]));
+    assert!(!catalog::is_ignored_folder("P01-002", &c.ignore));
+}
+
+/// One Patient ID in two cohorts, given there to two different people,
+/// is found by the birth dates and sexes of their files.
+#[test]
+fn one_code_given_to_two_people_in_two_cohorts_is_found() {
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+    use rust_dicom_station::archive::catalog;
+    use rust_dicom_station::curation::catalog_fix::identity_clashes;
+    let root = scratch("test_archive_identity");
+    let put = |rel: &str, pid: &str, study: &str, birth: &str, sex: &str| {
+        let path = root.join(rel);
+        tiny(
+            &path,
+            (pid, pid),
+            study,
+            &format!("{study}.1"),
+            &format!("{study}.1.1"),
+            "CT",
+        );
+        let mut obj = dicom_object::open_file(&path).unwrap();
+        obj.put(DataElement::new(
+            tags::PATIENT_BIRTH_DATE,
+            VR::DA,
+            PrimitiveValue::from(birth),
+        ));
+        obj.put(DataElement::new(
+            tags::PATIENT_SEX,
+            VR::CS,
+            PrimitiveValue::from(sex),
+        ));
+        obj.write_to_file(&path).unwrap();
+    };
+    put("Trial/P01-002/A/0.dcm", "P01-002", "8.1", "19560101", "F");
+    put("Trial/P01-002/B/0.dcm", "P01-002", "8.2", "19560101", "F");
+    put("Trial/P01-005/A/0.dcm", "P01-005", "8.3", "19700101", "M");
+    put("Rambam/P01-002/A/0.dcm", "P01-002", "8.4", "19480101", "M");
+    put("Rambam/P01-007/A/0.dcm", "P01-007", "8.5", "19500101", "M");
+    // The same person in two cohorts is no clash.
+    put("Rambam/P01-005/A/0.dcm", "P01-005", "8.6", "19700101", "M");
+    Archive::new(&root).refresh(&Progress::default()).unwrap();
+    let clashes = identity_clashes(&catalog::load(&root));
+    assert_eq!(clashes.len(), 1, "{clashes:?}");
+    assert_eq!(clashes[0].patient, "P01-002");
+    let parts: Vec<(&str, &str, usize, usize)> = clashes[0]
+        .parts
+        .iter()
+        .map(|p| (p.cohort.as_str(), p.folder.as_str(), p.studies, p.variants))
+        .collect();
+    assert_eq!(
+        parts,
+        [
+            ("Rambam", "Rambam/P01-002", 1, 1),
+            ("Trial", "Trial/P01-002", 2, 1)
+        ]
+    );
 }

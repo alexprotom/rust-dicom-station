@@ -38,20 +38,25 @@ data says) and `⟳` (a newly generated one).
 
 **Identifiers ▸ keep the original UIDs** (the default) writes the UIDs the
 data already has - study, series, frame of reference, and the SOP instance of
-every slice and every RT object, each back in the series it came from: the
-export *is* the same study, so re-importing it where it came from updates that
-study instead of duplicating it, and references from objects outside the
-export still resolve. **Generate new UIDs** re-fills every row with a fresh
-`2.25.…` UID, for the edited copy that has to live beside its source. Either
-way the cross-references are rewritten to match, so the export is internally
+every slice, each back in the series it came from: the export *is* the same
+study, so re-importing it where it came from updates that study instead of
+duplicating it, and references from objects outside the export still
+resolve. **Generate new UIDs** re-fills every row with a fresh `2.25.…` UID,
+for the edited copy that has to live beside its source. Either way the
+cross-references are rewritten to match, so the export is internally
 consistent - and single rows can still be overridden by hand.
 
-One exception is made on your behalf. An object whose format you *converted*
-is written under a different SOP class, so it is a new instance and not the
-one that was read; its SOP Instance UID switches to the generated one as soon
-as you move the radio, and switches back if you move it back. Two objects of
-different SOP classes sharing one instance UID is the one thing an archive
-cannot forgive.
+RT objects are the exception, whichever mode is chosen. A slice is copied
+byte for byte, so it is the same instance; a structure set, plan, dose or
+segmentation is written anew from what the station read and changed (a subset
+of the ROIs, edited contours, the elements its reader knows, another format),
+and a changed object under its source's UID is two objects an archive takes
+for one - a 1-ROI set filed over the 92-ROI set it was cut from. So every RT
+object gets a new SOP Instance UID and Series Instance UID, names the object
+it was written from in Source Instance Sequence (0042,0013) and Derivation
+Description, and the plan ▶ structure set and dose ▶ plan references inside
+the export follow the new UIDs. A UID typed into its row by hand is written
+as typed.
 
 A rendered image series is the other place slice-level identity cannot be
 kept: the reconstructed volume no longer knows which file each slice came

@@ -546,7 +546,7 @@ impl ViewerApp {
                     }
                 )
             })
-            .unwrap_or_else(|| " ▶ (image series not loaded)".to_string())
+            .unwrap_or_else(|| " ▶ ⚠ image series not loaded".to_string())
     }
 
     /// The *Copy to / Move to / Remove / Export* buttons that act on whatever

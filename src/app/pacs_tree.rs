@@ -11,6 +11,12 @@
 //!
 //! Rows are drawn only where they are visible ([`egui::ScrollArea::show_rows`]),
 //! so a PACS of thousands of series scrolls as quickly as one of ten.
+//!
+//! A study's 4D sets, as the catalog finds them from the headers
+//! ([`crate::archive::fourd`]), are rows of their own under it: the phases
+//! in order, the reconstructions, the trace and the structure sets drawn
+//! on a phase, so that one row loads the set. A set only the geometry says
+//! is one (probable) is drawn muted until a person confirms it.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -26,6 +32,8 @@ pub(super) struct TNode {
     pub hover: String,
     pub files: usize,
     pub children: Vec<TNode>,
+    /// Drawn muted: a 4D set that is only probable.
+    pub weak: bool,
 }
 
 /// A row, by the keys from the top down: `[cohort]`, `[cohort, patient]`,
@@ -38,6 +46,19 @@ pub(super) type NodeId = Vec<String>;
 /// The key of a treatment day's row: `day:20240917`. Never a UID, which is
 /// digits and dots.
 const DAY_KEY: &str = "day:";
+/// The key of a 4D set's row: `4d:` and the set's id.
+const FOURD_KEY: &str = "4d:";
+
+/// Is this key a row that only groups series (a treatment day, a 4D set),
+/// naming no object of its own?
+pub(super) fn is_group_row(key: &str) -> bool {
+    key.starts_with(DAY_KEY) || key.starts_with(FOURD_KEY)
+}
+
+/// The 4D set a row's key names.
+pub(super) fn fourd_group_of(key: &str) -> Option<&str> {
+    key.strip_prefix(FOURD_KEY)
+}
 
 /// One series of a study for [`study_rows`]: its row, its modality and when
 /// it was made (`YYYYMMDDHHMMSS`, empty when unknown).
@@ -45,6 +66,161 @@ pub(super) struct SeriesRow {
     pub node: TNode,
     pub modality: String,
     pub datetime: String,
+    /// The 4D set it is in, and as what.
+    pub fourd: Option<crate::archive::fourd::SeriesFourD>,
+}
+
+/// The study's 4D sets as rows, each holding its series; the series of no
+/// set are handed back as they came.
+fn fourd_rows(
+    series: Vec<SeriesRow>,
+    sets: &[crate::archive::fourd::StudyFourD],
+) -> Vec<SeriesRow> {
+    if sets.is_empty() {
+        return series;
+    }
+    let mut out: Vec<SeriesRow> = Vec::new();
+    let mut held: std::collections::BTreeMap<&str, Vec<SeriesRow>> = Default::default();
+    for mut r in series {
+        let group = r.fourd.as_ref().map(|f| f.group.clone());
+        match group.and_then(|g| sets.iter().find(|s| s.group == g)) {
+            Some(set) => {
+                if let Some(f) = &r.fourd {
+                    // What the series is to the set, before its files.
+                    r.node.right = format!("{} · {}", f.show(), r.node.right);
+                }
+                held.entry(set.group.as_str()).or_default().push(r);
+            }
+            None => out.push(r),
+        }
+    }
+    for set in sets {
+        let Some(mut rows) = held.remove(set.group.as_str()) else {
+            continue;
+        };
+        // Phases in their order, then the reconstructions, the trace, the
+        // structure sets.
+        let rank = |r: &SeriesRow| {
+            let f = r.fourd.as_ref();
+            let role = f.map_or("", |f| f.role.as_str());
+            let order = match role {
+                "phase" => 0,
+                "trace" => 2,
+                "structures" => 3,
+                _ => 1,
+            };
+            let pct: i64 = f
+                .map(|f| f.phase.trim_start_matches('t').trim_end_matches('%'))
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(i64::MAX);
+            (order, pct)
+        };
+        rows.sort_by_key(|r| rank(r));
+        let files: usize = rows.iter().map(|r| r.node.files).sum();
+        let datetime = rows
+            .iter()
+            .map(|r| r.datetime.as_str())
+            .filter(|d| !d.is_empty())
+            .min()
+            .unwrap_or_default()
+            .to_string();
+        let mut about = format!(
+            "A 4DCT found from the headers ({}{}), scan {} of the study\n{} phases of {} slices{}{}",
+            set.evidence,
+            if set.custom { ", set by hand" } else { "" },
+            set.scan,
+            set.phases,
+            set.slices,
+            if set.recons.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", set.recons.join(", "))
+            },
+            if set.scanner.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", set.scanner)
+            },
+        );
+        if !set.confirmed {
+            about.push_str(
+                "\nProbable only: the series share one geometry and nothing else says 4D. \
+                 Confirm or reject it from its menu.",
+            );
+        }
+        about.push_str("\nLoading this row loads its phases, reconstructions and the structure sets drawn on them.");
+        out.push(SeriesRow {
+            modality: "CT".into(),
+            datetime,
+            fourd: None,
+            node: TNode {
+                key: format!("{FOURD_KEY}{}", set.group),
+                icon: "🎞",
+                text: set.name.clone(),
+                right: format!(
+                    "{} series · {files} file{}",
+                    rows.len(),
+                    if files == 1 { "" } else { "s" }
+                ),
+                hover: about,
+                files,
+                children: rows.into_iter().map(|r| r.node).collect(),
+                weak: !set.confirmed,
+            },
+        });
+    }
+    // A set whose series are all gone keeps nothing; the rest come back.
+    out.extend(held.into_values().flatten());
+    out
+}
+
+/// What a study row says of its 4D sets: `🎞2` (two scans), `🎞?` when
+/// only probable, the phases missing when a scout or an ungated series has
+/// no set; and the lines its tooltip adds. Empty for a study without.
+pub(super) fn fourd_badge(
+    sets: &[crate::archive::fourd::StudyFourD],
+    orphans: &[crate::archive::fourd::Orphan],
+) -> (String, String) {
+    if sets.is_empty() {
+        if orphans.is_empty() {
+            return (String::new(), String::new());
+        }
+        return (
+            "🎞 phases not in PACS · ".into(),
+            format!(
+                "\n4D: {} with no phases in the PACS",
+                orphans
+                    .iter()
+                    .map(|o| format!("series {} ({})", o.number, o.what))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
+    let scans: std::collections::BTreeSet<usize> = sets.iter().map(|s| s.scan).collect();
+    let sure = sets.iter().any(|s| s.confirmed);
+    let badge = if sure {
+        format!("🎞{} · ", scans.len())
+    } else {
+        "🎞? · ".to_string()
+    };
+    let lines: Vec<String> = sets
+        .iter()
+        .map(|s| {
+            format!(
+                "{}{} · {}{}",
+                s.name,
+                if s.scanner.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", s.scanner)
+                },
+                s.evidence,
+                if s.confirmed { "" } else { " (probable)" }
+            )
+        })
+        .collect();
+    (badge, format!("\n4DCT: {}", lines.join("\n")))
 }
 
 /// The rows under a study. A study that is a treatment course - it holds
@@ -54,16 +230,27 @@ pub(super) struct SeriesRow {
 /// reports. Its other series (the planning CT, the plan) stay directly
 /// under the study. The viewer's data tree puts a day together by beam
 /// ([`crate::sessions`]); the catalog knows no references, so here it is
-/// the series' date alone. Any other study lists its series as they come.
-pub(super) fn study_rows(series: Vec<SeriesRow>) -> Vec<TNode> {
+/// the series' date alone. A study without records whose series were made
+/// on more than one day (one StudyInstanceUID over weeks of sessions, each
+/// its own `Procedure #N`) has a row per session day the same way, holding
+/// all its dated series. Any other study lists its series as they come.
+pub(super) fn study_rows(
+    series: Vec<SeriesRow>,
+    fourd: &[crate::archive::fourd::StudyFourD],
+) -> Vec<TNode> {
+    let series = fourd_rows(series, fourd);
     let day = |s: &SeriesRow| s.datetime.get(..8).map(str::to_string);
-    let days: std::collections::BTreeSet<String> = series
+    let mut days: std::collections::BTreeSet<String> = series
         .iter()
         .filter(|s| s.modality == "RTRECORD")
         .filter_map(day)
         .collect();
-    if days.is_empty() {
-        return series.into_iter().map(|s| s.node).collect();
+    let course = !days.is_empty();
+    if !course {
+        days = series.iter().filter_map(day).collect();
+        if days.len() < 2 {
+            return series.into_iter().map(|s| s.node).collect();
+        }
     }
     let of = days.len();
     let mut out: Vec<TNode> = Vec::new();
@@ -94,7 +281,12 @@ pub(super) fn study_rows(series: Vec<SeriesRow>) -> Vec<TNode> {
                 if files == 1 { "" } else { "s" }
             ),
             hover: format!(
-                "A treatment day: the series made that day, by the time they were made\n{}",
+                "{}: the series made that day, by the time they were made\n{}",
+                if course {
+                    "A treatment day"
+                } else {
+                    "A session"
+                },
                 kinds
                     .iter()
                     .map(|(m, k)| format!("{m} {k}"))
@@ -103,47 +295,38 @@ pub(super) fn study_rows(series: Vec<SeriesRow>) -> Vec<TNode> {
             ),
             files,
             children: rows.into_iter().map(|r| r.node).collect(),
+            weak: false,
         });
     }
     out
 }
 
-/// The rows a selection means, with the treatment days taken out: a day's
-/// row is each of its series, a series under a day the series of its
-/// study - so every id is `[cohort]`, `[cohort, patient]`, `[cohort,
-/// patient, study]` or `[cohort, patient, study, series]`, as the callers
-/// read them.
-/// Is this key a treatment day's row (which names no object of its own)?
-pub(super) fn is_day(key: &str) -> bool {
-    key.starts_with(DAY_KEY)
-}
-
+/// The rows a selection means, with the rows that only group series (the
+/// treatment days, the 4D sets) taken out: such a row is each of its series,
+/// a series under one the series of its study - so every id is
+/// `[cohort]`, `[cohort, patient]`, `[cohort, patient, study]` or
+/// `[cohort, patient, study, series]`, as the callers read them.
 pub(super) fn series_ids(nodes: &[TNode], ids: &[NodeId]) -> Vec<NodeId> {
+    fn add(nodes: &[TNode], id: &NodeId, out: &mut Vec<NodeId>) {
+        if id.last().is_some_and(|k| is_group_row(k)) {
+            for child in node_at(nodes, id)
+                .map(|n| n.children.as_slice())
+                .unwrap_or(&[])
+            {
+                let mut c = id.clone();
+                c.push(child.key.clone());
+                add(nodes, &c, out);
+            }
+            return;
+        }
+        let s: NodeId = id.iter().filter(|k| !is_group_row(k)).cloned().collect();
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
     let mut out: Vec<NodeId> = Vec::new();
-    let mut push = |id: NodeId| {
-        if !out.contains(&id) {
-            out.push(id);
-        }
-    };
     for id in ids {
-        match id.iter().position(|k| k.starts_with(DAY_KEY)) {
-            None => push(id.clone()),
-            Some(at) if at + 1 == id.len() => {
-                for child in node_at(nodes, id)
-                    .map(|n| n.children.as_slice())
-                    .unwrap_or(&[])
-                {
-                    let mut s = id[..at].to_vec();
-                    s.push(child.key.clone());
-                    push(s);
-                }
-            }
-            Some(at) => {
-                let mut s = id.clone();
-                s.remove(at);
-                push(s);
-            }
-        }
+        add(nodes, id, &mut out);
     }
     out
 }
@@ -361,6 +544,8 @@ pub(super) fn tree_ui(
                 }
                 let text_color = if sel {
                     visuals.selection.stroke.color
+                } else if row.node.weak {
+                    visuals.weak_text_color()
                 } else {
                     visuals.text_color()
                 };
@@ -645,22 +830,38 @@ mod tests {
             node: n(key, key, vec![]),
             modality: modality.into(),
             datetime: when.into(),
+            fourd: None,
         };
-        let rows = study_rows(vec![
-            row("ct-plan", "CT", "20240903115855"),
-            row("rec2", "RTRECORD", "20240917105946"),
-            row("ct-day", "CT", "20240917103701"),
-            row("rec1", "RTRECORD", "20240916105418"),
-            row("undated", "RTPLAN", ""),
-        ]);
+        let rows = study_rows(
+            vec![
+                row("ct-plan", "CT", "20240903115855"),
+                row("rec2", "RTRECORD", "20240917105946"),
+                row("ct-day", "CT", "20240917103701"),
+                row("rec1", "RTRECORD", "20240916105418"),
+                row("undated", "RTPLAN", ""),
+            ],
+            &[],
+        );
         let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys, ["ct-plan", "undated", "day:20240916", "day:20240917"]);
         assert_eq!(rows[3].text, "2024-09-17 · 2 of 2");
         let day: Vec<&str> = rows[3].children.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(day, ["ct-day", "rec2"], "in the order they were made");
-        // A study with no record is listed as it comes.
-        let plain = study_rows(vec![row("ct", "CT", "20240903115855")]);
+        // A study of one day with no record is listed as it comes.
+        let plain = study_rows(vec![row("ct", "CT", "20240903115855")], &[]);
         assert_eq!(plain[0].key, "ct");
+        // One of several days without records: a session a day.
+        let sessions = study_rows(
+            vec![
+                row("ct1", "CT", "20240903115855"),
+                row("reg", "REG", "20240910080000"),
+                row("ct2", "CT", "20240910081500"),
+            ],
+            &[],
+        );
+        let keys: Vec<&str> = sessions.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["day:20240903", "day:20240910"]);
+        assert!(sessions[1].hover.starts_with("A session"));
 
         // A selection of a day is its series; a series under a day is the
         // study's series.
@@ -681,6 +882,71 @@ mod tests {
         assert_eq!(
             series_ids(&model, &[id(&["c", "p"])]),
             vec![id(&["c", "p"])]
+        );
+    }
+
+    /// The phases of a 4D set under one row, in phase order, with the
+    /// structure set drawn on one of them; selecting the row is selecting
+    /// them all.
+    #[test]
+    fn a_4d_set_is_one_row_holding_its_series() {
+        use crate::archive::fourd::{SeriesFourD, StudyFourD};
+        let member = |key: &str, role: &str, phase: &str| SeriesRow {
+            node: n(key, key, vec![]),
+            modality: if role == "structures" {
+                "RTSTRUCT"
+            } else {
+                "CT"
+            }
+            .into(),
+            datetime: "20240610140847".into(),
+            fourd: Some(SeriesFourD {
+                group: "g1".into(),
+                role: role.into(),
+                phase: phase.into(),
+                ..Default::default()
+            }),
+        };
+        let set = StudyFourD {
+            group: "g1".into(),
+            name: "4DCT 2024-06-10 (3 phases + 1)".into(),
+            phases: 3,
+            confirmed: false,
+            scan: 1,
+            ..Default::default()
+        };
+        let other = SeriesRow {
+            node: n("plan", "plan", vec![]),
+            modality: "CT".into(),
+            datetime: "20240610090000".into(),
+            fourd: None,
+        };
+        let rows = study_rows(
+            vec![
+                member("p50", "phase", "50%"),
+                member("rs", "structures", "0%"),
+                member("p0", "phase", "0%"),
+                member("u", "untagged", ""),
+                member("p10", "phase", "10%"),
+                other,
+            ],
+            &[set],
+        );
+        let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["plan", "4d:g1"]);
+        assert!(rows[1].weak, "probable: muted");
+        let inside: Vec<&str> = rows[1].children.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(inside, ["p0", "p10", "p50", "u", "rs"]);
+        assert!(rows[1].children[0].right.starts_with("0%"));
+        let model = vec![n("c", "C", vec![n("p", "P", vec![n("s", "S", rows)])])];
+        let id = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<NodeId>();
+        assert_eq!(
+            series_ids(&model, &[id(&["c", "p", "s", "4d:g1"])]).len(),
+            5
+        );
+        assert_eq!(
+            series_ids(&model, &[id(&["c", "p", "s", "4d:g1", "p10"])]),
+            vec![id(&["c", "p", "s", "p10"])]
         );
     }
 }

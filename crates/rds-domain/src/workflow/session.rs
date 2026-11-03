@@ -461,7 +461,7 @@ pub fn file_items(
     if f.kind.structures() {
         let idx = match set_idx.flatten() {
             Some(i) => i,
-            None => new_structure_set(study, series, grid, f.set_label, "workflow"),
+            None => new_structure_set(study, series, grid, f.set_label, StructureSet::MADE_HERE[2]),
         };
         let ss = &mut study.structure_sets[idx];
         for (k, it) in items.iter().enumerate() {

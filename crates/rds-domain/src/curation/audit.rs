@@ -62,6 +62,7 @@ pub struct Known {
     pub sops: HashSet<String>,
     pub series: HashSet<String>,
     pub frames: HashSet<String>,
+    pub studies: HashSet<String>,
 }
 
 /// Findings by Study Instance UID (`""` for files that name none).
@@ -125,7 +126,24 @@ pub fn check(all: &[Facts], known: &Known, all_objects: bool) -> Report {
     // ---- per file --------------------------------------------------------
     for f in all {
         if let Some(why) = &f.unreadable {
-            add("", one(Severity::Broken, "unreadable", why.clone(), f));
+            // A file that is no DICOM at all (a plan's screenshot, a
+            // detector's headerless frame) is an attachment, not a broken
+            // file: plan_reorganize says where it goes.
+            if why.starts_with("not DICOM") {
+                let px = f.bytes / 2;
+                let w = (px as f64).sqrt().round() as u64;
+                let detail = if f.bytes.is_multiple_of(2) && w >= 64 && w * w == px {
+                    format!(
+                        "not DICOM: {} bytes, a headerless {w}x{w} 16-bit frame?",
+                        f.bytes
+                    )
+                } else {
+                    format!("not DICOM: {} bytes", f.bytes)
+                };
+                add("", one(Severity::Warning, "attachment", detail, f));
+            } else {
+                add("", one(Severity::Broken, "unreadable", why.clone(), f));
+            }
             continue;
         }
         for pr in &f.problems {

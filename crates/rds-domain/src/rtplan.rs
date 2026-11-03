@@ -162,6 +162,9 @@ pub struct PlanInfo {
     pub study_uid: String,
     /// SOP Instance UID of the structure set the plan was made on.
     pub referenced_structset_uid: String,
+    /// SOP Instance UID of the plan this one refers to (ReferencedRTPlan
+    /// Sequence: a verification or QA plan names the clinical one).
+    pub referenced_plan_uid: String,
     pub beams: Vec<BeamInfo>,
 }
 
@@ -177,6 +180,10 @@ pub fn load(path: &Path) -> Result<PlanInfo> {
         series_instance_uid: str_of(&obj, tags::SERIES_INSTANCE_UID).unwrap_or_default(),
         study_uid: str_of(&obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         referenced_structset_uid: items_of(&obj, tags::REFERENCED_STRUCTURE_SET_SEQUENCE)
+            .and_then(|items| items.first())
+            .and_then(|it| str_of(it, tags::REFERENCED_SOP_INSTANCE_UID))
+            .unwrap_or_default(),
+        referenced_plan_uid: items_of(&obj, tags::REFERENCED_RT_PLAN_SEQUENCE)
             .and_then(|items| items.first())
             .and_then(|it| str_of(it, tags::REFERENCED_SOP_INSTANCE_UID))
             .unwrap_or_default(),

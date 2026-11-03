@@ -259,6 +259,29 @@ impl ViewerApp {
             let Some(reg) = study.registrations.get(ri) else {
                 return;
             };
+            // A frame no workspace has (a setup system's room frame): the
+            // workspaces whose series the registration names stand in.
+            let named: Vec<&str> = self
+                .open_slots()
+                .into_iter()
+                .filter(|s| {
+                    self.slots[*s].study.as_ref().is_some_and(|st| {
+                        st.series.iter().any(|se| reg.references.contains(&se.uid))
+                    })
+                })
+                .map(|s| SLOT_NAMES[s])
+                .collect();
+            let hint = |uid: &str| -> String {
+                let h = hint(uid);
+                if h.is_empty() && !uid.is_empty() && !named.is_empty() {
+                    format!(
+                        " (in no workspace; it names series of {})",
+                        named.join(", ")
+                    )
+                } else {
+                    h
+                }
+            };
 
             // ---- the facts ----
             let mut facts: Vec<(String, String)> = Vec::new();

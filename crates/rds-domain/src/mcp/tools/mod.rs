@@ -175,7 +175,9 @@ registry! {
 
     // ---- 4D -----------------------------------------------------------
     "list_4d_groups" => (session::DatasetArgs, fourd::list_4d_groups, false,
-        "The 4D groups of a dataset (phases in temporal order, reconstructions such as AVG/MIP)."),
+        "The 4D groups of a dataset (phases in temporal order, reconstructions such as AVG/MIP, \
+         the ungated untagged series). A group the header rules found carries group, the id \
+         the archive's catalog lists the same set under; a call may name a group by it."),
     "propagate_to_group" => (fourd::GroupArgs, fourd::propagate_to_group, true,
         "Register one series onto every phase of a 4D group (deformable, one registration per \
          phase) and carry structures across onto each phase. The per-phase transforms are kept \
@@ -218,21 +220,40 @@ registry! {
         "What the station's archive (its PACS) holds: every patient as an alias (never a name \
          or an ID; their code under the pseudonymized policy), their studies by Study Instance \
          UID with the year, the modalities, the description and the series (modality, number, \
-         description, files). summary gives counts per cohort only (start there for a large \
-         archive); cohort and patient narrow the listing; offset and limit page through it \
-         (25 patients a page, next_offset says where the next starts). The catalog is brought \
-         up to date first."),
+         description, files) and their 4D sets found from the headers (fourd: group id, name, \
+         scan, phases, reconstructions, evidence, confirmed; fourd_scans counts scans, a \
+         standard and an Extended-FOV set of one scan being one; a series' fourd is its phase \
+         or role; fourd_orphans: a scout or untagged series whose phases are not in the \
+         archive); labels under the pseudonymized policy. summary gives counts per cohort only \
+         (start there for a large archive), and with filter one line per study that passes; \
+         filter {\"has_4d\": true | \"probable\" | false} keeps the studies with a 4DCT, with a set \
+         only the geometry says is one (to confirm), or without any; cohort and patient narrow \
+         the listing; offset and limit page through it (25 patients a page, 100 study lines, \
+         next_offset says where the next starts). The catalog is brought up to date first."),
+    "list_archive_4d_groups" => (archive::ArchiveStudyArgs, archive::list_archive_4d_groups, true,
+        "The 4D groups of one study of the archive, from the catalog alone (no file opened): \
+         each group's id, name, scan, evidence (phase-labels, header-4d, same-acquisition, \
+         geometry-only = probable, description, custom), whether it is confirmed, and its \
+         members (Series Instance UID, number, role phase / untagged / AVG / MIP / MinIP / \
+         trace, phase such as 30% or t3, inferred when the phase was read from the series' \
+         place, files), with the structure sets drawn on its phases."),
     "describe_archive_study" => (archive::ArchiveStudyArgs, archive::describe_archive_study, true,
         "One study of the archive series by series, from the headers alone (no pixels, no \
          identifiers): what each series becomes when loaded (image volume, planar image, \
          additional object, report, structure set, dose, plan, ...), its SOP class, image type, pixels, \
          frames, samples per pixel and whether its files carry a position. The way to see why \
-         a series is shown as it is, a scanner's protocol page say, without opening it."),
+         a series is shown as it is, a scanner's protocol page say, without opening it. One \
+         header per series is read, whatever the study's size; a course study also lists its \
+         sessions by day (series, files)."),
     "open_archive_study" => (archive::ArchiveStudyArgs, archive::open_archive_study, true,
         "Open a study of the archive as a dataset, through the same identity gate as \
          open_dataset: refused under the default policy when its headers still name the \
-         patient, opened with the values redacted in memory under redact. Returns the dataset \
-         handle and its contents, as open_dataset does."),
+         patient, opened with the values redacted in memory under redact. series opens only \
+         those series (their UIDs from describe_archive_study): one session of a course study \
+         of thousands of files; fourd_group opens one 4D group (its id from list_archive) with \
+         the structure sets drawn on its phases, and the dataset's list_4d_groups lists it \
+         under the same id. Returns the dataset handle and its contents, as open_dataset \
+         does."),
     // ---- curating the archive ([pacs] in mcp.toml) ---------------------
     "audit_folder" => (curation::AuditArgs, curation::audit_folder, true,
         "Check a folder under the [pacs] roots from the headers and element lengths alone (no \
@@ -250,12 +271,19 @@ registry! {
          series: identical (same SOP Instance UID and the same raw elements but for \
          ignore_tags, default PatientName and PatientID), pixel-twin (new UIDs, but the same \
          SHA-256 of the pixel data at the same ImagePositionPatient: a re-anonymized copy), \
-         partial, ambiguous (twins in several archive series: never merge on that), new; with \
-         the archive series each matches, and twins inside the source itself. Secondary \
-         captures and placeholder images are left out of the pixel comparison. Pixel hashes \
-         are kept in the records folder, so only new or changed files are read again. \
-         quarantine_copies also plans moving the identical and pixel-twin series to the \
-         quarantine folder (a manifest for apply_manifest). Otherwise read-only."),
+         hu-twin (the same values, HU for a CT, at the same position, in other bytes: a copy \
+         another program re-encoded), partial, ambiguous (twins in several archive series and \
+         no one series holding them all: never merge on that), new; with \
+         the archive series each matches. A pixel twin counts only within one patient folder \
+         (same_patient, default true; folder names through pacs-rules.toml). Inside the \
+         source: repeated SOP Instance UIDs (byte-identical, or versions: the largest kept) \
+         and series that re-export another (the copy kept by prefer: full, case, plan). \
+         Secondary captures and placeholder images are left out of the pixel comparison. \
+         Reports splits (a source study or frame with copies in two archive ones) and saves \
+         the UID map the copies give, for remap_references. Pixel hashes are kept in the \
+         records folder, so only new or changed files are read again. quarantine_copies also \
+         plans moving the identical, pixel-twin and hu-twin series and the copies inside the source to \
+         the quarantine folder (a manifest for apply_manifest). Otherwise read-only."),
     "check_references" => (curation::AuditArgs, curation::check_references, true,
         "Before an apply: every reference the objects of a folder make (structure sets, plans, \
          doses, RT images, registrations, records, segmentations, reports) to series, \
@@ -270,7 +298,8 @@ registry! {
         "Plan setting PatientName and PatientID of files under the [pacs] roots (or of some \
          of their series or studies) to the values given, for the files that differ. The old \
          values are never returned. Writes only a manifest; apply_manifest rewrites the two \
-         elements of each file in place, every other element left byte for byte as it was, \
+         elements of each file in place wherever they are (in sequences too, where a \
+         scanner repeats the identity), every other element left byte for byte as it was, \
          verified by reading the result back before it replaces the file, a copy of each \
          file kept for undo_journal."),
     "apply_manifest" => (curation::ManifestArgs, curation::apply_manifest, true,
@@ -284,6 +313,115 @@ registry! {
          back, rewritten files restored from the copy kept, each only if nobody changed it \
          since (its SHA-256 is in the journal). Entries that cannot be undone are skipped \
          and listed."),
+    "relink_structure_set" => (curation::RelinkArgs, curation::relink_structure_set, true,
+        "Plan re-pointing a structure set at a CT series already in the archive: every image \
+         it names is mapped to a target image (mapping pixel: through pixel twins of its own \
+         CT; z: by slice position, after checking orientation, in-plane origin and spacing, \
+         or by its contours' z where its CT is missing, a slice no contour lies on by its \
+         place in the series-level list), and its series, study and frame references follow; \
+         ROIs with an empty frame get the target's. companions (the export's plans and doses) \
+         are rewritten with it: a plan's structure set reference pointed at it, a dose's plan \
+         reference at the one plan among them. merge_series moves series of the export that shared its frame of \
+         reference (4D phases) into the target study and frame - only with the pixel mapping. \
+         Refuses when an image has no counterpart, an old UID would stay or a reference would \
+         lead nowhere; otherwise saves a manifest for apply_manifest."),
+    "remap_references" => (curation::RemapArgs, curation::remap_references, true,
+        "Plan rewriting the UIDs objects (structure sets, plans, doses, RT images, \
+         registrations, records) refer to, through three typed maps - objects, studies, \
+         frames of reference - chosen by where each UID sits, never by its value (a Philips 4D \
+         series shares its UID with its frame). The maps come from the pixel twins of a source \
+         folder in the archive (source, against; a source study or frame with copies in two \
+         archive ones is refused as a split), from a saved map, or by hand. The objects' own \
+         SOP and series UIDs and private elements are never touched. Refuses if an old UID \
+         would stay; lists references that would not resolve. Saves the map and a manifest."),
+    "merge_studies" => (curation::MergeArgs, curation::merge_studies, true,
+        "Plan merging studies of the archive into one (an earlier split: a course study cut \
+         in two, a registration's two-file study): every file under the paths that holds one \
+         of the from Study Instance UIDs, as its own or in a reference, gets the into UID. A \
+         manifest for apply_manifest; plan_reorganize then sorts the merged files."),
+    "merge_frames" => (curation::MergeArgs, curation::merge_frames, true,
+        "Plan merging frames of reference into one (one patient position given two FoR UIDs \
+         by two systems): every Frame of Reference UID under the paths, own or referenced, \
+         that is one of from becomes into. A manifest for apply_manifest."),
+    "dedupe_rt_objects" => (curation::DedupeArgs, curation::dedupe_rt_objects, true,
+        "Which RT objects of an import (structure sets, plans, doses, RT images, \
+         registrations, records, reports) the archive holds already, when re-anonymization \
+         gave them new UIDs: by a content fingerprint with every referenced UID put through \
+         the UID map (from the image twins, use_twins, and a saved map), structure sets first, \
+         then plans, then the rest; else by content without UIDs told apart by the creation \
+         stamp, by a unique stamp, or by a plan's beams or a structure set's contours. Copies \
+         inside the import keep the largest. Saves the extended map for remap_references; \
+         quarantine_copies plans moving the copies."),
+    "phi_report" => (curation::PhiArgs, curation::phi_report, true,
+        "Where the patients' identifiers occur in a folder (an identified import), per \
+         patient folder: the tag places (sequence>element) whose text holds a token of any \
+         name or ID the patient's files carry, with file counts; the removed-list tags present; \
+         full birth dates; private elements. No value is returned. Read-only: what to know \
+         before plan_pseudonymize."),
+    "plan_pseudonymize" => (curation::PseudonymizeArgs, curation::plan_pseudonymize, true,
+        "Plan pseudonymizing a folder as the archive keeps its trial data: PatientName and \
+         PatientID become the patient's code (patient, or the patient folder through \
+         pacs-rules.toml), the birth date YYYY0101, the other names and IDs, addresses, \
+         phones, record locator, issuer and physicians removed; dates, UIDs, staff names and \
+         private elements (keep_private, default true) kept. In place, or moved to move_to as \
+         rewritten. Each file is rewritten in memory first and scanned: a token of any of the \
+         patient's names or IDs left in any text element (nested, private) refuses the plan, \
+         by tag. Writes only a manifest."),
+    "patient_demographics" => (curation::PhiArgs, curation::patient_demographics, true,
+        "Patients whose files disagree on PatientBirthDate or PatientSex across exports: how \
+         many distinct values and files per variant, never the values. Read-only."),
+    "set_patient_demographics" => (curation::DemographicsArgs, curation::set_patient_demographics, true,
+        "Plan setting PatientBirthDate (YYYY0101 or empty) and PatientSex (M, F, O or empty) \
+         in a patient's files, verified and journaled like set_patient_identity; old values \
+         are never returned. Writes only a manifest."),
+    "plan_reorganize" => (curation::ReorganizeArgs, curation::plan_reorganize, true,
+        "Plan sorting a folder (an import, or a cohort of the archive) into the archive's \
+         layout cohort/patient/study/series/file by the rules in records/pacs-rules.toml (or \
+         the defaults): study folders <date>_<Upright|Supine>-<note>_StudyUID-<last 12>, \
+         series folders Series-<n>_<Modality>_<note>_SeriesUID-<last 12>, files \
+         <CT|RS|RP|RD|RI|...>.<SOP UID>.dcm; dates and notes from the earliest session, \
+         Upright by the imaging scanner, patient folders mapped to codes. A study the archive \
+         has is merged into its folder; a byte-identical copy goes to quarantine; \
+         PatientName/PatientID become the code unless the cohort keeps them; non-DICOM \
+         attachments are reported or moved (attachments). Writes only a manifest."),
+    "apply_reorganize" => (curation::ManifestArgs, curation::apply_reorganize, true,
+        "Apply a plan_reorganize manifest: the identity rewrites first (verified, kept for \
+         undo), then the moves; journaled, resumable, undone by undo_journal."),
+    "catalog_relink" => (curation::CohortArgs, curation::catalog_relink, false,
+        "In the station's PACS catalog, file every study of a cohort under one patient entry \
+         per patient folder (the entry whose ID is the folder's code, else the one with most \
+         files), carrying the other entries' labels and cohort memberships over and dropping \
+         entries no study uses. A copy of the catalog is kept in records/catalog-backups."),
+    "set_4d_group" => (curation::Set4dArgs, curation::set_4d_group, false,
+        "Make a 4D group of a study of the station's PACS catalog by hand: members are Series \
+         Instance UIDs, phases in order (or {series, role, phase}); it replaces every group \
+         the rules found that shares a series with it, keeps that group's id, and survives \
+         rescans. A copy of the catalog is kept in records/catalog-backups first."),
+    "confirm_4d" => (curation::Confirm4dArgs, curation::confirm_4d, false,
+        "Decide about a 4D group of the station's PACS catalog: yes confirms it (a probable, \
+         geometry-only set becomes a 4DCT), no dissolves it (it stays away through rescans), \
+         reset forgets what was decided. A copy of the catalog is kept first."),
+    "catalog_ignore" => (curation::IgnoreArgs, curation::catalog_ignore, false,
+        "List, add or remove the folder name patterns a scan of the station's PACS never looks \
+         into ('*' any run of characters, case ignored), beside the built-in ones (to_be_sorted, \
+         *-duplicates, *_duplicates): staging and quarantine folders whose copies would relink \
+         sorted studies. Their files leave the catalog with the next scan; nothing on disk is \
+         touched. A copy of the catalog is kept first."),
+    "check_patient_identity" => (NoArgs, curation::check_patient_identity, true,
+        "Find Patient IDs of the station's PACS catalog filed in several cohort folders whose \
+         files share no birth date and sex (two people under one code, listed as one \
+         patient): reads one header per study, returns the cohorts, folders (for codes), \
+         study counts and how many variants, never the values. Split by recoding one \
+         cohort's folder with set_patient_identity."),
+    "set_label" => (curation::LabelArgs, curation::set_label, false,
+        "Set the label of a patient (by key) or a study (by UID) in the station's PACS \
+         catalog; empty clears it. A copy of the catalog is kept first."),
+    "fill_study_labels" => (curation::CohortArgs, curation::fill_study_labels, true,
+        "Label every unlabelled study of a cohort in the PACS catalog as '<YYYY-MM-DD|undated> \
+         (<Upright|Supine>: <note>) \u{b7} <modalities>': the study's date or its folder's, the \
+         position and note of its folder's name (or the scanner and the description), the \
+         sorted modalities. A label someone typed is never overwritten; a copy of the catalog \
+         is kept first."),
     "open_in_viewer" => (output::OpenViewerArgs, output::open_in_viewer, false,
         "Launch the Rust DICOM Station viewer on one or two folders (an exported one, or a root \
          subfolder), so a person can look at the result."),

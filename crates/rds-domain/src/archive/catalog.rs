@@ -20,6 +20,21 @@
 //! folders), so a write takes a lock file beside it, reads the catalog
 //! afresh, changes it and puts it back in one rename: the slow part of a
 //! scan (reading headers) happens outside the lock, the merge inside.
+//!
+//! A scan never looks into the folders where imports wait to be sorted or
+//! duplicates are put aside ([`IGNORED_FOLDERS`], plus the person's own
+//! [`Catalog::ignore`]): their files are copies of what the PACS holds,
+//! with the source's patient codes, and indexed they would relink sorted
+//! studies to those codes. What a series and study belong to is read from
+//! the files, never carried over from an older catalog once a series lost
+//! or changed a file ([`refresh`]), and a study whose files all lie in one
+//! patient's folder is that patient's ([`link_by_folder`]).
+//!
+//! The catalog also says which studies hold a 4DCT ([`super::fourd`]):
+//! each CT series keeps what the 4D rules read of its first file and each
+//! image file its slice position, so that the sets are found again after
+//! every write without a header read, and a structure set the series it
+//! was drawn on.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -32,6 +47,8 @@ use dicom_dictionary_std::tags;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use super::fourd::{CustomGroup, Orphan, SeriesFourD, StudyFourD, HEAD_MODALITIES};
+use crate::fourd::scan::SeriesHead;
 use crate::loader::str_of;
 use crate::progress::{Progress, CANCELLED};
 
@@ -42,15 +59,71 @@ const LOCK_FILE: &str = ".rds-pacs-catalog.lock";
 const FORMAT: &str = "rds-pacs-catalog";
 /// 2: a series carries its date and time ([`SeriesRec::datetime`]); a catalog
 /// of version 1 has every header read again once, by the next scan.
-const VERSION: u32 = 2;
+/// 3: a file its slice position, a CT or structure-set series what the 4D
+/// rules read ([`SeriesRec::head`]), a study its 4D sets; the files of a CT
+/// or structure-set series without a head are read again once.
+const VERSION: u32 = 3;
 /// The id of the cohort that holds the patients outside any cohort folder.
 pub const UNSORTED: &str = "unsorted";
 
 /// One DICOM file: `[storage folder, path below it, bytes, modified, SOP
-/// Instance UID]`. The folder is an index into [`Catalog::storage`], the
-/// path `/`-separated, the time in seconds since 1970.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileRec(pub u32, pub String, pub u64, pub i64, pub String);
+/// Instance UID, z]`. The folder is an index into [`Catalog::storage`], the
+/// path `/`-separated, the time in seconds since 1970; z the slice position
+/// of a CT file in hundredths of a millimetre (what the 4D rules compare),
+/// left out for any other file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRec(
+    pub u32,
+    pub String,
+    pub u64,
+    pub i64,
+    pub String,
+    pub Option<i64>,
+);
+
+impl Serialize for FileRec {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        let mut t = ser.serialize_tuple(if self.5.is_some() { 6 } else { 5 })?;
+        t.serialize_element(&self.0)?;
+        t.serialize_element(&self.1)?;
+        t.serialize_element(&self.2)?;
+        t.serialize_element(&self.3)?;
+        t.serialize_element(&self.4)?;
+        if let Some(z) = self.5 {
+            t.serialize_element(&z)?;
+        }
+        t.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for FileRec {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = FileRec;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("[storage, path, bytes, modified, SOP UID(, z)]")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<FileRec, A::Error> {
+                use serde::de::Error;
+                let n = |i| A::Error::invalid_length(i, &"5 or 6 elements");
+                Ok(FileRec(
+                    seq.next_element()?.ok_or_else(|| n(0))?,
+                    seq.next_element()?.ok_or_else(|| n(1))?,
+                    seq.next_element()?.ok_or_else(|| n(2))?,
+                    seq.next_element()?.ok_or_else(|| n(3))?,
+                    seq.next_element()?.ok_or_else(|| n(4))?,
+                    seq.next_element::<Option<i64>>()?.flatten(),
+                ))
+            }
+        }
+        de.deserialize_seq(V)
+    }
+}
 
 /// A file that is not DICOM, remembered so that it is not read again:
 /// `[storage folder, path, bytes, modified]`.
@@ -75,6 +148,14 @@ pub struct StudyRec {
     pub time: String,
     pub description: String,
     pub label: String,
+    /// The 4D sets of the study ([`super::fourd`]), found again after every
+    /// write.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fourd: Vec<StudyFourD>,
+    /// Series that say "4D" with no set to go with: a scout or an ungated
+    /// reconstruction whose phases are not in the PACS.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fourd_orphans: Vec<Orphan>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +172,16 @@ pub struct SeriesRec {
     /// groups a course's series by treatment day. Empty when no file says.
     pub datetime: String,
     pub files: Vec<FileRec>,
+    /// A CT or structure-set series: what the 4D rules read of its first
+    /// file (the one whose path sorts first). `None`: not read yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head: Option<SeriesHead>,
+    /// The path of the file [`SeriesRec::head`] was read from.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub head_file: String,
+    /// The 4D set the series is in, and as what.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fourd: Option<SeriesFourD>,
 }
 
 /// Where a cohort's folder is: the storage folder, and the name of the
@@ -131,6 +222,58 @@ pub struct Catalog {
     pub studies: BTreeMap<String, StudyRec>,
     pub series: BTreeMap<String, SeriesRec>,
     pub other: Vec<OtherRec>,
+    /// The 4D groups a person made, corrected, confirmed or dissolved, by
+    /// group id: they win over what the rules find.
+    pub fourd_custom: BTreeMap<String, CustomGroup>,
+    /// The `4DCT` labels an earlier script wrote were compared with the
+    /// sets found ([`super::fourd::migrate_labels`]).
+    pub fourd_migrated: bool,
+    /// Folder name patterns a scan does not look into, beside
+    /// [`IGNORED_FOLDERS`] (`*` any run of characters, case ignored).
+    pub ignore: Vec<String>,
+}
+
+/// Folders a scan never looks into: where an import waits to be sorted and
+/// where duplicates are put aside. Their files are copies of what the PACS
+/// holds (the same UIDs under the source's patient codes).
+pub const IGNORED_FOLDERS: [&str; 3] = ["to_be_sorted", "*-duplicates", "*_duplicates"];
+
+/// Does a name match a pattern: `*` any run of characters, case ignored?
+pub fn matches_pattern(name: &str, pattern: &str) -> bool {
+    let name = name.to_lowercase();
+    let pattern = pattern.trim().to_lowercase();
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return name == pattern;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !name.starts_with(first) || name.len() < first.len() + last.len() || !name.ends_with(last) {
+        return false;
+    }
+    let mut rest = &name[first.len()..name.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// Is a folder of this name one a scan does not look into?
+pub fn is_ignored_folder(name: &str, extra: &[String]) -> bool {
+    IGNORED_FOLDERS
+        .iter()
+        .copied()
+        .chain(extra.iter().map(String::as_str))
+        .any(|p| !p.trim().is_empty() && matches_pattern(name, p))
+}
+
+/// Does a path below a storage folder lie in such a folder?
+fn in_ignored_folder(rel: &str, extra: &[String]) -> bool {
+    let mut parts: Vec<&str> = rel.split('/').collect();
+    parts.pop();
+    parts.iter().any(|f| is_ignored_folder(f, extra))
 }
 
 /// What a scan learns from one file's header.
@@ -149,6 +292,10 @@ pub struct Head {
     pub series_description: String,
     /// See [`SeriesRec::datetime`].
     pub series_datetime: String,
+    /// A CT file's slice position ([`FileRec`]).
+    pub z: Option<i64>,
+    /// A CT or structure-set file: what the 4D rules read ([`SeriesRec::head`]).
+    pub fourd_head: Option<SeriesHead>,
 }
 
 impl Head {
@@ -188,7 +335,25 @@ pub fn read_head(path: &Path) -> Option<Head> {
         // kind together; it never travels as a UID.
         series = format!("{study}~{modality}");
     }
+    let fourd_head = match modality.as_str() {
+        "CT" => Some(SeriesHead::read(&obj)),
+        // Of a structure set only the series it was drawn on.
+        m if HEAD_MODALITIES.contains(&m) => Some(SeriesHead {
+            refs: crate::dicomfile::open_references(path)
+                .map(|o| SeriesHead::read(&o).refs)
+                .unwrap_or_default(),
+            ..Default::default()
+        }),
+        _ => None,
+    };
+    let z = if modality == "CT" {
+        crate::fourd::scan::z_of(&obj)
+    } else {
+        None
+    };
     Some(Head {
+        z,
+        fourd_head,
         sop,
         study,
         series,
@@ -327,7 +492,8 @@ fn render(c: &Catalog) -> Result<String> {
     Ok(format!(
         "{{\n\"format\": {},\n\"version\": {},\n\"updated\": {},\n\"storage\": {},\n\
          \"cohorts\": {},\n\"membership\": {},\n\"patients\": {},\n\"studies\": {},\n\
-         \"series\": {},\n\"other\": {}\n}}\n",
+         \"series\": {},\n\"other\": {},\n\"fourd_custom\": {},\n\"fourd_migrated\": {},\n\
+         \"ignore\": {}\n}}\n",
         serde_json::to_string(FORMAT)?,
         VERSION,
         serde_json::to_string(&c.updated)?,
@@ -338,6 +504,9 @@ fn render(c: &Catalog) -> Result<String> {
         map(&c.studies)?,
         map(&c.series)?,
         list(&c.other)?,
+        map(&c.fourd_custom)?,
+        c.fourd_migrated,
+        serde_json::to_string(&c.ignore)?,
     ))
 }
 
@@ -416,10 +585,13 @@ impl Drop for Lock {
 
 /// Change the catalog: read afresh under the lock, `f` changes it, written
 /// back. What `f` answers is handed on.
+/// The 4D sets are found again before the catalog is put back, so that
+/// they say what the series say whatever `f` changed.
 pub fn update<T>(main: &Path, f: impl FnOnce(&mut Catalog) -> Result<T>) -> Result<T> {
     let _lock = Lock::take(main)?;
     let mut c = (*load(main)).clone();
     let out = f(&mut c)?;
+    super::fourd::index(&mut c);
     store(main, &mut c)?;
     Ok(out)
 }
@@ -492,12 +664,18 @@ fn is_own_file(name: &str) -> bool {
 
 /// Every candidate file below a storage folder. Folders and files whose
 /// names start with a dot are skipped (the catalog's own, a version
-/// control folder); the old sidecars are removed on the way.
-fn walk_root(root: &Path, r: u32, out: &mut Vec<Seen>) {
+/// control folder), and so are the ignored folders ([`IGNORED_FOLDERS`]
+/// and `ignore`); the old sidecars are removed on the way.
+fn walk_root(root: &Path, r: u32, ignore: &[String], out: &mut Vec<Seen>) {
     let walker = walkdir::WalkDir::new(root)
         .min_depth(1)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'));
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            e.depth() == 0
+                || !(name.starts_with('.')
+                    || (e.file_type().is_dir() && is_ignored_folder(&name, ignore)))
+        });
     for e in walker.filter_map(|e| e.ok()) {
         if !e.file_type().is_file() {
             continue;
@@ -555,7 +733,7 @@ pub fn add_file(c: &mut Catalog, h: &Head, file: FileRec) {
             date: h.study_date.clone(),
             time: h.study_time.clone(),
             description: h.study_description.clone(),
-            label: String::new(),
+            ..Default::default()
         });
     st.patient = key;
     let earlier = !h.study_date.is_empty()
@@ -579,13 +757,18 @@ pub fn add_file(c: &mut Catalog, h: &Head, file: FileRec) {
             modality: h.modality.clone(),
             number: h.series_number.clone(),
             description: h.series_description.clone(),
-            label: String::new(),
-            datetime: String::new(),
-            files: Vec::new(),
+            ..Default::default()
         });
     s.study = h.study.clone();
     if !h.series_datetime.is_empty() && (s.datetime.is_empty() || h.series_datetime < s.datetime) {
         s.datetime = h.series_datetime.clone();
+    }
+    // The head of the file whose path sorts first.
+    if let Some(head) = &h.fourd_head {
+        if s.head.is_none() || file.1 < s.head_file {
+            s.head = Some(head.clone());
+            s.head_file = file.1.clone();
+        }
     }
     s.files.push(file);
 }
@@ -621,15 +804,25 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
                 .map(|i| i as u32)
         })
         .collect();
-    let mut known: HashMap<(u32, String), (u64, i64, String, String)> = HashMap::new();
-    // A catalog of an earlier version lacks what this one reads from a
-    // header (the series' date): every file is read again, once. The
+    // (storage, path) -> (bytes, modified, SOP UID, series UID, z).
+    type Known = HashMap<(u32, String), (u64, i64, String, String, Option<i64>)>;
+    let mut known: Known = HashMap::new();
+    // A catalog of version 1 lacks what this one reads from a header (the
+    // series' date): every file is read again, once. One of version 2 lacks
+    // what the 4D rules read: the files of its CT and structure-set series
+    // are read again, once (a series with a head has had them read). The
     // person's names and cohorts are carried over all the same.
-    let current = old.version >= VERSION;
+    let current = old.version >= 2;
     for (suid, s) in old.series.iter().filter(|_| current) {
+        if s.head.is_none() && HEAD_MODALITIES.contains(&s.modality.as_str()) {
+            continue;
+        }
         for f in &s.files {
             if let Some(Some(r)) = remap.get(f.0 as usize) {
-                known.insert((*r, f.1.clone()), (f.2, f.3, f.4.clone(), suid.clone()));
+                known.insert(
+                    (*r, f.1.clone()),
+                    (f.2, f.3, f.4.clone(), suid.clone(), f.5),
+                );
             }
         }
     }
@@ -643,9 +836,24 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
     progress.set("Looking through the storage folders");
     let mut seen: Vec<Seen> = Vec::new();
     for (i, r) in roots.iter().enumerate() {
-        walk_root(r, i as u32, &mut seen);
+        walk_root(r, i as u32, &old.ignore, &mut seen);
         if progress.cancelled() {
             bail!(CANCELLED);
+        }
+    }
+
+    // A series that lost a file, or one of whose files changed, is read
+    // again whole: what it and its study belong to comes from its files as
+    // they are now, not from the records of the older catalog (copies
+    // filed under it and gone since have left their patient on it).
+    let on_disk: HashMap<(u32, &str), (u64, i64)> = seen
+        .iter()
+        .map(|s| ((s.root, s.rel.as_str()), (s.bytes, s.mtime)))
+        .collect();
+    let mut stale: HashSet<&str> = HashSet::new();
+    for ((r, rel), (b, t, _, suid, _)) in &known {
+        if on_disk.get(&(*r, rel.as_str())) != Some(&(*b, *t)) {
+            stale.insert(suid.as_str());
         }
     }
 
@@ -656,8 +864,10 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
     for s in &seen {
         seen_paths.insert((s.root, s.rel.as_str()));
         match known.get(&(s.root, s.rel.clone())) {
-            Some((b, t, sop, suid)) if *b == s.bytes && *t == s.mtime => {
-                let file = FileRec(s.root, s.rel.clone(), s.bytes, s.mtime, sop.clone());
+            Some((b, t, sop, suid, z))
+                if *b == s.bytes && *t == s.mtime && !stale.contains(suid.as_str()) =>
+            {
+                let file = FileRec(s.root, s.rel.clone(), s.bytes, s.mtime, sop.clone(), *z);
                 copy_records(&mut c, &old, suid);
                 if let Some(sr) = c.series.get_mut(suid) {
                     sr.files.push(file);
@@ -715,7 +925,7 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
                 add_file(
                     &mut c,
                     &h,
-                    FileRec(s.root, s.rel.clone(), s.bytes, s.mtime, h.sop.clone()),
+                    FileRec(s.root, s.rel.clone(), s.bytes, s.mtime, h.sop.clone(), h.z),
                 );
             }
             None => c
@@ -727,6 +937,8 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
     progress.set("Updating the catalog");
     let mut storage: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
     let roots = roots.to_vec();
+    let main_dir = main.clone();
+    let ignore = old.ignore.clone();
     let out = update(main, move |cur| {
         // The catalog's folders in this scan's numbering: the scanned ones
         // first, then any other folder the catalog lists (another program
@@ -754,6 +966,7 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
                     // while the file is there.
                     if seen_paths.contains(&(r, f.1.as_str()))
                         || known.contains_key(&(r, f.1.clone()))
+                        || in_ignored_folder(&f.1, &ignore)
                         || !abs_of(&roots[r as usize], &f.1).is_file()
                     {
                         continue;
@@ -762,7 +975,7 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
                 copy_records(&mut c, cur, suid);
                 if let Some(sr) = c.series.get_mut(suid) {
                     sr.files
-                        .push(FileRec(r, f.1.clone(), f.2, f.3, f.4.clone()));
+                        .push(FileRec(r, f.1.clone(), f.2, f.3, f.4.clone(), f.5));
                 }
             }
         }
@@ -791,14 +1004,86 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
         }
         c.cohorts = cur.cohorts.clone();
         c.membership = cur.membership.clone();
+        c.fourd_custom = cur.fourd_custom.clone();
+        c.fourd_migrated = cur.fourd_migrated;
+        c.ignore = cur.ignore.clone();
         c.storage = storage;
+        link_by_folder(&mut c);
         prune(&mut c);
         ensure_cohorts(&mut c);
+        // The labels an earlier version's 4D script wrote become sets, once
+        // every CT has been read for them.
+        super::fourd::index(&mut c);
+        let notes = super::fourd::migrate_labels(&mut c);
+        super::fourd::journal(&main_dir, &notes);
         *cur = c;
         Ok(())
     });
     out?;
     Ok(load(main))
+}
+
+/// The code a folder name carries: its first word (up to `_` or a space),
+/// letters and digits only (`P01-031_Smith` -> `p01031`).
+fn folder_code(name: &str) -> String {
+    squash(name.split(['_', ' ']).next().unwrap_or(""))
+}
+
+/// Give every study whose files all lie in one patient's folder to that
+/// patient: the folder named by their Patient ID (its code, see
+/// [`folder_code`]) at the top of a storage folder or in a cohort folder.
+///
+/// The files say whom a study is for, but copies of it filed elsewhere
+/// under another code (an import's own pseudonym, the files of a staging
+/// folder) say otherwise, and the last file read would decide. Where the
+/// study's files are sorted into one patient's folder, the folder is the
+/// person's decision and wins. A study spread over several folders, or in
+/// a folder no patient's ID names, keeps the link its files give.
+pub fn link_by_folder(c: &mut Catalog) {
+    // Code -> patient key, for the codes exactly one patient has.
+    let mut by_code: HashMap<String, Option<String>> = HashMap::new();
+    for (key, p) in &c.patients {
+        let code = squash(&p.id);
+        if code.len() < 3 {
+            continue;
+        }
+        by_code
+            .entry(code)
+            .and_modify(|e| *e = None)
+            .or_insert_with(|| Some(key.clone()));
+    }
+    let patient_of = |rel: &str| -> Option<&String> {
+        let mut parts: Vec<&str> = rel.split('/').collect();
+        parts.pop();
+        parts
+            .iter()
+            .take(2)
+            .find_map(|f| by_code.get(&folder_code(f)).and_then(|k| k.as_ref()))
+    };
+    // Study -> the one patient its files' folders name (None: no single one).
+    let mut named: HashMap<&str, Option<&String>> = HashMap::new();
+    for s in c.series.values() {
+        for f in &s.files {
+            let k = patient_of(&f.1);
+            named
+                .entry(s.study.as_str())
+                .and_modify(|e| {
+                    if *e != k {
+                        *e = None;
+                    }
+                })
+                .or_insert(k);
+        }
+    }
+    let moves: Vec<(String, String)> = named
+        .into_iter()
+        .filter_map(|(st, k)| Some((st.to_string(), k?.clone())))
+        .collect();
+    for (st, key) in moves {
+        if let Some(rec) = c.studies.get_mut(&st) {
+            rec.patient = key;
+        }
+    }
 }
 
 /// Copy a series' records (and its study's and patient's) from `from`
@@ -1039,7 +1324,7 @@ mod tests {
     use super::*;
 
     fn file(r: u32, rel: &str, sop: &str) -> FileRec {
-        FileRec(r, rel.into(), 1, 0, sop.into())
+        FileRec(r, rel.into(), 1, 0, sop.into(), None)
     }
 
     fn head(pid: &str, name: &str, study: &str, series: &str, sop: &str) -> Head {

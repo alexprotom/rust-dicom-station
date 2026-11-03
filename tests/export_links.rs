@@ -179,9 +179,11 @@ fn keeping_the_uids_means_keeping_them() {
         re.volume.frame_of_reference_uid, study.volume.frame_of_reference_uid,
         "same Frame of Reference"
     );
-    assert_eq!(
+    // The structure set is written anew, so it is a new instance that
+    // names the one it came from.
+    assert_ne!(
         re.structure_sets[0].sop_instance_uid, study.structure_sets[0].sop_instance_uid,
-        "same structure set instance"
+        "a structure set written anew is a new instance"
     );
     assert_eq!(
         re.structure_sets[0].referenced_series_uid, re.series[re.active_series].uid,
@@ -309,59 +311,57 @@ fn a_segmentation_series_can_go_out_as_rtstruct() {
     );
 }
 
-/// A converted object is a different SOP class, so it must not be written
-/// under the instance UID of the object it was made from, even in Keep mode.
+/// An RT object is written anew from what the station read, never copied,
+/// so it never goes out under its source's UIDs, even in Keep mode (a
+/// subset of a set filed over the whole of it): it gets a new SOP instance
+/// in a new series, and names its source.
 #[test]
-fn converting_the_format_mints_a_new_instance_uid() {
-    let (study, _) = phantom("test_exp_conv");
-    let mut plan = plan_for(&study);
-    let native: String = plan
-        .studies()
-        .flat_map(|s| s.objects.iter())
-        .find(|o| o.kind.is_structures())
-        .map(|o| o.sop_uid.value.clone())
-        .expect("a structure set");
-    assert_eq!(
-        native, study.structure_sets[0].sop_instance_uid,
-        "kept as it is while the format is the native one"
-    );
-
-    plan.set_all_formats(StructFormat::Seg);
-    let converted: String = plan
-        .studies()
-        .flat_map(|s| s.objects.iter())
-        .find(|o| o.kind.is_structures())
-        .map(|o| o.sop_uid.value.clone())
-        .expect("still there");
-    assert_ne!(converted, native, "a conversion is a new instance");
-
-    plan.set_all_formats(StructFormat::RtStruct);
-    let back: String = plan
-        .studies()
-        .flat_map(|s| s.objects.iter())
-        .find(|o| o.kind.is_structures())
-        .map(|o| o.sop_uid.value.clone())
-        .expect("still there");
-    assert_eq!(back, native, "and converting back restores the original");
-}
-
-/// The series an RT object came from is part of its identity.
-#[test]
-fn keeping_the_uids_keeps_the_series_of_the_rt_objects_too() {
+fn rt_objects_get_new_uids_and_name_their_source_even_when_the_uids_are_kept() {
     let (study, _) = phantom("test_exp_objser");
     let out = target("test_exp_objser_out");
-    let want = study.structure_sets[0].series_instance_uid.clone();
-    assert!(!want.is_empty(), "the loader read it");
-    let plan = plan_for(&study);
+    let ss = &study.structure_sets[0];
+    assert!(!ss.series_instance_uid.is_empty(), "the loader read it");
+    let mut plan = plan_for(&study);
+    assert_eq!(plan.uid_mode, UidMode::Keep);
+    let sop_of = |plan: &ExportPlan| -> String {
+        plan.studies()
+            .flat_map(|s| s.objects.iter())
+            .find(|o| o.kind.is_structures())
+            .map(|o| o.sop_uid.value.clone())
+            .expect("a structure set")
+    };
+    let first = sop_of(&plan);
+    assert_ne!(first, ss.sop_instance_uid, "a new instance from the start");
+    // Stable across the radios and the formats.
+    plan.set_uid_mode(UidMode::New);
+    plan.set_all_formats(StructFormat::Seg);
+    plan.set_all_formats(StructFormat::RtStruct);
+    plan.set_uid_mode(UidMode::Keep);
+    assert_eq!(sop_of(&plan), first, "one new UID, not a new one per click");
     export::run(&plan, export::one_study(&study), &out, &Progress::default()).expect("runs");
 
     let rs = files(&out, "RS_");
     let o = dicomfile::open_full(&rs[0]).expect("reopens").into_inner();
-    assert_eq!(
+    assert_eq!(str_of(&o, tags::SOP_INSTANCE_UID), first);
+    assert_ne!(
         str_of(&o, tags::SERIES_INSTANCE_UID),
-        want,
-        "the structure set went back into its own series"
+        ss.series_instance_uid,
+        "in a series of its own"
     );
+    let src = o
+        .element(tags::SOURCE_INSTANCE_SEQUENCE)
+        .expect("names its source")
+        .items()
+        .expect("a sequence")
+        .first()
+        .cloned()
+        .expect("one item");
+    assert_eq!(
+        str_of(&src, tags::REFERENCED_SOP_INSTANCE_UID),
+        ss.sop_instance_uid,
+        "the set it was written from"
+    );
+    assert!(str_of(&o, tags::DERIVATION_DESCRIPTION).contains(&ss.sop_instance_uid));
 }
 
 /// With new UIDs a structure set sent without its images has nothing to

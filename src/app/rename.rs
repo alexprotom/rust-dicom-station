@@ -382,6 +382,8 @@ mod rename_tests {
             frame_of_reference_uid: String::new(),
             series_datetime: String::new(),
             files: Vec::new(),
+            fourd_head: None,
+            z_range: None,
         }
     }
 
@@ -443,6 +445,7 @@ mod rename_tests {
             reports: Vec::new(),
             setups: Vec::new(),
             fourd_groups: Vec::new(),
+            resp_traces: Vec::new(),
             warnings: Vec::new(),
             default_window: (40.0, 400.0),
         }

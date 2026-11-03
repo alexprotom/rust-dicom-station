@@ -498,6 +498,17 @@ impl RawFile {
         })
     }
 
+    /// Whether this is a DICOM file at all: a data set with the `DICM`
+    /// header, or one without that names an instance (bytes of a screenshot
+    /// may parse, and name nothing).
+    pub fn is_dicom(&self) -> bool {
+        !self.elements.is_empty()
+            && (self.part10
+                || self
+                    .text(Tag(0x0008, 0x0018))
+                    .is_some_and(|s| !s.is_empty()))
+    }
+
     /// Whether [`rewrite`] can work on this file.
     pub fn rewritable(&self) -> Result<()> {
         if self.transfer_syntax == TS_DEFLATED || self.transfer_syntax == TS_BIG {
@@ -591,6 +602,8 @@ pub fn encode_text(vr: VR, s: &str) -> Vec<u8> {
 struct Writer<'a> {
     src: &'a [u8],
     changed: usize,
+    /// Elements that go, by position (the sequences above, the tag).
+    remove: &'a dyn Fn(&[Tag], Tag) -> bool,
 }
 
 impl Writer<'_> {
@@ -619,6 +632,10 @@ impl Writer<'_> {
                     fix(&mut out, group_len_at, here);
                     group_len_at = None;
                 }
+            }
+            if (self.remove)(path, e.tag) {
+                self.changed += 1;
+                continue;
             }
             if e.tag.element() == 0 && e.defined == Some(4) && e.items.is_none() {
                 // A group length: copied, its value fixed at the group's end.
@@ -714,6 +731,11 @@ impl Writer<'_> {
     }
 }
 
+/// Removes nothing: for [`rewrite_with`] and its kin.
+pub fn keep_all(_: &[Tag], _: Tag) -> bool {
+    false
+}
+
 /// A rewrite of `file`: `f` sees every leaf element (nested ones included)
 /// and returns its new value, already encoded ([`encode_text`]), or `None`
 /// to keep it. Returns the new bytes and how many elements changed. The
@@ -722,10 +744,22 @@ pub fn rewrite(
     file: &RawFile,
     f: &mut dyn FnMut(&At) -> Option<Vec<u8>>,
 ) -> Result<(Vec<u8>, usize)> {
+    rewrite_with(file, &keep_all, f)
+}
+
+/// [`rewrite`], and the elements `remove` names (by the sequences above
+/// them and their tag, at any depth: a sequence goes with its items) are
+/// left out. A removed element counts as a change.
+pub fn rewrite_with(
+    file: &RawFile,
+    remove: &dyn Fn(&[Tag], Tag) -> bool,
+    f: &mut dyn FnMut(&At) -> Option<Vec<u8>>,
+) -> Result<(Vec<u8>, usize)> {
     file.rewritable()?;
     let mut w = Writer {
         src: &file.bytes,
         changed: 0,
+        remove,
     };
     let body = w.elements(&file.elements, &mut Vec::new(), f)?;
     let mut out = file.bytes[..file.data_start].to_vec();
@@ -742,24 +776,38 @@ pub fn verify(
     after: &RawFile,
     f: &mut dyn FnMut(&At) -> Option<Vec<u8>>,
 ) -> Result<()> {
+    verify_with(before, after, &keep_all, f)
+}
+
+/// [`verify`] of a [`rewrite_with`]: the elements `remove` names must be
+/// gone, and everything else as [`verify`] has it.
+pub fn verify_with(
+    before: &RawFile,
+    after: &RawFile,
+    remove: &dyn Fn(&[Tag], Tag) -> bool,
+    f: &mut dyn FnMut(&At) -> Option<Vec<u8>>,
+) -> Result<()> {
     if before.bytes[..before.data_start] != after.bytes[..after.data_start.min(after.bytes.len())] {
         bail!("the file meta group changed");
     }
     if !after.problems.is_empty() {
         bail!("the rewritten file does not parse: {}", after.problems[0]);
     }
+    #[allow(clippy::too_many_arguments)]
     fn go(
         b: &RawFile,
         a: &RawFile,
         eb: &[Element],
         ea: &[Element],
         path: &mut Vec<Tag>,
+        remove: &dyn Fn(&[Tag], Tag) -> bool,
         f: &mut dyn FnMut(&At) -> Option<Vec<u8>>,
     ) -> Result<()> {
+        let eb: Vec<&Element> = eb.iter().filter(|e| !remove(path, e.tag)).collect();
         if eb.len() != ea.len() {
             bail!("{} elements became {}", eb.len(), ea.len());
         }
-        for (x, y) in eb.iter().zip(ea) {
+        for (x, y) in eb.into_iter().zip(ea) {
             if x.tag != y.tag || x.vr != y.vr {
                 bail!("element {} became {}", x.tag, y.tag);
             }
@@ -773,7 +821,7 @@ pub fn verify(
                     }
                     path.push(x.tag);
                     for (p, q) in ib.iter().zip(ia) {
-                        go(b, a, &p.elements, &q.elements, path, f)?;
+                        go(b, a, &p.elements, &q.elements, path, remove, f)?;
                     }
                     path.pop();
                 }
@@ -814,6 +862,7 @@ pub fn verify(
         &before.elements,
         &after.elements,
         &mut Vec::new(),
+        remove,
         f,
     )
 }
@@ -823,23 +872,46 @@ pub fn verify(
 /// replace it (a rename on the same volume). Returns how many elements
 /// changed; with none, the file is left alone.
 pub fn rewrite_file(path: &Path, f: &mut dyn FnMut(&At) -> Option<Vec<u8>>) -> Result<usize> {
+    rewrite_file_with(path, &keep_all, f, None).map(|(n, _)| n)
+}
+
+/// [`rewrite_file`] with removals ([`rewrite_with`]); with `expect`, the
+/// new bytes must have that SHA-256 (what a dry run computed and checked)
+/// or nothing is written. Returns how many elements changed and the new
+/// file's SHA-256.
+pub fn rewrite_file_with(
+    path: &Path,
+    remove: &dyn Fn(&[Tag], Tag) -> bool,
+    f: &mut dyn FnMut(&At) -> Option<Vec<u8>>,
+    expect: Option<&str>,
+) -> Result<(usize, String)> {
+    use sha2::{Digest, Sha256};
     let before = RawFile::read(path)?;
-    let (bytes, changed) = rewrite(&before, f)?;
+    let (bytes, changed) = rewrite_with(&before, remove, f)?;
+    let sha = super::journal::hex(&Sha256::digest(&bytes));
     if changed == 0 {
-        return Ok(0);
+        return Ok((0, sha));
+    }
+    if let Some(want) = expect {
+        if want != sha {
+            bail!(
+                "{} would not come out as the dry run computed: was it changed since?",
+                path.display()
+            );
+        }
     }
     let tmp = path.with_extension(match path.extension() {
         Some(e) => format!("{}.tmp", e.to_string_lossy()),
         None => "tmp".to_string(),
     });
     std::fs::write(&tmp, &bytes).with_context(|| format!("write {}", tmp.display()))?;
-    let check = RawFile::read(&tmp).and_then(|after| verify(&before, &after, f));
+    let check = RawFile::read(&tmp).and_then(|after| verify_with(&before, &after, remove, f));
     if let Err(e) = check {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.context(format!("{} was not replaced", path.display())));
     }
     std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
-    Ok(changed)
+    Ok((changed, sha))
 }
 
 #[cfg(test)]

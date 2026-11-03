@@ -87,7 +87,8 @@ pub enum UidMode {
     /// Write the UIDs the data already has. The export *is* the same study;
     /// re-importing it into the archive it came from updates it rather than
     /// duplicating it, and references from objects outside the export still
-    /// resolve.
+    /// resolve. The images keep theirs (they are copied, not re-encoded);
+    /// an RT object never does, see [`ExportPlan::sync_format_uids`].
     Keep,
     /// Mint a new UID for every study, series, frame of reference and
     /// instance. The export is a new study that happens to look like the old
@@ -167,6 +168,16 @@ impl Field {
         }
     }
 
+    /// A UID field whose value starts as the fresh one: an RT object, which
+    /// an export writes anew (see [`ExportPlan::sync_format_uids`]).
+    pub fn new_uid(v: impl Into<String>) -> Self {
+        let mut f = Field::uid(v);
+        if let Some(fresh) = &f.fresh {
+            f.value = fresh.clone();
+        }
+        f
+    }
+
     /// Fall back to `alt` when the field came out empty, for a tag that is
     /// Type 2 and has to be written with something in it.
     pub fn or_default(mut self, alt: &str) -> Self {
@@ -227,14 +238,6 @@ impl ObjKind {
     /// Whether the RTSTRUCT / SEG radio applies.
     pub fn is_structures(self) -> bool {
         matches!(self, ObjKind::Structures | ObjKind::Segmentation)
-    }
-
-    /// The format this kind of object was read in.
-    pub fn native_format(self) -> StructFormat {
-        match self {
-            ObjKind::Segmentation => StructFormat::Seg,
-            _ => StructFormat::RtStruct,
-        }
     }
 }
 
@@ -395,10 +398,6 @@ impl ExportPlan {
                         se.uid.apply_mode(mode);
                         se.for_uid.apply_mode(mode);
                     }
-                    for ob in &mut st.objects {
-                        ob.sop_uid.apply_mode(mode);
-                        ob.series_uid.apply_mode(mode);
-                    }
                 }
             }
         }
@@ -415,31 +414,32 @@ impl ExportPlan {
         self.sync_format_uids();
     }
 
-    /// Give every converted object a new SOP Instance UID.
+    /// Give every RT object a new SOP Instance UID and Series Instance UID,
+    /// whatever [`UidMode`] says.
     ///
-    /// Contours written as a segmentation are a different SOP class, so what
-    /// is written is a new instance and not the one that was read - whatever
-    /// [`UidMode`] says. Two objects of different SOP classes sharing one
-    /// instance UID is the one thing an archive cannot forgive, so this is
-    /// not left to the user to notice. Converting back restores the original,
-    /// and a UID typed by hand is never touched.
+    /// An image series is copied file by file, so with the UIDs kept it is
+    /// the same instance. An RT object is not: a structure set, a dose, a
+    /// plan or a segmentation is written anew from what the station read
+    /// and changed (a subset of the ROIs, edited contours, the elements the
+    /// reader knows), and a changed object under its source's UID is two
+    /// different objects an archive takes for one - the 1-ROI set filed
+    /// over the 92-ROI set it came from. Contours written as a segmentation
+    /// are a different SOP class besides. So every object gets fresh UIDs,
+    /// and names its source in Source Instance Sequence; references between
+    /// the objects of the export follow it. A UID typed by hand is never
+    /// touched.
     pub fn sync_format_uids(&mut self) {
-        let mode = self.uid_mode;
         for st in self.studies_mut() {
-            for ob in st.objects.iter_mut().filter(|o| o.kind.is_structures()) {
-                let Some(fresh) = ob.sop_uid.fresh.clone() else {
-                    continue;
-                };
-                if ob.sop_uid.value != ob.sop_uid.original && ob.sop_uid.value != fresh {
-                    continue;
-                }
-                let converted = ob.format != ob.kind.native_format();
-                ob.sop_uid.value =
-                    if converted || mode == UidMode::New || ob.sop_uid.original.is_empty() {
-                        fresh
-                    } else {
-                        ob.sop_uid.original.clone()
+            for ob in &mut st.objects {
+                for f in [&mut ob.sop_uid, &mut ob.series_uid] {
+                    let Some(fresh) = f.fresh.clone() else {
+                        continue;
                     };
+                    if f.value != f.original && f.value != fresh {
+                        continue;
+                    }
+                    f.value = fresh;
+                }
             }
         }
     }
@@ -742,8 +742,8 @@ fn build_study(slot: usize, study: &LoadedStudy, study_uid: &str) -> StudyNode {
             label: ss.label.clone(),
             detail: format!("{} ROI(s)", ss.rois.len()),
             source_uid: ss.sop_instance_uid.clone(),
-            sop_uid: Field::uid(ss.sop_instance_uid.clone()),
-            series_uid: Field::uid(ss.series_instance_uid.clone()),
+            sop_uid: Field::new_uid(ss.sop_instance_uid.clone()),
+            series_uid: Field::new_uid(ss.series_instance_uid.clone()),
             description: Field::text(ss.label.clone()),
             number: Field::text((300 + i).to_string()),
             format: StructFormat::RtStruct,
@@ -762,8 +762,8 @@ fn build_study(slot: usize, study: &LoadedStudy, study_uid: &str) -> StudyNode {
             label: sg.label.clone(),
             detail: format!("{} segment(s)", sg.segs.len()),
             source_uid: sg.sop_instance_uid.clone(),
-            sop_uid: Field::uid(sg.sop_instance_uid.clone()),
-            series_uid: Field::uid(sg.series_instance_uid.clone()),
+            sop_uid: Field::new_uid(sg.sop_instance_uid.clone()),
+            series_uid: Field::new_uid(sg.series_instance_uid.clone()),
             description: Field::text(sg.label.clone()),
             number: Field::text((400 + i).to_string()),
             format: StructFormat::Seg,
@@ -788,8 +788,8 @@ fn build_study(slot: usize, study: &LoadedStudy, study_uid: &str) -> StudyNode {
             },
             detail: format!("{:?}, max {:.2} {}", d.dims, d.max_dose, d.units),
             source_uid: d.sop_instance_uid.clone(),
-            sop_uid: Field::uid(d.sop_instance_uid.clone()),
-            series_uid: Field::uid(d.series_instance_uid.clone()),
+            sop_uid: Field::new_uid(d.sop_instance_uid.clone()),
+            series_uid: Field::new_uid(d.series_instance_uid.clone()),
             description: Field::text("Dose".to_string()),
             number: Field::text((500 + i).to_string()),
             format: StructFormat::RtStruct,
@@ -812,8 +812,8 @@ fn build_study(slot: usize, study: &LoadedStudy, study_uid: &str) -> StudyNode {
             },
             detail: format!("{} beam(s)", p.beams.len()),
             source_uid: p.sop_instance_uid.clone(),
-            sop_uid: Field::uid(p.sop_instance_uid.clone()),
-            series_uid: Field::uid(p.series_instance_uid.clone()),
+            sop_uid: Field::new_uid(p.sop_instance_uid.clone()),
+            series_uid: Field::new_uid(p.series_instance_uid.clone()),
             description: Field::text(p.name.clone()),
             number: Field::text((600 + i).to_string()),
             format: StructFormat::RtStruct,
@@ -1028,6 +1028,9 @@ pub fn run(
         }
     }
 
+    // Paths over 259 characters were refused as they were written; the
+    // ones near it are said.
+    warnings.extend(crate::pathlen::notes_under(root));
     progress.set("done");
     Ok(ExportSummary {
         files,
@@ -1207,6 +1210,7 @@ fn export_one_study(
                     plan_ref,
                 );
                 dicom_export::apply(&mut o, &ident);
+                name_source(&mut o, study, node);
                 let path = dir.join(format!("RD_{}.dcm", safe(&node.label, &format!("{n}"))));
                 dicom_export::write_object(o, dicom_export::SOP_RTDOSE, &path)?;
                 *files += 1;
@@ -1232,6 +1236,7 @@ fn export_one_study(
                     struct_ref,
                 );
                 dicom_export::apply(&mut o, &ident);
+                name_source(&mut o, study, node);
                 let path = dir.join(format!("RP_{}.dcm", safe(&node.label, &format!("{n}"))));
                 dicom_export::write_object(o, dicom_export::plan_sop_class(p), &path)?;
                 *files += 1;
@@ -1635,6 +1640,7 @@ fn write_structures(
                 &image,
             );
             dicom_export::apply(&mut o, ident);
+            name_source(&mut o, study, node);
             dicom_export::put_str(
                 &mut o,
                 tags::SERIES_INSTANCE_UID,
@@ -1668,6 +1674,7 @@ fn write_structures(
                     &image,
                 );
                 dicom_export::apply(&mut o, ident);
+                name_source(&mut o, study, node);
                 dicom_export::write_object(
                     o,
                     dicom_export::SOP_RTSTRUCT,
@@ -1710,6 +1717,7 @@ fn write_structures(
                 ));
             }
             write_seg(
+                study,
                 &ser,
                 ctx,
                 ident,
@@ -1729,6 +1737,7 @@ fn write_structures(
             let mut ser = sg.clone();
             ser.label = node.description.trimmed().to_string();
             write_seg(
+                study,
                 &ser,
                 ctx,
                 ident,
@@ -1775,6 +1784,7 @@ fn write_structures(
                 &image,
             );
             dicom_export::apply(&mut o, ident);
+            name_source(&mut o, study, node);
             dicom_export::put_str(
                 &mut o,
                 tags::SERIES_INSTANCE_UID,
@@ -1827,8 +1837,36 @@ fn unique_object_name(study: &LoadedStudy, node: &ObjNode) -> String {
     }
 }
 
+/// Name what an RT object was read from ([`dicom_export::put_source`]):
+/// a loaded object's own instance, when it was read from a file (a set
+/// made in the viewer has a UID no file carries) and the export does not
+/// write it under that same UID by hand.
+fn name_source(o: &mut dicom_object::InMemDicomObject, study: &LoadedStudy, node: &ObjNode) {
+    let uid = node.source_uid.trim();
+    if uid.is_empty() || uid == node.sop_uid.trimmed() {
+        return;
+    }
+    let class = match node.kind {
+        ObjKind::Structures => match study.structure_sets.get(node.index) {
+            Some(ss) if ss.read_from_file() => crate::sop::SOP_RTSTRUCT,
+            _ => return,
+        },
+        ObjKind::Segmentation => match study.seg_series.get(node.index) {
+            Some(sg) if !sg.file_name.is_empty() => crate::sop::SOP_SEG,
+            _ => return,
+        },
+        ObjKind::Dose => crate::sop::SOP_RTDOSE,
+        ObjKind::Plan => match study.plans.get(node.index) {
+            Some(p) => dicom_export::plan_sop_class(p),
+            None => return,
+        },
+    };
+    dicom_export::put_source(o, class, uid);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_seg(
+    study: &LoadedStudy,
     ser: &SegSeries,
     ctx: &dicom_export::Ctx,
     ident: &[(Tag, dicom_core::VR, String)],
@@ -1855,6 +1893,7 @@ fn write_seg(
     };
     let mut o = dicomseg::build(ser, &seg_ctx);
     dicom_export::apply(&mut o, ident);
+    name_source(&mut o, study, node);
     dicom_export::put_str(
         &mut o,
         tags::SOP_INSTANCE_UID,

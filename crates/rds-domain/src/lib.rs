@@ -38,6 +38,7 @@ pub mod morphology;
 pub mod motion;
 pub mod pacs;
 pub mod par;
+pub mod pathlen;
 pub mod portal;
 pub mod projection;
 pub mod propagate;

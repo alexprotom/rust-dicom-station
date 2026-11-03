@@ -25,13 +25,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::raw::{self, encode_text};
+use super::remap::{self, UidMaps};
 use crate::progress::{Progress, CANCELLED};
 
-/// Longest path a write may produce: Windows' classic limit, which a lot of
-/// DICOM software still has.
-pub const MAX_PATH: usize = 259;
-/// A path this long is written, with a warning.
-pub const WARN_PATH: usize = 250;
+/// Longest path a write may produce, and the length that gets a warning
+/// ([`crate::pathlen`]: Windows' classic limit, which a lot of DICOM software
+/// still has).
+pub use crate::pathlen::{MAX_PATH, WARN_PATH};
 
 /// One planned change.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -45,6 +45,18 @@ pub enum Op {
         path: PathBuf,
         tags: Vec<(String, String)>,
     },
+    /// Rewrite a file as [`remap::Changes`] say (set, remove, remap through
+    /// the manifest's maps), verified. `source` is the file's SHA-256 when
+    /// the dry run read it, `expect` the SHA-256 of what the dry run made
+    /// of it: the apply writes those very bytes or nothing.
+    Rewrite {
+        path: PathBuf,
+        changes: remap::Changes,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect: Option<String>,
+    },
 }
 
 impl Op {
@@ -52,7 +64,7 @@ impl Op {
     pub fn writes(&self) -> Vec<&Path> {
         match self {
             Op::Move { from, to } => vec![from, to],
-            Op::SetTags { path, .. } => vec![path],
+            Op::SetTags { path, .. } | Op::Rewrite { path, .. } => vec![path],
         }
     }
 }
@@ -70,6 +82,9 @@ pub struct Manifest {
     /// What the dry run noticed (long paths, files left alone).
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// The UID maps its rewrites apply ([`Op::Rewrite`] with `remap`).
+    #[serde(default, skip_serializing_if = "UidMaps::is_empty")]
+    pub maps: UidMaps,
 }
 
 /// One line of a journal.
@@ -138,7 +153,7 @@ pub fn check_paths(ops: &[Op], allowed: &dyn Fn(&Path) -> bool) -> Result<Vec<St
             if !allowed(p) {
                 bail!("{} is outside the folders this tool may write", p.display());
             }
-            let n = p.as_os_str().len();
+            let n = crate::pathlen::len(p);
             if n > MAX_PATH {
                 bail!(
                     "{} would be {n} characters long, over {MAX_PATH}",
@@ -304,6 +319,35 @@ pub fn apply(
                         e.backup = Some(backup);
                     }
                 }
+                Op::Rewrite {
+                    path,
+                    changes,
+                    source,
+                    expect,
+                } => {
+                    let before = sha256_file(path)?;
+                    if source.as_ref().is_some_and(|s| *s != before) {
+                        bail!("{} has changed since the dry run", path.display());
+                    }
+                    let c = changes.compile(&m.maps)?;
+                    std::fs::create_dir_all(&backups)?;
+                    let backup = backups.join(format!("{i}"));
+                    std::fs::copy(path, &backup)?;
+                    let (changed, after) = raw::rewrite_file_with(
+                        path,
+                        &|p, t| c.removes(p, t),
+                        &mut |at| c.edit(at),
+                        expect.as_deref(),
+                    )?;
+                    if changed == 0 {
+                        let _ = std::fs::remove_file(&backup);
+                        e.unchanged = true;
+                    } else {
+                        e.before = Some(before);
+                        e.after = Some(after);
+                        e.backup = Some(backup);
+                    }
+                }
             }
             Ok(())
         })();
@@ -378,7 +422,7 @@ pub fn undo(
                     move_file(to, from)
                 }
             }
-            Op::SetTags { path, .. } => (|| {
+            Op::SetTags { path, .. } | Op::Rewrite { path, .. } => (|| {
                 let (Some(after), Some(backup)) = (&e.after, &e.backup) else {
                     bail!("no copy was kept");
                 };
@@ -467,6 +511,7 @@ mod tests {
                 },
             ],
             warnings: Vec::new(),
+            maps: UidMaps::default(),
         };
         let inside = |p: &Path| p.starts_with(&tree);
         save(&records, &m).unwrap();

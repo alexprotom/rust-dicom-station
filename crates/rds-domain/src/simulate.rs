@@ -349,6 +349,8 @@ pub fn generate_transformed_study(
             frame_of_reference_uid: volume.frame_of_reference_uid.clone(),
             series_datetime: String::new(),
             files: Vec::new(),
+            fourd_head: None,
+            z_range: None,
         }],
         active_series: 0,
         volume: Arc::new(volume),
@@ -362,6 +364,7 @@ pub fn generate_transformed_study(
         // Planar images / registrations / records are carried over unchanged
         // (2D projections and metadata objects are not resampled).
         planar_images: src.planar_images.clone(),
+        resp_traces: src.resp_traces.clone(),
         registrations: src.registrations.clone(),
         treat_records: src.treat_records.clone(),
         reports: src.reports.clone(),

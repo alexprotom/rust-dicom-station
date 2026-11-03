@@ -284,7 +284,20 @@ src/
                     rule for folders, the person's names and memberships;
                     lock file + rename for two writers; old sidecars removed;
                     a rescan that finds nothing new writes nothing; an
-                    Importer files several folders under one update          DICOM
+                    Importer files several folders under one update; v3
+                    keeps the 4D header fields of each CT's first file, the
+                    z of every CT file, a structure set's referenced series;
+                    staging folders never walked (IGNORED_FOLDERS + ignore),
+                    a series that lost or changed a file read again whole,
+                    a study in one patient's folder that patient's      DICOM
+    fourd.rs        the 4D sets of the catalog: the header rules over the
+                    cached fields after every write, custom groups and
+                    tombstones (fourd_custom) winning, structure sets linked
+                    to their phase, orphans, the one-time label migration,
+                    the viewer's decisions in and out                        4D
+    tags.rs         the person's decisions (names, cohorts, 4D groups) as a
+                    JSON file by UID and patient key, merged into another
+                    station's catalog (Settings > Export / Import tags)      DICOM
   audit.rs          the call log both servers write (data/<server>/audit-*.log)
                                                                                  App
   pacs/             the PACS server and its client: the archive served to
@@ -609,9 +622,24 @@ src/
                     file is and references, pixel hash included), audit.rs
                     (parse, pixel length, series geometry, RTSTRUCT and REG
                     references), dupes.rs (exact copies by SOP UID and raw
-                    elements, pixel twins by SHA-256 + position, the pixel
-                    index), journal.rs (manifests, journaled resumable apply,
-                    undo from kept copies)                                       DICOM
+                    elements, pixel twins by SHA-256 + position, value (HU)
+                    twins of re-encoded copies, a series matched to the one
+                    archive series holding all its slices, the pixel index,
+                    the copies inside an import), journal.rs (manifests,
+                    journaled resumable apply checked against the dry run's
+                    SHA-256, undo from kept copies), remap.rs (typed UID maps -
+                    objects, studies, frames - chosen by where a UID sits; dry
+                    runs of rewrites, leftover and reference checks), relink.rs
+                    (a structure set onto an archived CT by pixel twins or z,
+                    slices without contours by the series-level list, its
+                    plans and doses re-pointed with it),
+                    objects.rs (RT objects matched by mapped, content, stamp
+                    or core fingerprints), anon.rs (pseudonymizing in place,
+                    the leftover token scan, the PHI report), reorg.rs
+                    (pacs-rules.toml, the naming rules, the sort plan),
+                    catalog_fix.rs (one patient entry per folder, study
+                    labels, one code given to two people in two cohorts)         DICOM
+  pathlen.rs        the 259-character limit every written path is held to       DICOM
   gen_test_data.rs  synthetic RT phantom study generator                         Sim
   testdata.rs       the bundled real patient (data-test/) fetched from GitHub:
                     git trees listing, raw downloads, resumable                  Sim
@@ -662,8 +690,12 @@ src/
   propagate.rs      structures across a registration: pull-back with a cached
                     mapping lattice; each result kept as a BoxedMask (its
                     bounding box only), unpacked to a full mask on demand       Reg
-  fourd.rs          4D sub-studies: phase recognition, ordered groups
-                    (phases + AVG / MIP), custom-group rules                     4D
+  fourd/            4D sub-studies: phase recognition, ordered groups
+                    (phases + AVG / MIP / untagged), custom-group rules          4D
+    scan.rs           the header rules (phase in comments and private tags,
+                      blocks, acquisition times, geometry; evidence; inferred
+                      phases; scans), shared by the catalog and the loader,
+                      then the description rule of mod.rs for the rest     4D
   motion.rs         motion arithmetic over phases: centroids, peak-to-peak,
                     drift, Pearson r with p-values, Dice / HD95 / MSD overlap,
                     the closest-point rigid offset between two surfaces,
@@ -749,8 +781,10 @@ src/
                       (2D/3D), fourd, analysis, output, archive (the
                       station's PACS listed under aliases or codes, paged or
                       summarised, a study described from its headers, opened
-                      through the gate), curation (audit, duplicates,
-                      references, quarantine, patient identity, apply / undo
+                      through the gate), curation/ (audit, duplicates,
+                      references, quarantine, patient identity, relink and
+                      remap, RT dedupe, merges, PHI report and pseudonymize,
+                      demographics, reorganize, catalog labels, apply / undo
                       of manifests, within the [pacs] folders)
     prompts.rs        the heart_target_propagation prompt, the doc resources
     audit             the call log (the shared crate::audit)
@@ -1319,14 +1353,34 @@ own sam2 package, is gone with it, and the port's fidelity claim rests on
 the per-operation fixtures, the synthesized-checkpoint forward passes and
 the runs against the real weights, which are `#[ignore]`d.
 
-Three suites need the `mcp` feature: **workflow** runs the 4D pipeline
+Four suites need the `mcp` feature: **workflow** runs the 4D pipeline
 headless on a three-phase phantom whose target moves 0 / 6 / 3 mm and checks
 the recovered motion; **mcp_tools** runs the heart sequence through the
 server's core (register, propagate, propagate onto a group, motion, DVH,
 export, re-open) and saved workflows through `list_workflows` /
 `run_workflow`, a batch included; **mcp_phi** gives the phantom a patient's name and asserts
 that no tool, no error path and no protocol frame of the real executable ever
-carries it.
+carries it; **curation** takes an archived study and a re-anonymized,
+identified copy of it (a made-up identity) through every curation tool - pixel
+twins and RT copies, a relinked structure set, a remap, the PHI scan and its
+refusal, a pseudonymization, a sort into the archive's names, a merge, the
+catalog's labels - each write applied and undone back to the byte, and no
+answer ever carrying the identity - and then a made-up Philips 4DCT through
+the archive's 4D tools (listed, filtered, opened by its group, decided).
+
+**fourd_scan** (default features) writes that 4DCT - ten phases stripped of
+their descriptions beside daily CTs of the same series number, its untagged
+series, its trace, a structure set on one phase, a 4D scout alone in a study
+- and holds the catalog to it: the set found, a rescan writing nothing, a
+rejection and a hand-made group surviving rescans, a catalog of version 2
+upgraded with its script's labels migrated, the viewer grouping the loaded
+study under the catalog's id and its edits reaching the catalog. Its
+`#[ignore]`d golden test replays the header dump of the trial archive the
+rules were proven on (`RDS_4D_GOLDEN`): the 35 sets exactly, the evidence
+counts, 30 scans in 25 studies, under a second, and the label migration
+clearing the 370 series and 25 study labels the script wrote. It also takes
+the tags of one station to another holding the same studies (names,
+cohorts, a 4D decision; what is not held counted, own names kept).
 
 Two suites need the `pacs-server` feature and start real servers on loopback
 ports (TLS, a state folder and an archive of their own under `target/`):
@@ -1341,6 +1395,6 @@ server dropped) and a task run end to end.
 
 ```
 cargo test --release
-cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi
+cargo test --features mcp --test workflow --test mcp_tools --test mcp_phi --test curation
 cargo test --features pacs-server --test pacs_server --test pacs_mirror
 ```
