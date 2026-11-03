@@ -826,6 +826,8 @@ mod tree_tests {
             frame_of_reference_uid: String::new(),
             series_datetime: String::new(),
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
+            fourd_head: None,
+            z_range: None,
         }
     }
 

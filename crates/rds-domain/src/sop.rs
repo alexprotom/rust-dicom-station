@@ -63,6 +63,11 @@ pub fn is_secondary_capture(sop_class: &str) -> bool {
             .is_some_and(|rest| matches!(rest, ".1" | ".2" | ".3" | ".4"))
 }
 
+/// Is this an RT Plan or an RT Ion Plan?
+pub fn is_rt_plan(sop_class: &str) -> bool {
+    sop_class == SOP_RTPLAN || sop_class == SOP_RTIONPLAN
+}
+
 /// Is this a Spatial Registration class, rigid or deformable?
 pub fn is_registration(sop_class: &str) -> bool {
     sop_class == SOP_SPATIAL_REG || sop_class == SOP_DEFORMABLE_REG

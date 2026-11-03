@@ -382,6 +382,8 @@ mod rename_tests {
             frame_of_reference_uid: String::new(),
             series_datetime: String::new(),
             files: Vec::new(),
+            fourd_head: None,
+            z_range: None,
         }
     }
 

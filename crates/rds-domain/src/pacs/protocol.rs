@@ -138,6 +138,8 @@ pub struct RemoteSeries {
     /// When it was made, `YYYYMMDDHHMMSS`; empty from a server of an
     /// earlier version, or when no file says.
     pub datetime: String,
+    /// The 4D set it is in (none from a server of an earlier version).
+    pub fourd: Option<crate::archive::fourd::SeriesFourD>,
 }
 
 impl RemoteSeries {
@@ -167,6 +169,10 @@ pub struct RemoteStudy {
     pub label: String,
     /// Its series (empty from a server of an earlier version).
     pub series: Vec<RemoteSeries>,
+    /// Its 4D sets, and what says "4D" with no set (empty from a server of
+    /// an earlier version).
+    pub fourd: Vec<crate::archive::fourd::StudyFourD>,
+    pub fourd_orphans: Vec<crate::archive::fourd::Orphan>,
 }
 
 impl RemoteStudy {

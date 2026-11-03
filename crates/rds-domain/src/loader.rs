@@ -242,6 +242,13 @@ pub struct SeriesInfo {
     /// treatment session by it ([`crate::sessions`]).
     pub series_datetime: String,
     pub files: Vec<PathBuf>,
+    /// CT only: what the 4D header rules read of the first file
+    /// ([`crate::fourd::scan`]); `None` for other series and where the
+    /// series was not read by the loader.
+    pub fourd_head: Option<Box<crate::fourd::scan::SeriesHead>>,
+    /// CT only: the slice positions of its files, as the 4D rules compare
+    /// them.
+    pub z_range: Option<crate::fourd::scan::Z>,
 }
 
 impl LoadedStudy {
@@ -279,6 +286,21 @@ impl SeriesInfo {
             &self.patient_name
         } else {
             "?"
+        }
+    }
+
+    /// The series as the 4D detection reads it.
+    pub fn fourd_input(&self) -> crate::fourd::scan::Input<'_> {
+        crate::fourd::scan::Input {
+            uid: &self.uid,
+            study: &self.study_uid,
+            modality: &self.modality,
+            number: self.series_number,
+            description: &self.description,
+            head: self.fourd_head.as_deref(),
+            temporal: self.temporal_id,
+            z: self.z_range,
+            image: true,
         }
     }
 }
@@ -591,6 +613,9 @@ fn load_files_with(
         datetime: String,
         has_geometry: bool,
         meta: PatientMeta,
+        /// CT only (see [`SeriesInfo::fourd_head`]).
+        fourd_head: Option<Box<crate::fourd::scan::SeriesHead>>,
+        z: Option<i64>,
     }
 
     let scanned: Vec<Scanned> = files
@@ -622,7 +647,14 @@ fn load_files_with(
                 study_description: str_of(&obj, tags::STUDY_DESCRIPTION).unwrap_or_default(),
                 study_id: str_of(&obj, tags::STUDY_ID).unwrap_or_default(),
             };
+            let ct = modality == "CT";
             Some(Scanned {
+                fourd_head: ct.then(|| Box::new(crate::fourd::scan::SeriesHead::read(&obj))),
+                z: if ct {
+                    crate::fourd::scan::z_of(&obj)
+                } else {
+                    None
+                },
                 path: path.clone(),
                 modality,
                 sop_class,
@@ -728,6 +760,8 @@ fn load_files_with(
                         frame_of_reference_uid: s.for_uid.clone(),
                         series_datetime: s.datetime.clone(),
                         files: vec![s.path.clone()],
+                        fourd_head: s.fourd_head.clone(),
+                        z_range: None,
                     });
                 }
             },
@@ -755,6 +789,23 @@ fn load_files_with(
             "{total} object(s) not displayed: {}",
             kinds.join(", ")
         ));
+    }
+
+    // The slice positions of each CT, for the 4D rules.
+    {
+        let mut zs: std::collections::HashMap<&str, Vec<i64>> = std::collections::HashMap::new();
+        for s in &scanned {
+            if let Some(z) = s.z {
+                zs.entry(s.series_uid.as_str()).or_default().push(z);
+            }
+        }
+        for se in image_series.iter_mut() {
+            if se.fourd_head.is_some() {
+                se.z_range = zs
+                    .get(se.uid.as_str())
+                    .and_then(|v| crate::fourd::scan::Z::of(v.iter().copied()));
+            }
+        }
     }
 
     // Default to the series with the most slices (typically the planning CT).

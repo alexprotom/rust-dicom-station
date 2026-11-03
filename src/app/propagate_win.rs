@@ -2634,6 +2634,7 @@ mod tests {
 
     fn group(name: &str, labels: &[&str]) -> FourDGroup {
         FourDGroup {
+            id: String::new(),
             name: name.to_string(),
             study_uid: "study".into(),
             members: labels.iter().map(|l| member(l, Role::Phase)).collect(),

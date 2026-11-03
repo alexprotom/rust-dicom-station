@@ -372,3 +372,138 @@ fn an_import_is_deduplicated_relinked_pseudonymized_and_sorted() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The 4D sets of the archive through the tools: listed with every study
+/// and filtered on, a study's groups member by member, one group opened
+/// alone under the id the catalog gives it, a group made by hand and one
+/// dissolved - the made-up patient never named.
+#[test]
+fn the_archives_4d_sets_are_listed_opened_and_decided() {
+    use common::fourd::{philips_4d, STUDY_4D, STUDY_SCOUT};
+    let dir = common::target_dir("test_curation_fourd");
+    let (pacs, records) = (dir.join("pacs"), dir.join("records"));
+    philips_4d(&pacs);
+    std::fs::create_dir_all(&records).unwrap();
+    let mut core = Core::new(Config {
+        output_dir: Some(dir.join("out")),
+        archive: pacs.display().to_string(),
+        phi_policy: PhiPolicy::Redact,
+        device: "cpu".into(),
+        audit_log: false,
+        pacs: PacsConfig {
+            roots: vec![pacs.clone()],
+            records: Some(records.clone()),
+            ..Default::default()
+        },
+        ..Config::default()
+    });
+    let c = &mut core;
+    let named = |v: &Value| v.to_string().contains("Phantom") || v.to_string().contains("P4D-01");
+
+    // One line per study with a 4DCT; none probable; the scout's study has none.
+    let s = call(
+        c,
+        "list_archive",
+        json!({"summary": true, "filter": {"has_4d": true}}),
+    );
+    assert_eq!(s["studies"], json!(1), "{s}");
+    assert_eq!(s["listing"][0]["study"], json!(STUDY_4D));
+    assert_eq!(s["listing"][0]["fourd_scans"], json!(1));
+    let s = call(
+        c,
+        "list_archive",
+        json!({"summary": true, "filter": {"has_4d": "probable"}}),
+    );
+    assert_eq!(s["studies"], json!(0), "{s}");
+    let s = call(
+        c,
+        "list_archive",
+        json!({"summary": true, "filter": {"has_4d": false}}),
+    );
+    assert_eq!(s["listing"][0]["study"], json!(STUDY_SCOUT), "{s}");
+    let all = call(c, "list_archive", json!({}));
+    assert!(!named(&all), "{all}");
+    let studies = all["listing"][0]["studies"].as_array().unwrap();
+    let st = studies
+        .iter()
+        .find(|s| s["study"] == json!(STUDY_4D))
+        .unwrap();
+    let group = st["fourd"][0]["group"].as_str().unwrap().to_string();
+    assert_eq!(st["fourd"][0]["evidence"], json!("same-acquisition"));
+    assert!(
+        st["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["fourd"] == json!("~40%")),
+        "{st}"
+    );
+    let scout = studies
+        .iter()
+        .find(|s| s["study"] == json!(STUDY_SCOUT))
+        .unwrap();
+    assert_eq!(scout["fourd_orphans"][0]["what"], json!("scout"), "{scout}");
+
+    // Member by member, from the catalog alone.
+    let g = call(c, "list_archive_4d_groups", json!({"study": STUDY_4D}));
+    assert_eq!(
+        g["groups"][0]["members"].as_array().unwrap().len(),
+        12,
+        "{g}"
+    );
+    assert_eq!(
+        g["groups"][0]["structures"].as_array().unwrap().len(),
+        1,
+        "{g}"
+    );
+
+    // Opened alone: its phases, its reconstruction, the structure set on
+    // one phase; the dataset lists the group under the same id.
+    let o = call(
+        c,
+        "open_archive_study",
+        json!({"study": STUDY_4D, "fourd_group": group}),
+    );
+    assert!(!named(&o), "{o}");
+    let ds = o["dataset"].as_str().unwrap().to_string();
+    let l = call(c, "list_4d_groups", json!({"dataset": ds}));
+    assert_eq!(l["groups"][0]["group"], json!(group), "{l}");
+    assert_eq!(
+        l["groups"][0]["members"].as_array().unwrap().len(),
+        11,
+        "{l}"
+    );
+    let e = fail(
+        c,
+        "open_archive_study",
+        json!({"study": STUDY_4D, "fourd_group": "nope"}),
+    );
+    assert!(e.contains("no 4D group"), "{e}");
+
+    // Dissolved, it is listed no more; reset, it is back.
+    call(c, "confirm_4d", json!({"group": group, "yes": false}));
+    let g = call(c, "list_archive_4d_groups", json!({"study": STUDY_4D}));
+    assert_eq!(g["groups"], json!([]), "{g}");
+    call(
+        c,
+        "confirm_4d",
+        json!({"group": group, "yes": true, "reset": true}),
+    );
+    // Made by hand of three phases.
+    let m = call(
+        c,
+        "set_4d_group",
+        json!({"study": STUDY_4D, "members": [
+            "1.2.826.0.1.4.200",
+            {"series": "1.2.826.0.1.4.201", "phase": "50%"},
+            "1.2.826.0.1.4.202"
+        ], "name": "Three phases"}),
+    );
+    assert_eq!(m["group"], json!(group), "{m}");
+    assert_eq!(m["members"], json!(3), "{m}");
+    let g = call(c, "list_archive_4d_groups", json!({"study": STUDY_4D}));
+    assert_eq!(g["groups"][0]["custom"], json!(true), "{g}");
+    assert_eq!(g["groups"][0]["members"][1]["phase"], json!("50%"), "{g}");
+    assert!(records.join("catalog-backups").read_dir().unwrap().count() >= 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}

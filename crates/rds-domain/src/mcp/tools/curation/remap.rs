@@ -165,6 +165,11 @@ pub struct RelinkArgs {
     /// reference and move with it into the target study and frame.
     #[serde(default)]
     pub merge_series: Vec<String>,
+    /// The export's plans and doses (files or folders): rewritten with the
+    /// structure set, a plan's structure set reference pointed at it, a
+    /// dose's plan reference at the one plan among them.
+    #[serde(default)]
+    pub companions: Vec<PathBuf>,
     pub reason: String,
 }
 
@@ -221,7 +226,23 @@ pub fn relink_structure_set(core: &mut Core, a: RelinkArgs, p: &Progress) -> Res
     };
     p.set("Reading the export");
     let originals = facts_of(&curation::files_under(&originals_dir), hash, p)?;
-    let plan = relink::plan(&rs, &target, &originals, mapping, &a.merge_series)?;
+    let mut companions: Vec<PathBuf> = Vec::new();
+    for c in &a.companions {
+        let c = resolve(core, c)?;
+        if c.is_dir() {
+            companions.extend(curation::files_under(&c));
+        } else {
+            companions.push(c);
+        }
+    }
+    let plan = relink::plan(
+        &rs,
+        &target,
+        &originals,
+        mapping,
+        &a.merge_series,
+        &companions,
+    )?;
     // After the rewrite, references must lead to the target or to the
     // archive.
     let base = resolver(core);
@@ -239,15 +260,25 @@ pub fn relink_structure_set(core: &mut Core, a: RelinkArgs, p: &Progress) -> Res
     };
     let changes = Changes {
         remap: true,
+        set: plan.set.clone(),
         ..Default::default()
     };
     p.set("Checking the rewrites");
     let planned = plan_rewrites(&plan.files, &changes, &plan.maps, &resolves);
+    let warnings = plan.warnings.clone();
+    let merged = plan.files.len() - 1 - plan.companions;
     let mut out = save_planned(core, "relink", &a.reason, planned, plan.maps, true)?;
     out["images_by_pixels"] = json!(plan.by_pixels);
     out["images_by_z"] = json!(plan.by_z);
     out["images_by_contour_z"] = json!(plan.by_contour_z);
-    out["merged_series_files"] = json!(plan.files.len() - 1);
+    out["images_by_series_list"] = json!(plan.by_list);
+    out["rois_given_the_frame"] = json!(plan.rois_framed);
+    out["plans_repointed"] = json!(plan.plans_repointed);
+    out["doses_repointed"] = json!(plan.doses_repointed);
+    out["merged_series_files"] = json!(merged);
+    if !warnings.is_empty() {
+        out["relink_warnings"] = json!(warnings);
+    }
     Ok(out)
 }
 

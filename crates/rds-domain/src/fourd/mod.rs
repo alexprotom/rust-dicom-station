@@ -16,6 +16,16 @@
 //! Members reference series by UID, not by index - series are renamed,
 //! removed and moved between workspaces, and a UID survives all of that
 //! (an unresolvable UID simply drops out of the resolved view).
+//!
+//! The description is where a phase is looked for last: [`scan`] reads
+//! the headers (the phase in a scanner's comments and private tags, the
+//! acquisition time all phases share, the geometry) and finds the 4DCTs
+//! an anonymizing export left without descriptions. It runs on what the
+//! PACS catalog keeps of each series as on a loaded study, so a set is the
+//! same set, under the same id, before and after it is loaded; the series
+//! it leaves go through the description rule here.
+
+pub mod scan;
 
 use crate::loader::SeriesInfo;
 
@@ -30,6 +40,8 @@ pub enum Role {
     Mip,
     /// Minimum-intensity projection over the phases.
     MinIp,
+    /// The ungated reconstruction of the same scan (Philips `UnTagged`).
+    Untagged,
 }
 
 impl Role {
@@ -40,6 +52,31 @@ impl Role {
             Role::Average => "AVG",
             Role::Mip => "MIP",
             Role::MinIp => "MinIP",
+            Role::Untagged => "untagged",
+        }
+    }
+
+    /// The same as the header rules name it.
+    pub fn kind(self) -> scan::Kind {
+        match self {
+            Role::Phase => scan::Kind::Phase,
+            Role::Average => scan::Kind::Avg,
+            Role::Mip => scan::Kind::Mip,
+            Role::MinIp => scan::Kind::MinIp,
+            Role::Untagged => scan::Kind::Untagged,
+        }
+    }
+
+    /// The role of a member the header rules found; `None` for the trace,
+    /// which is no member of a viewer's group.
+    pub fn of_kind(k: scan::Kind) -> Option<Role> {
+        match k {
+            scan::Kind::Phase => Some(Role::Phase),
+            scan::Kind::Avg => Some(Role::Average),
+            scan::Kind::Mip => Some(Role::Mip),
+            scan::Kind::MinIp => Some(Role::MinIp),
+            scan::Kind::Untagged => Some(Role::Untagged),
+            scan::Kind::Trace => None,
         }
     }
 }
@@ -113,7 +150,7 @@ impl RespTrace {
 
 /// `For Series: 201-222` (or `201–222`, `201 to 222`, one number) as the
 /// first and last series number.
-fn series_range(label: &str) -> Option<(i64, i64)> {
+pub(crate) fn series_range(label: &str) -> Option<(i64, i64)> {
     let l = label.to_lowercase();
     let at = l.find("for series")?;
     let rest = &l[at + "for series".len()..];
@@ -133,6 +170,10 @@ fn series_range(label: &str) -> Option<(i64, i64)> {
 /// A group of image series that form one 4D acquisition.
 #[derive(Clone, Debug)]
 pub struct FourDGroup {
+    /// What the PACS catalog and the MCP tools call it: the id of the set
+    /// [`scan::detect`] found (the same before and after loading), or one
+    /// given to a group made by hand. Empty for a group of an older kind.
+    pub id: String,
     /// Name shown in the tree; renameable.
     pub name: String,
     /// Study the group belongs to (all members share it).
@@ -333,7 +374,54 @@ fn normalize_template(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Recognise the 4D groups of a series list.
+/// Recognise the 4D groups of a series list: the header rules of [`scan`]
+/// first (where the loader read the headers), then the description rule
+/// for the rest ([`detect_by_description`]).
+pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
+    let inputs: Vec<scan::Input> = series.iter().map(SeriesInfo::fourd_input).collect();
+    scan::detect(&inputs).iter().map(group_of).collect()
+}
+
+/// The viewer's group for a set [`scan::detect`] found; an inferred phase
+/// reads `~30%`.
+pub fn group_of(f: &scan::Found) -> FourDGroup {
+    FourDGroup {
+        id: f.id.clone(),
+        name: f.name.clone(),
+        study_uid: f.study.clone(),
+        members: f
+            .members
+            .iter()
+            .filter_map(|m| {
+                Some(Member {
+                    series_uid: m.series.clone(),
+                    label: if m.inferred {
+                        format!("~{}", m.label)
+                    } else {
+                        m.label.clone()
+                    },
+                    role: Role::of_kind(m.kind)?,
+                    percent: m.percent.map(|p| p as f32),
+                })
+            })
+            .collect(),
+        custom: false,
+        dissolved: false,
+    }
+}
+
+/// One series as the description rule reads it.
+pub(crate) struct Desc<'a> {
+    pub uid: &'a str,
+    pub study: &'a str,
+    pub modality: &'a str,
+    pub description: &'a str,
+    /// TemporalPositionIdentifier of its first slice.
+    pub temporal: Option<i64>,
+}
+
+/// The 4D groups of a series list by their descriptions alone, each with
+/// the stem its name was made of.
 ///
 /// Series are bucketed by (study, modality); within a bucket, series whose
 /// descriptions carry a percent phase are grouped by their description
@@ -342,16 +430,16 @@ fn normalize_template(s: &str) -> String {
 /// phases - two series with "50%" in the name are more likely a coincidence
 /// than an acquisition. Average / MIP / MinIP reconstructions of the bucket
 /// are attached to its first group.
-pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
+pub(crate) fn detect_by_description(series: &[Desc]) -> Vec<(FourDGroup, String)> {
     // (study_uid, modality) buckets, in first-seen order.
     let mut buckets: Vec<(String, String, Vec<usize>)> = Vec::new();
     for (i, s) in series.iter().enumerate() {
         match buckets
             .iter_mut()
-            .find(|(st, m, _)| *st == s.study_uid && *m == s.modality)
+            .find(|(st, m, _)| *st == s.study && *m == s.modality)
         {
             Some((_, _, v)) => v.push(i),
-            None => buckets.push((s.study_uid.clone(), s.modality.clone(), vec![i])),
+            None => buckets.push((s.study.to_string(), s.modality.to_string(), vec![i])),
         }
     }
 
@@ -366,7 +454,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
         let mut extras: Vec<(usize, Role)> = Vec::new();
         for &i in &idxs {
             let s = &series[i];
-            match hint_of(&s.description) {
+            match hint_of(s.description) {
                 Hint::Phase {
                     number,
                     template: tpl,
@@ -382,8 +470,8 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
                 Hint::Mip => extras.push((i, Role::Mip)),
                 Hint::MinIp => extras.push((i, Role::MinIp)),
                 Hint::None => {
-                    if let Some(t) = s.temporal_id {
-                        let key = normalize_template(&s.description);
+                    if let Some(t) = s.temporal {
+                        let key = normalize_template(s.description);
                         match temporal
                             .iter_mut()
                             .find(|(k, _)| k.eq_ignore_ascii_case(&key))
@@ -409,7 +497,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
             let members: Vec<Member> = members
                 .into_iter()
                 .map(|(i, pct)| Member {
-                    series_uid: series[i].uid.clone(),
+                    series_uid: series[i].uid.to_string(),
                     label: Hint::phase_label(pct, literal_pct),
                     role: Role::Phase,
                     percent: Some(pct),
@@ -417,6 +505,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
                 .collect();
             groups_here.push((
                 FourDGroup {
+                    id: String::new(),
                     name: FourDGroup::derive_name(&modality, &tpl, n, 0),
                     study_uid: study_uid.clone(),
                     members,
@@ -432,11 +521,11 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
             }
             members.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
             let n = members.len();
-            let desc = series[members[0].0].description.clone();
+            let desc = series[members[0].0].description.to_string();
             let members: Vec<Member> = members
                 .into_iter()
                 .map(|(i, t)| Member {
-                    series_uid: series[i].uid.clone(),
+                    series_uid: series[i].uid.to_string(),
                     label: format!("t{t}"),
                     role: Role::Phase,
                     percent: None,
@@ -445,6 +534,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
             let name = FourDGroup::derive_name(&modality, &desc, n, 0);
             groups_here.push((
                 FourDGroup {
+                    id: String::new(),
                     name,
                     study_uid: study_uid.clone(),
                     members,
@@ -459,7 +549,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
         if let (Some((g, stem)), false) = (groups_here.first_mut(), extras.is_empty()) {
             for (i, role) in &extras {
                 g.members.push(Member {
-                    series_uid: series[*i].uid.clone(),
+                    series_uid: series[*i].uid.to_string(),
                     label: role.tag().to_string(),
                     role: *role,
                     percent: None,
@@ -468,7 +558,7 @@ pub fn detect(series: &[SeriesInfo]) -> Vec<FourDGroup> {
             let n_phases = g.phase_members().len();
             g.name = FourDGroup::derive_name(&modality, stem, n_phases, extras.len());
         }
-        out.extend(groups_here.into_iter().map(|(g, _)| g));
+        out.extend(groups_here);
     }
     out
 }
@@ -586,6 +676,7 @@ pub fn group_from(series: &[SeriesInfo], picked: &[usize]) -> Option<FourDGroup>
         stem
     };
     Some(FourDGroup {
+        id: String::new(),
         name: FourDGroup::derive_name(&first.modality, &stem, n_phases, members.len() - n_phases),
         study_uid: first.study_uid.clone(),
         members,
@@ -660,6 +751,8 @@ mod tests {
             frame_of_reference_uid: String::new(),
             series_datetime: String::new(),
             files: Vec::new(),
+            fourd_head: None,
+            z_range: None,
         }
     }
 

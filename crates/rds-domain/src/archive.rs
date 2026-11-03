@@ -38,6 +38,8 @@
 //! folder holds it already.
 
 pub mod catalog;
+pub mod fourd;
+pub mod tags;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -65,6 +67,8 @@ pub struct SeriesEntry {
     /// When it was made, `YYYYMMDDHHMMSS`; empty when no file says
     /// ([`catalog::SeriesRec::datetime`]).
     pub datetime: String,
+    /// The 4D set it is in, and as what ([`fourd`]).
+    pub fourd: Option<fourd::SeriesFourD>,
 }
 
 impl SeriesEntry {
@@ -110,6 +114,10 @@ pub struct StudyEntry {
     /// The name given in the PACS window; empty: none.
     pub label: String,
     pub series: Vec<SeriesEntry>,
+    /// Its 4D sets ([`fourd`]).
+    pub fourd: Vec<fourd::StudyFourD>,
+    /// Series that say "4D" with no set to go with.
+    pub fourd_orphans: Vec<fourd::Orphan>,
 }
 
 /// `20260827` as `2026-08-27`; anything else as it is.
@@ -615,6 +623,7 @@ impl Archive {
                 files: sops.len(),
                 dir: common_dir(paths.iter().map(PathBuf::as_path)),
                 datetime: s.datetime.clone(),
+                fourd: s.fourd.clone(),
             };
             by_study
                 .entry(s.study.as_str())
@@ -660,6 +669,8 @@ impl Archive {
                 dir: common_dir(paths.iter().map(PathBuf::as_path)),
                 label: st.label.clone(),
                 series: series.into_iter().map(|(s, _)| s).collect(),
+                fourd: st.fourd.clone(),
+                fourd_orphans: st.fourd_orphans.clone(),
             };
             by_patient
                 .entry(st.patient.as_str())
@@ -1654,7 +1665,7 @@ impl Importer<'_> {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
-                catalog::add_file(c, h, FileRec(r, rel, *bytes, mtime, h.sop.clone()));
+                catalog::add_file(c, h, FileRec(r, rel, *bytes, mtime, h.sop.clone(), h.z));
             }
             catalog::prune(c);
             catalog::ensure_cohorts(c);

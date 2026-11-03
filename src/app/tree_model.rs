@@ -868,6 +868,8 @@ mod layout_tests {
             frame_of_reference_uid: String::new(),
             series_datetime: String::new(),
             files: vec![std::path::PathBuf::from(format!("{uid}.dcm"))],
+            fourd_head: None,
+            z_range: None,
         }
     }
 
@@ -1019,6 +1021,7 @@ mod layout_tests {
         // them under the group and not under the CT node, so that is the
         // level the arrows have to follow.
         st.fourd_groups.push(FourDGroup {
+            id: String::new(),
             name: "4DCT (2 phases)".into(),
             study_uid: "st1".into(),
             members: vec![
@@ -1082,6 +1085,7 @@ mod layout_tests {
         };
         st.doses = vec![dose("st2"), dose("st1"), dose("st2")];
         let group = |name: &str, study: &str, uid: &str, dissolved: bool| FourDGroup {
+            id: String::new(),
             name: name.into(),
             study_uid: study.into(),
             members: vec![Member {

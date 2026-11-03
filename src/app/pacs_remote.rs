@@ -254,6 +254,7 @@ pub(super) fn remote_nodes(
             patients.sort_by_key(|p| p.title().to_lowercase());
             let files: usize = patients.iter().map(|p| p.files()).sum();
             TNode {
+                weak: false,
                 key: name.clone(),
                 icon: "📁",
                 text: name.clone(),
@@ -273,6 +274,7 @@ pub(super) fn remote_nodes(
                             .filter(|s| held.contains(&s.study_uid))
                             .count();
                         TNode {
+                            weak: false,
                             key: p.key.clone(),
                             icon: "👤",
                             text: p.title(),
@@ -291,55 +293,69 @@ pub(super) fn remote_nodes(
                             children: p
                                 .studies
                                 .iter()
-                                .map(|st| TNode {
-                                    key: st.study_uid.clone(),
-                                    icon: "📂",
-                                    text: format!(
-                                        "{}{}",
-                                        held_mark(held, &st.study_uid),
-                                        st.title()
-                                    ),
-                                    right: format!(
-                                        "{}{}",
-                                        if st.series.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!("{} · ", n(st.series.len(), "series", "series"))
-                                        },
-                                        n(st.files, "file", "files")
-                                    ),
-                                    hover: format!(
-                                        "Study UID {}\n{}",
-                                        st.study_uid,
-                                        if held.contains(&st.study_uid) {
-                                            "✔ held on this device (all or part of it)"
-                                        } else {
-                                            "on the server only"
-                                        }
-                                    ),
-                                    files: st.files,
-                                    children: pacs_tree::study_rows(
-                                        st.series
-                                            .iter()
-                                            .map(|se| pacs_tree::SeriesRow {
-                                                modality: se.modality.clone(),
-                                                datetime: se.datetime.clone(),
-                                                node: TNode {
-                                                    key: se.series_uid.clone(),
-                                                    icon: "🎞",
-                                                    text: format!(
-                                                        "{}{}",
-                                                        held_mark(held_series, &se.series_uid),
-                                                        se.title()
-                                                    ),
-                                                    right: n(se.files, "file", "files"),
-                                                    hover: format!("Series UID {}", se.series_uid),
-                                                    files: se.files,
-                                                    children: Vec::new(),
-                                                },
-                                            })
-                                            .collect(),
-                                    ),
+                                .map(|st| {
+                                    let (badge, about) =
+                                        pacs_tree::fourd_badge(&st.fourd, &st.fourd_orphans);
+                                    TNode {
+                                        weak: false,
+                                        key: st.study_uid.clone(),
+                                        icon: "📂",
+                                        text: format!(
+                                            "{}{}",
+                                            held_mark(held, &st.study_uid),
+                                            st.title()
+                                        ),
+                                        right: format!(
+                                            "{badge}{}{}",
+                                            if st.series.is_empty() {
+                                                String::new()
+                                            } else {
+                                                format!(
+                                                    "{} · ",
+                                                    n(st.series.len(), "series", "series")
+                                                )
+                                            },
+                                            n(st.files, "file", "files")
+                                        ),
+                                        hover: format!(
+                                            "Study UID {}\n{}{about}",
+                                            st.study_uid,
+                                            if held.contains(&st.study_uid) {
+                                                "✔ held on this device (all or part of it)"
+                                            } else {
+                                                "on the server only"
+                                            }
+                                        ),
+                                        files: st.files,
+                                        children: pacs_tree::study_rows(
+                                            st.series
+                                                .iter()
+                                                .map(|se| pacs_tree::SeriesRow {
+                                                    modality: se.modality.clone(),
+                                                    datetime: se.datetime.clone(),
+                                                    fourd: se.fourd.clone(),
+                                                    node: TNode {
+                                                        weak: false,
+                                                        key: se.series_uid.clone(),
+                                                        icon: "🎞",
+                                                        text: format!(
+                                                            "{}{}",
+                                                            held_mark(held_series, &se.series_uid),
+                                                            se.title()
+                                                        ),
+                                                        right: n(se.files, "file", "files"),
+                                                        hover: format!(
+                                                            "Series UID {}",
+                                                            se.series_uid
+                                                        ),
+                                                        files: se.files,
+                                                        children: Vec::new(),
+                                                    },
+                                                })
+                                                .collect(),
+                                            &st.fourd,
+                                        ),
+                                    }
                                 })
                                 .collect(),
                         }

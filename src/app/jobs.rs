@@ -217,15 +217,21 @@ impl ViewerApp {
             n => format!("{n} selected files"),
         };
         let merge = self.slots[slot].study.is_some();
+        // Files of this station's PACS: what was decided there about their
+        // 4D sets comes with them.
+        let pacs = sources.is_some().then(|| self.station_pacs());
         let progress = Arc::new(Progress::default());
         let (tx, rx) = mpsc::channel();
         let p2 = progress.clone();
         std::thread::spawn(move || {
-            let res = if merge {
+            let mut res = if merge {
                 loader::load_files_to_merge(&paths, &origin, &p2)
             } else {
                 loader::load_files(&paths, &origin, &p2)
             };
+            if let (Ok(st), Some(ar)) = (res.as_mut(), pacs.as_ref()) {
+                crate::archive::fourd::apply_to_study(ar, st);
+            }
             let _ = tx.send(LoadResult::Study(Box::new(res), slot));
         });
         self.loading = Some(Job { progress, rx });

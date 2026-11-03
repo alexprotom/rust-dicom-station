@@ -18,13 +18,24 @@
 //! from a file and the study's description; the modalities sorted.
 //! [`fill_labels`] gives it to every study of a cohort that has no label -
 //! a label someone typed is never overwritten.
+//!
+//! [`identity_clashes`] finds two people under one code: the catalog keys a
+//! patient by Patient ID alone, so a code given in two cohorts (each with
+//! its own numbering) files both people's studies under one entry. A
+//! Patient ID whose studies lie in several cohort folders is checked by
+//! the birth date and sex of one file per study; cohorts that share no
+//! (birth date, sex) are reported, and the person splits them by recoding
+//! one cohort's folder (`set_patient_identity`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
+use dicom_dictionary_std::tags;
+use rayon::prelude::*;
 use serde::Serialize;
 
 use super::reorg::code_key;
-use crate::archive::catalog::{Catalog, PatientRec};
+use crate::archive::catalog::{self, Catalog, PatientRec, TopKind};
 
 /// The study folders of a cohort: study UID → (storage index, patient
 /// folder, study folder), from where its files lie
@@ -215,6 +226,134 @@ pub fn fill_labels(
     n
 }
 
+/// One cohort folder of a patient in an [`IdentityClash`].
+#[derive(Clone, Debug, Serialize)]
+pub struct ClashPart {
+    /// The cohort folder (empty: the patient's folder is directly in the
+    /// storage folder).
+    pub cohort: String,
+    /// The storage folder, by its index in the catalog, and the patient's
+    /// folder below it (`cohort/patient`, or `patient`).
+    pub storage: u32,
+    pub folder: String,
+    pub studies: usize,
+    /// How many distinct (birth date, sex) the files of those studies
+    /// carry; the values themselves are never returned.
+    pub variants: usize,
+    #[serde(skip)]
+    seen: BTreeSet<(String, String)>,
+}
+
+/// A Patient ID whose cohort folders hold files of different people.
+#[derive(Clone, Debug, Serialize)]
+pub struct IdentityClash {
+    /// The patient key (the Patient ID).
+    pub patient: String,
+    pub parts: Vec<ClashPart>,
+}
+
+/// The patients filed in more than one cohort folder whose folders share no
+/// (birth date, sex): see the module doc. One file of every study of such
+/// a patient is read (its header only).
+pub fn identity_clashes(c: &Catalog) -> Vec<IdentityClash> {
+    let tops = catalog::top_folders(c);
+    // Where a file lies: (storage, cohort folder, patient folder).
+    let place = |r: u32, rel: &str| -> Option<(u32, String, String)> {
+        let parts: Vec<&str> = rel.split('/').collect();
+        if parts.len() < 2 {
+            return None;
+        }
+        let cohort = tops.get(&(r, parts[0].to_string())) == Some(&TopKind::Cohort);
+        if cohort && parts.len() >= 3 {
+            Some((
+                r,
+                parts[0].to_string(),
+                format!("{}/{}", parts[0], parts[1]),
+            ))
+        } else {
+            Some((r, String::new(), parts[0].to_string()))
+        }
+    };
+    // Patient -> (storage, cohort, folder) -> the studies there, each with
+    // one file to read.
+    type Places = BTreeMap<(u32, String, String), BTreeMap<String, String>>;
+    let mut by_patient: BTreeMap<String, Places> = BTreeMap::new();
+    for s in c.series.values() {
+        let Some(st) = c.studies.get(&s.study) else {
+            continue;
+        };
+        let Some(f) = s.files.first() else {
+            continue;
+        };
+        let Some(at) = place(f.0, &f.1) else {
+            continue;
+        };
+        let Some(root) = c.storage.get(f.0 as usize) else {
+            continue;
+        };
+        let path = catalog::abs_of(Path::new(root), &f.1);
+        by_patient
+            .entry(st.patient.clone())
+            .or_default()
+            .entry(at)
+            .or_default()
+            .entry(s.study.clone())
+            .or_insert_with(|| path.display().to_string());
+    }
+    // Only a patient in two cohort folders or more is read at all.
+    by_patient.retain(|_, places| {
+        places
+            .keys()
+            .map(|(r, cohort, _)| (*r, cohort.clone()))
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1
+    });
+    let mut out: Vec<IdentityClash> = by_patient
+        .into_par_iter()
+        .filter_map(|(patient, places)| {
+            let parts: Vec<ClashPart> = places
+                .into_iter()
+                .map(|((storage, cohort, folder), studies)| {
+                    let seen: BTreeSet<(String, String)> = studies
+                        .values()
+                        .filter_map(|p| crate::dicomfile::open_scan(Path::new(p)).ok())
+                        .map(|o| {
+                            let t = |tag| {
+                                crate::loader::str_of(&o, tag)
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string()
+                            };
+                            (t(tags::PATIENT_BIRTH_DATE), t(tags::PATIENT_SEX))
+                        })
+                        .collect();
+                    ClashPart {
+                        cohort,
+                        storage,
+                        folder,
+                        studies: studies.len(),
+                        variants: seen.len(),
+                        seen,
+                    }
+                })
+                .collect();
+            // Two cohorts with no (birth date, sex) in common are two people.
+            let apart = parts.iter().enumerate().any(|(i, a)| {
+                parts[i + 1..].iter().any(|b| {
+                    a.cohort != b.cohort
+                        && !a.seen.is_empty()
+                        && !b.seen.is_empty()
+                        && a.seen.is_disjoint(&b.seen)
+                })
+            });
+            apart.then_some(IdentityClash { patient, parts })
+        })
+        .collect();
+    out.sort_by(|a, b| a.patient.cmp(&b.patient));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,7 +375,7 @@ mod tests {
     #[test]
     fn one_entry_per_patient_folder_with_the_labels_carried() {
         let mut c = Catalog::default();
-        let f = |rel: &str| FileRec(0, rel.into(), 1, 0, rel.into());
+        let f = |rel: &str| FileRec(0, rel.into(), 1, 0, rel.into(), None);
         // P01-031's folder: one study still under an old ID, labelled.
         add_file(&mut c, &head("P01-031", "1.1", "1.1.1", "CT", "20240716"),
             f("Trial/P01-031/20240716_Upright-Procedure#4_StudyUID-11/Series-1_CT_x_SeriesUID-111/a"));

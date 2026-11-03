@@ -34,19 +34,24 @@ pub fn list_4d_groups(core: &mut Core, a: DatasetArgs, _p: &Progress) -> Result<
                     .position(|s| s.uid == uid)
                     .map(|x| x + 1)
             };
-            json!({
+            let mut v = json!({
                 "index": i + 1,
                 "name": clean_text(&g.name),
                 "members": g.members.iter().map(|m| json!({
                     "label": clean_text(&m.label),
-                    "role": match m.role { Role::Phase => "phase", _ => "reconstruction" },
+                    "role": match m.role { Role::Phase => "phase", Role::Untagged => "untagged", _ => "reconstruction" },
                     "percent": m.percent,
                     "series": series_no(&m.series_uid),
                 })).collect::<Vec<_>>(),
                 "default_reference": g.default_reference().map(|m| clean_text(&g.members[m].label)),
                 "respiratory_trace": crate::fourd::RespTrace::of_group(&ds.study.resp_traces, g, &ds.study.series)
                     .map(|t| clean_text(&t.label)),
-            })
+            });
+            // The id the archive's catalog lists the same set under.
+            if !g.id.is_empty() {
+                v["group"] = json!(g.id);
+            }
+            v
         })
         .collect();
     Ok(json!({ "dataset": ds.id, "groups": groups }))
@@ -62,7 +67,10 @@ fn group_index(ds: &super::super::session::Dataset, group: &str) -> Result<usize
     }
     groups
         .iter()
-        .position(|g| !g.dissolved && g.name.eq_ignore_ascii_case(group))
+        .position(|g| {
+            !g.dissolved
+                && (g.name.eq_ignore_ascii_case(group) || (!g.id.is_empty() && g.id == group))
+        })
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "no 4D group '{group}' in {}; there are {} (see list_4d_groups)",

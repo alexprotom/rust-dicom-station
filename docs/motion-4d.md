@@ -5,11 +5,60 @@ motion studies (e.g. upright-vs-supine STAR target evaluation): per-phase
 registration, target propagation, centroid motion metrics, target-reference
 drift and correlation, and ITV volumes.
 
-## 4D groups (`crates/rds-domain/src/fourd.rs`)
+## 4D groups (`crates/rds-domain/src/fourd/`)
 
 A 4DCT arrives as one image series per respiratory phase, usually with an
 average and sometimes MIP/MinIP reconstructions beside them; DICOM stores
-no node for the acquisition they form, so the viewer reconstructs one:
+no node for the acquisition they form, so the viewer reconstructs one.
+
+**From the headers first** (`fourd/scan.rs`). An anonymizing export
+(RayStation 10.1, say) strips the description, the protocol, the dates and
+the scanner's private tags, and scanners rarely fill the standard 4D
+attributes; the headers still say it once the series are put side by side.
+The same rules run in the PACS catalog before a study is loaded
+([pacs.md](pacs.md#4d-sets)), so a set is the same set, under the same id,
+in both:
+
+- **The phase**, first match wins: NominalPercentageOfRespiratoryPhase,
+  TemporalPositionIdentifier, else a percentage in the description, the
+  ImageComments (Philips: ` 30% Amplitude`) or Philips' private texts
+  `(00E1,1040)`, `(01E1,101E)`, `(01F1,1041)` - `T=30%` (GE Advantage 4D),
+  `30% Amplitude` / `AMP`, `phase 3`, `30% Ex|In`.
+- **A reconstruction**: `UnTagged` (Philips' ungated series of the same
+  scan, role *untagged*), `AVG` / `Average` / `mean` /
+  `Projection method: AverageIntensity`, `MIP` / `MaximumIntensity`,
+  `MinIP`. A projection numbered below 100 joins its study's set of the
+  same slice range.
+- **4D context**: a ProtocolName with `4D`, Philips' `(01F1,104E)`
+  `Resp. 4D CT`, the GE `Advantage 4D` workstation.
+- **Grouping**: study, then series-number block (`number / 100`: a Philips
+  scan numbers its phases 201, 202, ..., the next scan of the day 301, ...),
+  then reconstruction (standard, or Extended FOV / `DERIVED`), then
+  acquisition - every phase of a Philips scan has the same AcquisitionDate
+  and AcquisitionTime (to the minute), which keeps a 4DCT apart from the
+  daily CTs of its block; a member stripped of its dates joins the dated
+  piece of its geometry (Rows, first and last slice position, slice count).
+  GE stamps each phase with its own time: pieces of one block and date with
+  disjoint phases are one set.
+- **Accepted** on three distinct phases (`phase-labels`), three members
+  with 4D context or eight of one geometry with one (`header-4d`), eight of
+  one geometry and one acquisition time with unique series numbers
+  (`same-acquisition`), or eight of one geometry and nothing else
+  (`geometry-only`: *probable*, `4DCT?` until a person confirms it); never
+  with a series number twice (a course of daily CTs).
+- A ten-phase set whose known labels are each ten times their place gets
+  the missing ones by order, marked inferred (`~30%`); any other unlabelled
+  phase is `t1`, `t2`, ... The standard and Extended-FOV sets of one block
+  and date are one **scan**. Group names are dates and counts:
+  `4DCT 2024-06-10 (10 phases + 1)`.
+
+On the 1,724 CT/MR series of the trial they were proven on, the rules give
+the 35 sets (30 scans in 25 studies) found by hand, where the description
+rule below found 16; `tests/fourd_scan.rs` replays that header dump when
+`RDS_4D_GOLDEN` points at it.
+
+**Then the descriptions**, for the series no header rule claimed (and for
+series the loader did not read the headers of):
 
 - Series are bucketed by (study, modality). A series whose description
   carries a number directly before a `%` (e.g. `Thorax 4D 30%`, `CT 0 %
@@ -32,7 +81,11 @@ groups are marked *custom* and survive re-detection (`fourd::refresh`, run
 whenever the series list changes); a dissolved auto-detected group leaves
 a hidden tombstone that only the explicit *Re-detect 4D groups* clears.
 Members reference series by **SeriesInstanceUID**, so renames, removals
-and copies never corrupt a group.
+and copies never corrupt a group. For a study of this station's PACS the
+catalog and the viewer are one source: what was decided in the PACS window
+or by the assistant comes with the study when it is loaded, and an edit in
+the data tree (a group made, edited or dissolved) is written back into the
+catalog in the background.
 
 A group can also be **built from a selection** when detection has nothing
 to go on - ten series called *CT* with no percent, no `phase` and no

@@ -16,6 +16,17 @@
 //! merging and the same progress. Everything that writes (a scan, an
 //! import, a name, a cohort, a move, a removal) runs as one background
 //! job at a time; nothing here blocks a frame.
+//!
+//! A study holding a 4DCT says so on its row (🎞 and the number of scans,
+//! `🎞?` while only probable) and lists each set as a row of its own
+//! ([`pacs_tree`]), which loads the set; the filter beside the search
+//! shows only the studies with one, and a set's menu confirms or rejects
+//! it in the catalog.
+//!
+//! *Settings ▶ Export tags* writes what the person decided about the PACS
+//! (the names given, the cohorts and who is in which, the 4D groups decided
+//! by hand) into a JSON file, and *Import tags* merges such a file from
+//! another station into this one's catalog ([`crate::archive::tags`]).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -96,6 +107,54 @@ pub(super) struct PacsWindow {
     /// Asked once more before files are deleted: the selection and how
     /// many files it holds.
     pub confirm_remove: Option<(Vec<Pick>, usize)>,
+    /// Only the studies with a 4D set (or a probable one) are shown.
+    pub fourd_filter: FourdFilter,
+}
+
+/// Which studies the tree shows, by their 4D sets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum FourdFilter {
+    #[default]
+    All,
+    /// A confirmed 4DCT.
+    Has,
+    /// A set only the geometry says is one.
+    Probable,
+}
+
+impl FourdFilter {
+    fn label(self) -> &'static str {
+        match self {
+            FourdFilter::All => "all studies",
+            FourdFilter::Has => "has 4D",
+            FourdFilter::Probable => "has probable 4D",
+        }
+    }
+
+    fn keeps(self, s: &crate::archive::StudyEntry) -> bool {
+        match self {
+            FourdFilter::All => true,
+            FourdFilter::Has => s.fourd.iter().any(|g| g.confirmed),
+            FourdFilter::Probable => s.fourd.iter().any(|g| !g.confirmed),
+        }
+    }
+}
+
+/// The tree with only the studies `f` keeps (and the patients and cohorts
+/// left with one).
+fn filtered(tree: &Tree, f: FourdFilter) -> Tree {
+    if f == FourdFilter::All {
+        return tree.clone();
+    }
+    let mut t = tree.clone();
+    for c in &mut t.cohorts {
+        for p in &mut c.patients {
+            p.studies.retain(|s| f.keeps(s));
+        }
+        c.patients.retain(|p| !p.studies.is_empty());
+    }
+    t.cohorts.retain(|c| !c.patients.is_empty());
+    t
 }
 
 impl PacsWindow {
@@ -113,13 +172,14 @@ impl PacsWindow {
             renaming: None,
             new_cohort: None,
             confirm_remove: None,
+            fourd_filter: FourdFilter::All,
         }
     }
 
     /// Take a new tree, keeping what is unfolded and selected where those
     /// rows are still there.
     fn set_tree(&mut self, tree: Tree) {
-        self.nodes = local_nodes(&tree);
+        self.nodes = local_nodes(&filtered(&tree, self.fourd_filter));
         self.view.retain_known(&self.nodes);
         if self.view.expanded.is_empty() {
             // Cohorts open at first: the patients are what one looks for.
@@ -130,6 +190,12 @@ impl PacsWindow {
         self.tree = Some(tree);
     }
 }
+
+/// The files of PACS tags.
+const TAGS_FILES: pick::Filter = pick::Filter {
+    name: "PACS tags (JSON)",
+    exts: &["json"],
+};
 
 /// What a background PACS job answers with.
 pub(super) enum PacsOutcome {
@@ -156,6 +222,7 @@ fn local_nodes(tree: &Tree) -> Vec<TNode> {
     tree.cohorts
         .iter()
         .map(|c| TNode {
+            weak: false,
             key: c.id.clone(),
             icon: "📁",
             text: c.name.clone(),
@@ -176,6 +243,7 @@ fn local_nodes(tree: &Tree) -> Vec<TNode> {
                 .patients
                 .iter()
                 .map(|p| TNode {
+                    weak: false,
                     key: p.key.clone(),
                     icon: "👤",
                     text: p.title(),
@@ -198,53 +266,60 @@ fn local_nodes(tree: &Tree) -> Vec<TNode> {
                     children: p
                         .studies
                         .iter()
-                        .map(|s| TNode {
-                            key: s.study_uid.clone(),
-                            icon: "📂",
-                            text: s.title(),
-                            right: format!(
-                                "{} · {}",
-                                count(s.series.len(), "series", "series"),
-                                count(s.files, "file", "files")
-                            ),
-                            hover: format!(
-                                "{}Study UID {}\n{}",
-                                if s.label.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("{}\n", s.dicom_title())
-                                },
-                                s.study_uid,
-                                s.dir.display()
-                            ),
-                            files: s.files,
-                            children: pacs_tree::study_rows(
-                                s.series
-                                    .iter()
-                                    .map(|se| pacs_tree::SeriesRow {
-                                        modality: se.modality.clone(),
-                                        datetime: se.datetime.clone(),
-                                        node: TNode {
-                                            key: se.series_uid.clone(),
-                                            icon: "🎞",
-                                            text: se.title(),
-                                            right: count(se.files, "file", "files"),
-                                            hover: format!(
-                                                "{}Series UID {}\n{}",
-                                                if se.label.is_empty() {
-                                                    String::new()
-                                                } else {
-                                                    format!("{}\n", se.dicom_title())
-                                                },
-                                                se.series_uid,
-                                                se.dir.display()
-                                            ),
-                                            files: se.files,
-                                            children: Vec::new(),
-                                        },
-                                    })
-                                    .collect(),
-                            ),
+                        .map(|s| {
+                            let (badge, about) = pacs_tree::fourd_badge(&s.fourd, &s.fourd_orphans);
+                            TNode {
+                                weak: false,
+                                key: s.study_uid.clone(),
+                                icon: "📂",
+                                text: s.title(),
+                                right: format!(
+                                    "{badge}{} · {}",
+                                    count(s.series.len(), "series", "series"),
+                                    count(s.files, "file", "files")
+                                ),
+                                hover: format!(
+                                    "{}Study UID {}\n{}{about}",
+                                    if s.label.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("{}\n", s.dicom_title())
+                                    },
+                                    s.study_uid,
+                                    s.dir.display()
+                                ),
+                                files: s.files,
+                                children: pacs_tree::study_rows(
+                                    s.series
+                                        .iter()
+                                        .map(|se| pacs_tree::SeriesRow {
+                                            modality: se.modality.clone(),
+                                            datetime: se.datetime.clone(),
+                                            fourd: se.fourd.clone(),
+                                            node: TNode {
+                                                weak: false,
+                                                key: se.series_uid.clone(),
+                                                icon: "🎞",
+                                                text: se.title(),
+                                                right: count(se.files, "file", "files"),
+                                                hover: format!(
+                                                    "{}Series UID {}\n{}",
+                                                    if se.label.is_empty() {
+                                                        String::new()
+                                                    } else {
+                                                        format!("{}\n", se.dicom_title())
+                                                    },
+                                                    se.series_uid,
+                                                    se.dir.display()
+                                                ),
+                                                files: se.files,
+                                                children: Vec::new(),
+                                            },
+                                        })
+                                        .collect(),
+                                    &s.fourd,
+                                ),
+                            }
                         })
                         .collect(),
                 })
@@ -299,6 +374,13 @@ enum Act {
     Load(usize),
     Page(Page),
     RenameStart(NodeId),
+    /// A 4D set: confirmed (`Some(true)`), rejected (`Some(false)`), or what
+    /// was decided forgotten (`None`).
+    Decide4d(String, Option<bool>),
+    Filter4d(FourdFilter),
+    /// *Settings ▶ Export tags* / *Import tags*.
+    TagsExport,
+    TagsImport,
     RenameSave(Option<String>),
     RenameCancel,
     NewCohortStart(Option<(Vec<(String, String)>, bool)>),
@@ -482,6 +564,24 @@ impl ViewerApp {
                             acts.push(Act::Page(Page::Storage));
                             ui.close();
                         }
+                        ui.separator();
+                        if tip_button(
+                            ui,
+                            "📤 Export tags…",
+                            "Write the names given to patients, studies and series, the                              cohorts and who is in which, and the 4D groups decided by hand                              into a JSON file, to take them to another station",
+                        ) {
+                            acts.push(Act::TagsExport);
+                            ui.close();
+                        }
+                        if tip_button(
+                            ui,
+                            "📥 Import tags…",
+                            "Merge a file of tags from another station into this PACS:                              names go to the patients, studies and series held here,                              cohorts are found by name or made, 4D decisions kept; what                              is not held here is counted and left",
+                        ) {
+                            acts.push(Act::TagsImport);
+                            ui.close();
+                        }
+                        ui.separator();
                         // The server runs on a PC or a Mac; a tablet or a
                         // phone is always a client.
                         if cfg!(not(any(target_os = "android", target_os = "ios")))
@@ -642,7 +742,7 @@ impl ViewerApp {
                 };
                 let Some(target) = pacs_tree::series_ids(&w.nodes, std::slice::from_ref(&id))
                     .first()
-                    .filter(|_| !id.last().is_some_and(|k| pacs_tree::is_day(k)))
+                    .filter(|_| !id.last().is_some_and(|k| pacs_tree::is_group_row(k)))
                     .and_then(pick_of)
                 else {
                     return;
@@ -656,6 +756,62 @@ impl ViewerApp {
                     title,
                     fresh: true,
                 });
+            }
+            Act::Decide4d(group, yes) => {
+                self.pacs_job_with("Keeping the decision", move |a, _| {
+                    let msg = match yes {
+                        Some(true) => {
+                            a.confirm_4d(&group, true)?;
+                            "✔ confirmed as a 4DCT"
+                        }
+                        Some(false) => {
+                            a.confirm_4d(&group, false)?;
+                            "✔ not a 4DCT: the set is dissolved"
+                        }
+                        None => {
+                            a.reset_4d_group(&group)?;
+                            "✔ the headers decide about the set again"
+                        }
+                    };
+                    Ok(PacsOutcome::Changed(msg.into(), a.tree()))
+                });
+            }
+            Act::TagsExport => {
+                let (date, _) = crate::dicom_export::today();
+                self.ask_save(
+                    "Export the PACS tags",
+                    format!("rds-pacs-tags-{date}.json"),
+                    None,
+                    Some(TAGS_FILES),
+                    |app, path| {
+                        app.pacs_job_with("Exporting the tags", move |a, _| {
+                            let sum = a.export_tags(&path)?;
+                            Ok(PacsOutcome::Changed(
+                                format!("✔ {} exported to {}", sum.describe(), path.display()),
+                                a.tree(),
+                            ))
+                        });
+                    },
+                );
+            }
+            Act::TagsImport => {
+                self.ask_file("Import PACS tags", None, Some(TAGS_FILES), |app, path| {
+                    app.pacs_job_with("Importing the tags", move |a, _| {
+                        let sum = a.import_tags(&path)?;
+                        Ok(PacsOutcome::Changed(
+                            format!("✔ imported {}", sum.describe()),
+                            a.tree(),
+                        ))
+                    });
+                });
+            }
+            Act::Filter4d(f) => {
+                if let Some(w) = self.pacs.as_mut() {
+                    w.fourd_filter = f;
+                    if let Some(t) = w.tree.take() {
+                        w.set_tree(t);
+                    }
+                }
             }
             Act::RenameCancel => {
                 if let Some(w) = self.pacs.as_mut() {
@@ -1010,6 +1166,22 @@ fn local_body(
                 .hint_text("🔍 find a patient, study or series")
                 .desired_width(220.0),
         );
+        let mut f = w.fourd_filter;
+        egui::ComboBox::from_id_salt("pacs_fourd_filter")
+            .selected_text(f.label())
+            .show_ui(ui, |ui| {
+                for x in [FourdFilter::All, FourdFilter::Has, FourdFilter::Probable] {
+                    ui.selectable_value(&mut f, x, x.label());
+                }
+            })
+            .response
+            .on_hover_text(
+                "Only the studies holding a 4DCT, as the catalog finds it from the headers \
+                 (probable: one geometry and nothing else says 4D, to confirm or reject)",
+            );
+        if f != w.fourd_filter {
+            acts.push(Act::Filter4d(f));
+        }
     });
     if let Some(p) = job_progress {
         progress_row(ui, p);
@@ -1141,11 +1313,20 @@ fn local_body(
             )
         })
         .collect();
+    // Each 4D set: whether it is confirmed, and set by hand.
+    let sets: BTreeMap<String, (bool, bool)> = tree
+        .cohorts
+        .iter()
+        .flat_map(|c| &c.patients)
+        .flat_map(|p| &p.studies)
+        .flat_map(|s| &s.fourd)
+        .map(|g| (g.group.clone(), (g.confirmed, g.custom)))
+        .collect();
     let height = (ui.available_height() - 60.0).max(140.0);
     let PacsWindow { nodes, view, .. } = &mut *w;
     let nodes_ref: &[TNode] = nodes;
     let mut menu = |ui: &mut egui::Ui, id: &NodeId, view: &TreeView| {
-        local_menu(ui, id, view, nodes_ref, &cohorts, acts);
+        local_menu(ui, id, view, nodes_ref, &cohorts, &sets, acts);
     };
     let ev = pacs_tree::tree_ui(
         ui,
@@ -1213,6 +1394,7 @@ fn local_menu(
     view: &TreeView,
     nodes: &[TNode],
     cohorts: &[(String, String, bool)],
+    sets: &BTreeMap<String, (bool, bool)>,
     acts: &mut Vec<Act>,
 ) {
     // A click on a selected row acts on the whole selection, on another
@@ -1234,7 +1416,41 @@ fn local_menu(
         count(targets.len(), "row", "rows")
     };
     let single = targets.len() == 1;
-    if single && ui.button("✏ Rename").clicked() {
+    // A 4D set's row: what the person decides about it.
+    if let Some(group) = id.last().and_then(|k| pacs_tree::fourd_group_of(k)) {
+        let (confirmed, custom) = sets.get(group).copied().unwrap_or((true, false));
+        if !confirmed
+            && ui
+                .button("✔ Confirm as a 4DCT")
+                .on_hover_text("Kept in the catalog: the set is a 4DCT from now on")
+                .clicked()
+        {
+            acts.push(Act::Decide4d(group.to_string(), Some(true)));
+            ui.close();
+        }
+        if ui
+            .button("✖ Not a 4DCT")
+            .on_hover_text("Dissolve the set; it stays dissolved through rescans")
+            .clicked()
+        {
+            acts.push(Act::Decide4d(group.to_string(), Some(false)));
+            ui.close();
+        }
+        if custom
+            && ui
+                .button("Let the headers decide again")
+                .on_hover_text("Forget what was decided about this set here or by the assistant")
+                .clicked()
+        {
+            acts.push(Act::Decide4d(group.to_string(), None));
+            ui.close();
+        }
+        ui.separator();
+    }
+    if single
+        && !id.last().is_some_and(|k| pacs_tree::is_group_row(k))
+        && ui.button("✏ Rename").clicked()
+    {
         acts.push(Act::RenameStart(targets[0].clone()));
         ui.close();
     }

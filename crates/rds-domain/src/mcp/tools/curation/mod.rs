@@ -221,7 +221,7 @@ pub struct DuplicatesArgs {
     /// paths, best first; default full, case, plan.
     #[serde(default)]
     pub prefer: Option<Vec<String>>,
-    /// Also plan moving the copies (series judged identical or pixel-twin)
+    /// Also plan moving the copies (series judged identical, pixel-twin or hu-twin)
     /// to the quarantine folder: returns a manifest for apply_manifest.
     #[serde(default)]
     pub quarantine_copies: bool,
@@ -304,6 +304,7 @@ pub fn find_duplicates(core: &mut Core, a: DuplicatesArgs, p: &Progress) -> Resu
         "series": verdicts.len(),
         "identical": count("identical"),
         "pixel_twin": count("pixel-twin"),
+        "hu_twin": count("hu-twin"),
         "partial": count("partial"),
         "ambiguous": count("ambiguous"),
         "new": count("new"),
@@ -326,6 +327,7 @@ pub fn find_duplicates(core: &mut Core, a: DuplicatesArgs, p: &Progress) -> Resu
             "verdict": v.verdict,
             "exact": v.exact,
             "pixel_twins": v.twins,
+            "hu_twins": v.value_twins,
             "same_uid_other_content": v.same_uid_other_content,
             "internal_twins": v.internal_twins,
             "archive_series": v.matches,
@@ -334,7 +336,7 @@ pub fn find_duplicates(core: &mut Core, a: DuplicatesArgs, p: &Progress) -> Resu
     if a.quarantine_copies {
         let files: Vec<PathBuf> = verdicts
             .iter()
-            .filter(|v| matches!(v.verdict, "identical" | "pixel-twin"))
+            .filter(|v| matches!(v.verdict, "identical" | "pixel-twin" | "hu-twin"))
             .flat_map(|v| v.copies.iter().cloned())
             .chain(inside.same_sop_identical.iter().cloned())
             .chain(inside.same_sop_versions.iter().cloned())
@@ -539,31 +541,39 @@ pub fn set_patient_identity(core: &mut Core, a: IdentityArgs, p: &Progress) -> R
     let files = pick_files(core, &a.paths, &a.series, &a.studies)?;
     p.set("Reading the patient tags");
     use rayon::prelude::*;
-    let name_tag = dicom_dictionary_std::tags::PATIENT_NAME;
-    let id_tag = dicom_dictionary_std::tags::PATIENT_ID;
-    // Only the files that would change, and only DICOM ones that rewrite.
-    let planned: Vec<(PathBuf, Option<String>)> = files
+    // Set wherever the two tags are, in sequences too: some scanners repeat
+    // the patient's identity inside the items of their own sequences, and a
+    // file whose top level says the new code while an item still says the
+    // old one is half recoded. Verified like every rewrite (the dry run's
+    // result, by its SHA-256, is what the apply writes).
+    let changes = curation::remap::Changes {
+        set: vec![
+            ("00100010".to_string(), name.clone()),
+            ("00100020".to_string(), id.clone()),
+        ],
+        ..Default::default()
+    };
+    let none = UidMaps::default();
+    let planned: Vec<std::result::Result<Option<journal::Op>, String>> = files
         .par_iter()
         .map(|f| match raw::RawFile::read(f) {
             Ok(r) if r.is_dicom() => {
                 if let Err(e) = r.rewritable() {
-                    return (f.clone(), Some(format!("{e:#}")));
+                    return Err(format!("{}: {e:#}", f.display()));
                 }
-                let same = r.text(name_tag).as_deref() == Some(name.as_str())
-                    && r.text(id_tag).as_deref() == Some(id.as_str());
-                if same {
-                    (PathBuf::new(), None)
-                } else {
-                    (f.clone(), None)
-                }
+                let s = curation::remap::simulate(f, &changes, &none)
+                    .map_err(|e| format!("{}: {e:#}", f.display()))?;
+                Ok((s.changed > 0).then(|| journal::Op::Rewrite {
+                    path: f.clone(),
+                    changes: changes.clone(),
+                    source: Some(s.source),
+                    expect: Some(s.expect),
+                }))
             }
-            _ => (PathBuf::new(), None),
+            _ => Ok(None),
         })
         .collect();
-    let refused: Vec<String> = planned
-        .iter()
-        .filter_map(|(f, e)| e.as_ref().map(|e| format!("{}: {e}", f.display())))
-        .collect();
+    let refused: Vec<&String> = planned.iter().filter_map(|r| r.as_ref().err()).collect();
     if !refused.is_empty() {
         bail!(
             "{} file(s) cannot be rewritten safely, the first: {}",
@@ -571,17 +581,9 @@ pub fn set_patient_identity(core: &mut Core, a: IdentityArgs, p: &Progress) -> R
             refused[0]
         );
     }
-    let tags = vec![
-        ("00100010".to_string(), name.clone()),
-        ("00100020".to_string(), id.clone()),
-    ];
     let ops: Vec<journal::Op> = planned
         .into_iter()
-        .filter(|(f, _)| !f.as_os_str().is_empty())
-        .map(|(path, _)| journal::Op::SetTags {
-            path,
-            tags: tags.clone(),
-        })
+        .filter_map(|r| r.ok().flatten())
         .collect();
     if ops.is_empty() {
         return Ok(

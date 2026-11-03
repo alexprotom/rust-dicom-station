@@ -50,6 +50,12 @@ pub struct Facts {
     pub pixel_truncated: bool,
     /// SHA-256 of the pixel bytes (every fragment, for encapsulated data).
     pub pixel_hash: Option<String>,
+    /// SHA-256 of the values the pixels stand for (stored value × slope +
+    /// intercept, rounded: Hounsfield units for a CT) with the matrix size,
+    /// for a native single-frame grayscale image: the same for a copy that
+    /// re-encoded its pixels (another rescale, another pixel
+    /// representation) as long as the values are the same.
+    pub value_hash: Option<String>,
     /// Every Referenced SOP Instance UID, Referenced Series (Series
     /// Instance UID inside a reference sequence), and frame of reference
     /// named anywhere below the top level.
@@ -164,7 +170,11 @@ pub fn read(path: &Path, hash: bool) -> Facts {
             );
         }
         if hash {
-            out.pixel_hash = f.pixel_bytes().map(|b| hex(&Sha256::digest(&b)));
+            let bytes = f.pixel_bytes();
+            out.pixel_hash = bytes.as_ref().map(|b| hex(&Sha256::digest(b)));
+            if native && px.items.is_none() {
+                out.value_hash = bytes.and_then(|b| value_hash(&f, &out, &b));
+            }
         }
     }
     // References, wherever they sit.
@@ -232,6 +242,56 @@ pub fn read(path: &Path, hash: bool) -> Facts {
     out.ref_series.retain(|s| *s != own_series);
     out.ref_frames.retain(|s| *s != own_frame);
     out
+}
+
+/// [`Facts::value_hash`] of a native image's pixel bytes.
+fn value_hash(f: &RawFile, x: &Facts, bytes: &[u8]) -> Option<String> {
+    if x.samples != 1 || x.frames != 1 || !matches!(x.bits, 8 | 16) {
+        return None;
+    }
+    let n = x.rows as usize * x.cols as usize;
+    let width = x.bits as usize / 8;
+    if n == 0 || bytes.len() < n * width {
+        return None;
+    }
+    let num = |tag, default: f64| {
+        f.text(tag)
+            .and_then(|t| t.split('\\').next().and_then(|v| v.trim().parse().ok()))
+            .unwrap_or(default)
+    };
+    let slope = num(tags::RESCALE_SLOPE, 1.0);
+    let intercept = num(tags::RESCALE_INTERCEPT, 0.0);
+    let stored = match u16_value(f, tags::BITS_STORED) {
+        0 => x.bits,
+        b => b.min(x.bits),
+    };
+    let signed = u16_value(f, tags::PIXEL_REPRESENTATION) == 1;
+    let big = f.transfer_syntax == super::raw::TS_BIG;
+    let mut h = Sha256::new();
+    h.update(x.rows.to_le_bytes());
+    h.update(x.cols.to_le_bytes());
+    let mask: u32 = if stored >= 32 {
+        u32::MAX
+    } else {
+        (1u32 << stored) - 1
+    };
+    for i in 0..n {
+        let raw: u32 = if width == 1 {
+            bytes[i] as u32
+        } else {
+            let (a, b) = (bytes[2 * i], bytes[2 * i + 1]);
+            u16::from_le_bytes(if big { [b, a] } else { [a, b] }) as u32
+        };
+        let v = raw & mask;
+        let v: i64 = if signed && stored > 0 && v & (1 << (stored - 1)) != 0 {
+            v as i64 - (1i64 << stored)
+        } else {
+            v as i64
+        };
+        let value = (v as f64 * slope + intercept).round() as i64;
+        h.update((value.clamp(i32::MIN as i64, i32::MAX as i64) as i32).to_le_bytes());
+    }
+    Some(hex(&h.finalize()))
 }
 
 impl Facts {

@@ -29,6 +29,7 @@ network and over the internet, and the two ways of working.
 | **🔍** | Show only the rows whose name (or UID, or folder) holds the text, with what leads to them |
 | **📩 Load into workspace A / B** | Read the selected rows into a viewer workspace |
 | **⚙ Settings ▶ Storage folders** | The folders the PACS reads (below) |
+| **⚙ Settings ▶ 📤 Export tags… / 📥 Import tags…** | What was decided about the PACS - names, cohorts, 4D decisions - to and from a JSON file, to share between stations ([Tags](#tags)) |
 | **⚙ Settings ▶ PACS server** | The server on this station: start, stop, connection details, pairing, its settings ([pacs-server.md](pacs-server.md)) |
 
 The tree has four levels:
@@ -41,6 +42,20 @@ The tree has four levels:
       🎞 RTSTRUCT 1 - Clinical  1 file
 📁 Unsorted                     1 patient · 756 files
 ```
+
+A study holding a 4DCT says so before anything is loaded ([4D sets](#4d-sets)):
+its row carries **🎞** and the number of scans (`🎞2`; `🎞?` while a set is
+only probable, `🎞 phases not in PACS` for a 4D scout or an ungated series
+whose phases never arrived), its tooltip lists each scan (date, scanner,
+phases, reconstructions, evidence), and each set is a row of its own under
+the study holding its phases in order (`30%`, `~30%` when the phase was
+inferred from the series' place), its reconstructions (`untagged`, `AVG`,
+`MIP`), its respiratory trace and the structure sets drawn on a phase.
+Selecting that row and *Load* loads the set alone. The list beside 🔍 shows
+**all studies**, those that **has 4D**, or those that **has probable 4D**;
+the search finds `4DCT` too. A probable set is drawn muted, and its menu
+**✔ Confirms** it or says **✖ Not a 4DCT** (the set is dissolved and stays
+so); a set decided on offers **Let the headers decide again**.
 
 **Selecting.** A click selects one row; Ctrl and a click (Cmd on a Mac) adds
 a row to the selection or takes it out; Shift and a click selects a range.
@@ -117,6 +132,22 @@ written into a DICOM file**, and the tooltip of a renamed row shows what the
 files say. *The DICOM name* in the rename bar goes back to it. A cohort
 named after a folder can be renamed without renaming the folder.
 
+## Tags
+
+The names given, the cohorts and who is in which, and the 4D groups made,
+confirmed or dissolved by hand live only in the catalog. *Settings ▶ Export
+tags…* writes them into one JSON file (`rds-pacs-tags-<date>.json`,
+format `rds-pacs-tags`), naming every object by what travels with its
+files - a study or series by its UID, a patient by their Patient ID, a
+cohort by its name - and no path. *Settings ▶ Import tags…* merges such a
+file from another station holding copies of the same studies: a name goes
+to the patient, study or series this station holds (a name of its own the
+file does not mention stays), a cohort is found by name or made and its
+patients put into it beside the cohorts they are in, a 4D decision is kept
+when one of its series is here. What this station does not hold is
+counted in the status line and left; importing a file twice is importing
+it once.
+
 ## Several storage folders
 
 *⚙ Settings ▶ Storage folders* lists the folders the PACS reads. Any number
@@ -155,13 +186,35 @@ the person decided: the cohorts, who is in which, the names given.
   acquisition's, else the content's, the earliest of its files). Catalog
   version 2 added it; a catalog of version 1 has every header read again,
   once, by the next scan, and keeps its names, cohorts and memberships.
+  Version 3 added what the [4D sets](#4d-sets) are found from.
 * A file read again (it changed) says where it belongs: a series whose files
   now name another study moves to it, a study whose files now name another
   patient moves to them, and a study left with no series goes - so a study
   merged or pseudonymized in place is where its files say after one scan.
-  A study's date, time and description are its earliest session's (the
-  smallest StudyDate of its files: a course study spans weeks); the names
-  given by hand stay.
+  A series that lost a file, or one of whose files changed, has all its
+  files read again, so what it and its study belong to is never carried
+  over from the catalog of before (copies once filed under it, gone since,
+  would leave their patient on it). A study's date, time and description
+  are its earliest session's (the smallest StudyDate of its files: a course
+  study spans weeks); the names given by hand stay.
+* A study whose files all lie in one patient's folder (`cohort/patient/...`
+  or a patient's folder directly in a storage folder) belongs to the
+  patient that folder's code names (its first word, by Patient ID), even
+  when its files still carry another code (an export's own pseudonym): the
+  folder is the person's sorting and wins. A study spread over folders, or
+  in a folder no patient's ID names, stays where its files put it.
+* A scan never looks into folders where imports wait or duplicates are put
+  aside: `to_be_sorted`, `*-duplicates`, `*_duplicates`, and the patterns in
+  the catalog's `ignore` list (`*` any run of characters, case ignored; the
+  MCP tool `catalog_ignore` edits it). Their files are copies of what the
+  PACS holds under the source's patient codes, and filed they would relink
+  sorted studies to those codes; a folder newly ignored leaves the catalog
+  with the next scan, and nothing on disk is touched.
+* The catalog keys a patient by Patient ID alone, so one code given in two
+  cohorts to two people lists them as one. The MCP tool
+  `check_patient_identity` finds such codes (the cohorts' files share no
+  birth date and sex) and they are split by recoding one cohort's folder
+  with `set_patient_identity`.
 * The DICOM files are the truth: delete the catalog and the next scan builds
   it again, from the files alone. Only the names, the cohorts and who is in
   which are lost then, being the catalog's alone.
@@ -180,6 +233,36 @@ the person decided: the cohorts, who is in which, the names given.
 * Earlier versions wrote `STUDY.txt`, `PATIENT.txt` and `INDEX.txt` into
   every folder. A scan removes those, recognising them by name and content,
   so that a person's own file of the same name stays.
+
+## 4D sets
+
+The catalog also says which studies hold a 4DCT, how many scans, which
+series are the phases and which the reconstructions, without a study being
+loaded: the header rules of the viewer's 4D groups
+([motion-4d.md](motion-4d.md#4d-groups-cratesrds-domainsrcfourd)) run over
+what it keeps of every series, after every write, and the result is a
+study's `fourd` sets and a series' `fourd` role. Catalog version 3 keeps for
+that the first file's 4D header fields of each CT (ImageType, ProtocolName,
+ImageComments, the acquisition date and time, Rows, the scanner, four
+private texts, read as bytes), the slice position of every CT file, and the
+series each structure set references; a catalog of version 2 has the files
+of its CT and structure-set series read again, once.
+
+* What a person decided wins: a group made, corrected, confirmed or
+  dissolved - in the PACS window, by the assistant (`set_4d_group`,
+  `confirm_4d`) or in the viewer's data tree for a study of this PACS - is
+  kept in `fourd_custom` under the group's id and replaces whatever the
+  rules find that shares a series with it, through rescans.
+* A structure set drawn on one phase is listed under that phase; a 4D
+  scout or ungated series with no set in its block is listed as a study's
+  `fourd_orphans`.
+* The same series give the same sets: a scan that finds nothing new still
+  writes nothing.
+* The `4DCT ...` labels a script wrote into catalogs before version 3 are
+  compared once with the sets found: a label that agrees is cleared (the
+  structure says it now), one that says `4DCT` of a set the rules call
+  probable is taken as the person's confirmation, any other is kept; each
+  is noted in `.rds-pacs-fourd-labels.jsonl` beside the catalog.
 
 Patients, studies and series come from the **headers**, never from where a
 file lies: a patient's CD with the files of four studies in one folder is

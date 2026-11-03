@@ -56,6 +56,13 @@ pub fn open_scan(path: &Path) -> Result<DefaultDicomObject> {
     open(path, Some(Tag(0x3000, 0x0000)))
 }
 
+/// Open a structure set as far as the series it references: everything
+/// before its ROIs (Referenced Frame of Reference Sequence is 3006,0010; the
+/// catalog reads which images a structure set was drawn on from it).
+pub fn open_references(path: &Path) -> Result<DefaultDicomObject> {
+    open(path, Some(Tag(0x3006, 0x0011)))
+}
+
 /// Open a file in full, pixels included.
 pub fn open_full(path: &Path) -> Result<DefaultDicomObject> {
     open(path, None)

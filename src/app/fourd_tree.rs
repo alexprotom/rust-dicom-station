@@ -283,6 +283,11 @@ impl ViewerApp {
             }
             _ => {}
         }
+        // The tick marks have done their job once a group is made of them.
+        let used_picks = matches!(
+            act,
+            FourDAction::NewFrom { .. } | FourDAction::AddMany { .. }
+        );
         let slot = match act {
             FourDAction::Add { slot, .. }
             | FourDAction::New { slot, .. }
@@ -294,9 +299,53 @@ impl ViewerApp {
             | FourDAction::Dissolve { slot, .. } => slot,
             _ => return,
         };
+        let pacs = self.station_pacs();
         let Some(study) = self.slots[slot].study.as_mut() else {
             return;
         };
+        // The ids of the groups before the edit: one gone with it leaves the
+        // PACS catalog's decision about it behind too.
+        let before: Vec<String> = study
+            .fourd_groups
+            .iter()
+            .map(|g| g.id.clone())
+            .filter(|id| !id.is_empty())
+            .collect();
+        Self::edit_fourd(study, act);
+        // A study of this station's PACS keeps the edit in its catalog, in
+        // the background (nothing happens for one the catalog does not hold).
+        let studies: std::collections::BTreeSet<String> = study
+            .fourd_groups
+            .iter()
+            .map(|g| g.study_uid.clone())
+            .chain(
+                before
+                    .iter()
+                    .filter_map(|id| id.split('/').next().map(String::from)),
+            )
+            .collect();
+        for st in studies {
+            let groups: Vec<fourd::FourDGroup> = study
+                .fourd_groups
+                .iter()
+                .filter(|g| g.study_uid == st)
+                .cloned()
+                .collect();
+            let removed: Vec<String> = before
+                .iter()
+                .filter(|id| id.starts_with(&format!("{st}/")))
+                .filter(|id| !study.fourd_groups.iter().any(|g| &g.id == *id))
+                .cloned()
+                .collect();
+            crate::archive::fourd::keep_viewer_groups(&pacs, &st, groups, removed);
+        }
+        if used_picks {
+            self.tree_picks.retain(|(s, _)| *s != slot);
+        }
+    }
+
+    /// The edit itself, on the workspace's study.
+    fn edit_fourd(study: &mut crate::loader::LoadedStudy, act: FourDAction) {
         match act {
             FourDAction::Add { group, series, .. } => {
                 let Some(se) = study.series.get(series) else {
@@ -323,6 +372,7 @@ impl ViewerApp {
                 let member = fourd::member_for(se, 1);
                 let n = study.fourd_groups.len() + 1;
                 study.fourd_groups.push(fourd::FourDGroup {
+                    id: String::new(),
                     name: format!("4D group {n}"),
                     study_uid: se.study_uid.clone(),
                     members: vec![member],
@@ -351,8 +401,6 @@ impl ViewerApp {
                 }
                 study.fourd_groups.retain(|g| !g.members.is_empty());
                 study.fourd_groups.push(group);
-                // The tick marks have done their job.
-                self.tree_picks.retain(|(s, _)| *s != slot);
             }
             FourDAction::AddMany { group, series, .. } => {
                 let Some(g) = study.fourd_groups.get(group) else {
@@ -380,7 +428,6 @@ impl ViewerApp {
                     fourd::sort_phases_by_percent(g);
                     g.custom = true;
                 }
-                self.tree_picks.retain(|(s, _)| *s != slot);
             }
             FourDAction::RemoveMember { group, member, .. } => {
                 if let Some(g) = study.fourd_groups.get_mut(group) {

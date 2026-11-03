@@ -378,7 +378,7 @@ impl ViewerApp {
                     .map(|s| s.study_uid.clone())
                     .unwrap_or_default(),
                 referenced_series_uid: active_series.map(|s| s.uid.clone()).unwrap_or_default(),
-                file_name: "painted-segmentation".into(),
+                file_name: crate::rtstruct::StructureSet::MADE_HERE[1].into(),
                 locked: false,
                 rois: vec![roi],
             });

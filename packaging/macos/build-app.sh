@@ -221,13 +221,25 @@ ln -s /Applications "$stage/Applications"
 
 dmg="$out/rust-dicom-station-$version-macos-$arch.dmg"
 rm -f "$dmg"
-hdiutil create \
+# On a CI runner hdiutil now and then fails with "Resource busy": the files
+# just signed are still held by a scan (XProtect, Spotlight) when it copies
+# them. A retry a little later passes, so a few attempts before giving up.
+attempt=1
+until hdiutil create \
     -volname "$app_name $version" \
     -srcfolder "$stage" \
     -fs HFS+ \
     -format ULFO \
     -ov \
-    "$dmg" >/dev/null
+    "$dmg" >/dev/null; do
+    if [ "$attempt" -ge 5 ]; then
+        echo "hdiutil create failed $attempt times" >&2
+        exit 1
+    fi
+    echo "hdiutil create failed (attempt $attempt), retrying in $((attempt * 15)) s" >&2
+    sleep $((attempt * 15))
+    attempt=$((attempt + 1))
+done
 rm -rf "$stage"
 
 # A signed disk image is what Safari checks before it is ever opened.

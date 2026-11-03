@@ -377,6 +377,8 @@ async fn patients(
                             modalities: st.modalities.clone(),
                             files: st.files,
                             label: st.label.clone(),
+                            fourd: st.fourd.clone(),
+                            fourd_orphans: st.fourd_orphans.clone(),
                             series: st
                                 .series
                                 .iter()
@@ -388,6 +390,7 @@ async fn patients(
                                     label: se.label.clone(),
                                     files: se.files,
                                     datetime: se.datetime.clone(),
+                                    fourd: se.fourd.clone(),
                                 })
                                 .collect(),
                         })
