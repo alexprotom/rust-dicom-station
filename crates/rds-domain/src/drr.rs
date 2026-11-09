@@ -528,6 +528,9 @@ impl DrrImage {
             info,
             iec: Some(params.geometry),
             camera: Some(params.camera()),
+            // Its identity from the start: 2D contours name it by this.
+            sop_instance_uid: crate::dicom_export::new_uid(),
+            series_instance_uid: crate::dicom_export::new_uid(),
             ..Default::default()
         }
     }

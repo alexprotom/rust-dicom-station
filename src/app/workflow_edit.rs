@@ -2056,6 +2056,85 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             effort_ui(f, id, &mut p.effort);
         }
+        Op::Register2d(p) => {
+            f.row_tip(
+                "Pairs",
+                "fixed:moving per match, planar images by number or label, separated by \
+                 commas (1:3, 2:4)",
+                |ui| text(ui, &mut p.pairs, "1:2", 150.0),
+            );
+            f.row("Method", |ui| {
+                let mut m =
+                    crate::registration::planar::Method2d::from_key(&p.method).unwrap_or_default();
+                choice(
+                    ui,
+                    ("method2d2d", id),
+                    &mut m,
+                    &crate::registration::planar::Method2d::ALL,
+                    |v| v.label(),
+                );
+                p.method = m.key().into();
+            });
+            f.row("Measure", |ui| {
+                let mut m = crate::registration::metric2d::Metric2d::from_key(&p.metric)
+                    .unwrap_or_default();
+                choice(
+                    ui,
+                    ("metric2d2d", id),
+                    &mut m,
+                    &crate::registration::metric2d::Metric2d::ALL,
+                    |v| v.label(),
+                );
+                p.metric = m.key().into();
+            });
+            f.row("Freedom", |ui| {
+                let mut d =
+                    crate::registration::planar::Dof2d::from_key(&p.dof).unwrap_or_default();
+                choice(
+                    ui,
+                    ("dof2d2d", id),
+                    &mut d,
+                    &crate::registration::planar::Dof2d::ALL,
+                    |v| v.label(),
+                );
+                p.dof = d.key().into();
+            });
+            f.row("Levels · pixels", |ui| {
+                ui.add(egui::DragValue::new(&mut p.levels).range(1..=5));
+                ui.add(egui::DragValue::new(&mut p.pixels).range(32..=2048));
+            });
+            f.row_tip(
+                "Markers",
+                "Find markers of this size for the points methods; 0 for none",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.markers_mm)
+                            .range(0.0..=10.0)
+                            .suffix(" mm"),
+                    );
+                },
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.as_setup, "Read as a setup (two placed views)");
+            });
+        }
+        Op::ProjectStructures(p) => {
+            f.row_tip("Structures", "Structure names, separated by commas", |ui| {
+                text(ui, &mut p.structures, "PTV, SPINE", 150.0)
+            });
+            f.row_tip(
+                "Images",
+                "Planar images by number or label, separated by commas; empty: every one \
+                 that states its geometry",
+                |ui| text(ui, &mut p.images, "every placed image", 150.0),
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.at_setup, "At the last setup");
+            });
+            f.row_tip("Set", "The set's label; after the pose when empty", |ui| {
+                text(ui, &mut p.set, "Projected", 150.0)
+            });
+        }
         Op::Register2d3d(p) => {
             f.row_tip(
                 "Images",

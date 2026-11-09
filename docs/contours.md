@@ -142,6 +142,17 @@ land in a structure nobody pointed at. *+ Empty structure* in the editor's
 *Insert structure* section, and *+* after the selected structure's name on
 the toolbar, make another.
 
+### On a planar pane
+
+The same tools draw on the planar panes, on the 2D contours of a planar
+structure set: a stroke on a pane makes the pane the tools' target (the
+toolbar row reads `▸ 2D · set · structure`, and Ctrl+Z, Esc and Enter act
+there), a stroke in an MPR view makes the volume the target again. The
+rings are in the image's pixels and the brush radius in millimetres of its
+spacing; the rule of *Auto / Extend / Subtract* is the one above
+(`contours::auto_cuts`), the spline the same curve (`contours::spline_points`).
+See [planar-2d.md](planar-2d.md).
+
 ## The Structure editor
 
 *Modules ▶ Structure editor* (right panel, F10; switch it on in the *Modules*

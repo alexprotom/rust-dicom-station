@@ -237,7 +237,11 @@ pub fn detect_2d(image: &Image2d, mask: Option<&[u8]>, sigma_px: f64, k: f64) ->
 /// The one-to-one assignment of markers to candidates within `radius`
 /// with the smallest total distance, a marker left without one costing
 /// `radius`.
-fn assign(predicted: &[Option<[f64; 2]>], cands: &[Candidate], radius: f64) -> Vec<Option<usize>> {
+pub(crate) fn assign(
+    predicted: &[Option<[f64; 2]>],
+    cands: &[Candidate],
+    radius: f64,
+) -> Vec<Option<usize>> {
     let near: Vec<Vec<(usize, f64)>> = predicted
         .iter()
         .map(|p| match p {
@@ -305,7 +309,7 @@ fn assign(predicted: &[Option<[f64; 2]>], cands: &[Candidate], radius: f64) -> V
 /// distance). The markers' layout is what is matched, so a start that is
 /// far off in the plane still pairs each marker with its own spot. Zero for
 /// fewer than two markers.
-fn constellation_shift(
+pub(crate) fn constellation_shift(
     predicted: &[Option<[f64; 2]>],
     cands: &[Candidate],
     reach: f64,

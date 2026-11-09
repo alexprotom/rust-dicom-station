@@ -430,3 +430,50 @@ fn a_set_without_its_roi_sequence_keeps_its_names_and_frame_of_reference() {
         again.warnings
     );
 }
+
+#[test]
+fn a_presentation_state_is_loaded_as_planar_structures_not_left_out() {
+    use rust_dicom_station::contours::{Poly, Region};
+    use rust_dicom_station::extras::PlanarImage;
+    use rust_dicom_station::planar_structs::PlanarStructureSet;
+    let dir = phantom("test_warn_gsps");
+    let before = load(&dir);
+    let study_uid = before.series[0].study_uid.clone();
+    // A state over an image that is not in the folder.
+    let image = PlanarImage {
+        cols: 32,
+        rows: 32,
+        spacing: [1.0, 1.0],
+        sop_instance_uid: new_uid(),
+        series_instance_uid: new_uid(),
+        ..Default::default()
+    };
+    let mut set = PlanarStructureSet::new("Markup", &study_uid, "drawn");
+    set.structure_entry("Mark", None)
+        .contour_entry(&image.sop_instance_uid)
+        .region = Region::from_ring(Poly::circle([10.0, 12.0], 4.0, 24));
+    set.refresh_images();
+    rust_dicom_station::gsps::write(
+        &dir.join("PR_markup.dcm"),
+        &set,
+        &[(&image, (0.0, 1.0))],
+        &dicom_export::ObjectMeta::of_study(&before, "MARKUP", "Markup"),
+    )
+    .expect("the state is written");
+
+    let study = load(&dir);
+    assert_eq!(study.planar_structs.len(), 1, "read as planar structures");
+    assert!(
+        !study.warnings.iter().any(|w| w.contains("not displayed")),
+        "not among the objects left out: {:?}",
+        study.warnings
+    );
+    assert!(
+        study
+            .warnings
+            .iter()
+            .any(|w| w.contains("presentation state") && w.contains("not in this load")),
+        "{:?}",
+        study.warnings
+    );
+}

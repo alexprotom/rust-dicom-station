@@ -13,6 +13,7 @@ pub mod archive;
 pub mod curation;
 pub mod fourd;
 pub mod output;
+pub mod planar;
 pub mod register;
 pub mod segment;
 pub mod session;
@@ -166,6 +167,21 @@ registry! {
          moves, the displacement, per-view similarity before and after, marker residuals and \
          any warning (a weakly constrained direction, a marker that moved). The correction maps \
          the room onto the CT."),
+    // ---- planar images: 2D contours, presentation states, 2D/2D -------
+    "project_structures" => (planar::ProjectArgs, planar::project_structures, true,
+        "Project structures of the CT onto planar images as 2D contours: each structure's          silhouette through the image's camera (a DRR as rendered, a radiograph at the plan), or          at a setup's pose (pose: a setup handle). Files them as a planar structure set and          returns per structure and image the rings, the area in mm2 and the box in pixels."),
+    "list_planar_structures" => (planar::ListArgs, planar::list_planar_structures, false,
+        "Every planar structure set of a dataset (structures, their contours per image, where          each came from, images not loaded) and every 2D registration."),
+    "draw_planar_structure" => (planar::DrawArgs, planar::draw_planar_structure, false,
+        "Contour on a planar image: polygons in pixels (the first pixel's centre at [0, 0])          added to, or cut out of, a named structure of a planar structure set."),
+    "register_planar" => (planar::RegisterPlanarArgs, planar::register_planar, true,
+        "Register one planar image onto another (2D/2D): by intensity (shift, rotation,          optionally scale), by pairs of points or markers found, the points then the          intensity, or deformably (a B-spline). The transform maps the fixed image's frame          (mm about its centre) onto the moving image's. Returns the shift (at the detector and,          with a camera, at the isocentre), the rotation, the scale, the measure before and          after, the pairs' residuals, the warp's statistics and the moved copy's image number."),
+    "carry_planar_structures" => (planar::CarryArgs, planar::carry_planar_structures, false,
+        "Carry the planar structures of a 2D registration's moving image onto its fixed image,          into a set named after the registration."),
+    "setup_from_planar" => (planar::SetupFromPlanarArgs, planar::setup_from_planar, true,
+        "Read two (or more) 2D registrations of two views as one 3D setup correction, through          the fixed images' cameras: the translation and the rotation, the couch readout, the          weakly seen axes named. Returns a setup handle as register_2d3d does."),
+    "save_planar_structures" => (planar::SaveArgs, planar::save_planar_structures, false,
+        "Save a planar structure set as a DICOM Grayscale Softcopy Presentation State into the          output folder, with every image it references that has no file of its own as an RT          Image. Returns the file names."),
     "describe_setup" => (setup::SetupArgs, setup::describe_setup, false,
         "The numbers of an earlier register_2d3d again."),
     "export_setup" => (setup::ExportSetupArgs, setup::export_setup, false,

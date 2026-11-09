@@ -51,6 +51,12 @@ pub const SOP_DETACHED_STUDY: &str = "1.2.840.10008.3.1.2.3.1";
 /// waveforms, `…1.104.n` the encapsulated documents (PDF, CDA, STL, OBJ,
 /// MTL), `…1.88.n` the Structured Reports.
 const PRESENTATION_STATE_PREFIX: &str = "1.2.840.10008.5.1.4.1.1.11.";
+/// Grayscale Softcopy Presentation State Storage: the file a planar
+/// structure set is saved as ([`crate::gsps`]).
+pub const SOP_GSPS: &str = "1.2.840.10008.5.1.4.1.1.11.1";
+/// Color Softcopy Presentation State Storage: read like a grayscale one
+/// (its graphic annotations are the same modules).
+pub const SOP_COLOR_SOFTCOPY_PS: &str = "1.2.840.10008.5.1.4.1.1.11.2";
 const WAVEFORM_PREFIX: &str = "1.2.840.10008.5.1.4.1.1.9.";
 const ENCAPSULATED_PREFIX: &str = "1.2.840.10008.5.1.4.1.1.104.";
 const SR_PREFIX: &str = "1.2.840.10008.5.1.4.1.1.88.";

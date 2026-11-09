@@ -50,6 +50,7 @@ pub mod markers;
 pub mod metric2d;
 pub mod optim;
 pub(crate) mod parzen;
+pub mod planar;
 pub mod plastimatch;
 pub mod projective;
 pub mod shape;

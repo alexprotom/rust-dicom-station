@@ -40,6 +40,7 @@ use super::exec::{Ctx, Done, RegEntry, Report, RunOptions, Scope, Table, Value};
 use super::{safe_name, Node};
 
 mod more;
+mod planar;
 mod setup;
 mod synth;
 
@@ -92,6 +93,8 @@ pub(super) fn run_node(
         Op::ArchiveImport(p_) => more::archive_import(&mut *ctx, &inputs[0], p_, p),
         Op::Drr(p_) => more::drr(ctx, node, need(0)?, p_, p),
         Op::Register2d3d(p_) => setup::register_2d3d(ctx, node, need(0)?, p_, p),
+        Op::Register2d(p_) => planar::register_2d(ctx, node, need(0)?, p_, p),
+        Op::ProjectStructures(p_) => planar::project_structures(ctx, node, need(0)?, p_, p),
         Op::PositionedCopy(p_) => setup::positioned_copy(ctx, node, need(0)?, one(1), p_, p),
         Op::SynthesizeCt(p_) => synth::synthesize_ct(ctx, node, need(0)?, p_, p),
         Op::EvaluateSct(p_) => {

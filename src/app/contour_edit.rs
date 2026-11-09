@@ -180,44 +180,10 @@ fn uv(axis: usize, v: [f64; 3]) -> [f64; 2] {
 }
 
 /// A closed centripetal Catmull-Rom spline through the given points - the
-/// curve the spline tool draws, and the only reason it differs from the
-/// polygon tool.
+/// curve the spline tool draws ([`contours::spline_points`], shared with the
+/// planar panes).
 fn spline_ring(pts: &[[f64; 2]], per_segment: usize) -> Vec<[f64; 2]> {
-    let n = pts.len();
-    if n < 3 {
-        return pts.to_vec();
-    }
-    let mut out = Vec::with_capacity(n * per_segment);
-    for i in 0..n {
-        let p0 = pts[(i + n - 1) % n];
-        let p1 = pts[i];
-        let p2 = pts[(i + 1) % n];
-        let p3 = pts[(i + 2) % n];
-        // Centripetal parameterisation: no cusps, no self-intersection from
-        // a doubled click.
-        let t = |a: [f64; 2], b: [f64; 2], t0: f64| -> f64 {
-            let d = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
-            t0 + d.sqrt().max(1e-6)
-        };
-        let (t0, t1) = (0.0, t(p0, p1, 0.0));
-        let (t2, t3) = (t(p1, p2, t1), 0.0);
-        let t3 = t(p2, p3, t2).max(t3);
-        for s in 0..per_segment {
-            let tt = t1 + (t2 - t1) * (s as f64 / per_segment as f64);
-            let a1 = lerp2(p0, p1, (t1 - tt) / (t1 - t0), (tt - t0) / (t1 - t0));
-            let a2 = lerp2(p1, p2, (t2 - tt) / (t2 - t1), (tt - t1) / (t2 - t1));
-            let a3 = lerp2(p2, p3, (t3 - tt) / (t3 - t2), (tt - t2) / (t3 - t2));
-            let b1 = lerp2(a1, a2, (t2 - tt) / (t2 - t0), (tt - t0) / (t2 - t0));
-            let b2 = lerp2(a2, a3, (t3 - tt) / (t3 - t1), (tt - t1) / (t3 - t1));
-            out.push(lerp2(b1, b2, (t2 - tt) / (t2 - t1), (tt - t1) / (t2 - t1)));
-        }
-    }
-    out
-}
-
-#[inline]
-fn lerp2(a: [f64; 2], b: [f64; 2], wa: f64, wb: f64) -> [f64; 2] {
-    [a[0] * wa + b[0] * wb, a[1] * wa + b[1] * wb]
+    contours::spline_points(pts, per_segment)
 }
 
 impl ViewerApp {
@@ -600,7 +566,11 @@ impl ViewerApp {
                 // A click on top of the last point is a request to close, not
                 // a zero-length edge.
                 if let Some(last) = d.pts.last() {
-                    let d2 = (last[0] - v[0]).powi(2) + (last[1] - v[1]).powi(2);
+                    // All three coordinates: on a sagittal view the first
+                    // is the slice, and the plane's pair is the other two.
+                    let d2 = (last[0] - v[0]).powi(2)
+                        + (last[1] - v[1]).powi(2)
+                        + (last[2] - v[2]).powi(2);
                     if d2 < 1e-6 {
                         return;
                     }
@@ -663,7 +633,7 @@ impl ViewerApp {
             DrawMode::Subtract => true,
             // The auto rule: a drawing that crosses an existing contour and
             // starts outside it cuts; anything else adds.
-            DrawMode::Auto => region.crosses(&ring) && !region.contains(ring.pts[0]),
+            DrawMode::Auto => contours::auto_cuts(region, &ring),
         };
         if cut {
             region.subtract_ring(&ring);

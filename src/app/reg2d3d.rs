@@ -1001,6 +1001,39 @@ impl ViewerApp {
         }
     }
 
+    /// *⇩ As 2D contours*: the ticked outlines projected onto the current
+    /// setup's radiographs at its pose, filed as a planar structure set.
+    fn reg2d3d_contours(&mut self) {
+        let Some(st) = &self.r2d else { return };
+        let (slot, Some(idx)) = (st.slot, st.current) else {
+            return;
+        };
+        let Some(s) = self.slots[slot]
+            .study
+            .as_ref()
+            .and_then(|study| study.setups.get(idx))
+        else {
+            return;
+        };
+        let images: Vec<usize> = s
+            .images
+            .iter()
+            .copied()
+            .filter(|&i| i != usize::MAX)
+            .collect();
+        if images.is_empty() {
+            self.error = Some("The setup's radiographs are no longer in the workspace".into());
+            return;
+        }
+        let req = crate::planar_structs::ProjectRequest {
+            structures: st.outlined.clone(),
+            images,
+            pose: crate::planar_structs::PoseChoice::Setup(idx),
+            label: String::new(),
+        };
+        self.start_projection(slot, req, None);
+    }
+
     /// Save the current setup's report as JSON.
     fn reg2d3d_save_report(&mut self) {
         let Some((slot, idx)) = self
@@ -1220,6 +1253,7 @@ impl ViewerApp {
         let act_copy = false;
         let act_report = false;
         let act_dicom = false;
+        let act_contours = false;
         let act_clip = false;
         let chosen_room: Option<String> = None;
         let id = ui.make_persistent_id("reg2d3d");
@@ -1247,6 +1281,7 @@ impl ViewerApp {
             act_copy,
             act_report,
             act_dicom,
+            act_contours,
             nudge,
         };
         self.r2d_images_rows(ui, &mut sf);
@@ -1263,6 +1298,7 @@ impl ViewerApp {
             act_copy,
             act_report,
             act_dicom,
+            act_contours,
             nudge,
             ..
         } = sf;
@@ -1308,6 +1344,9 @@ impl ViewerApp {
         }
         if act_dicom {
             self.reg2d3d_save_dicom();
+        }
+        if act_contours {
+            self.reg2d3d_contours();
         }
         if act_clip {
             // The box's centre under the crosshair, so its slices show it.
@@ -1965,6 +2004,7 @@ impl ViewerApp {
         let mut act_copy = sf.act_copy;
         let mut act_report = sf.act_report;
         let mut act_dicom = sf.act_dicom;
+        let mut act_contours = sf.act_contours;
         let mut nudge = sf.nudge;
         if let Some(s) = current {
             ui.separator();
@@ -2134,6 +2174,18 @@ impl ViewerApp {
                                     }
                                 }
                             });
+                        if ui
+                            .add_enabled(
+                                !st.outlined.is_empty(),
+                                egui::Button::new("⇩ As 2D contours"),
+                            )
+                            .on_hover_text(
+                                "File the ticked outlines as planar structures on the                                  radiographs, at this setup's pose",
+                            )
+                            .clicked()
+                        {
+                            act_contours = true;
+                        }
                     });
             }
             ui.horizontal_wrapped(|ui| {
@@ -2169,6 +2221,7 @@ impl ViewerApp {
         sf.act_copy = act_copy;
         sf.act_report = act_report;
         sf.act_dicom = act_dicom;
+        sf.act_contours = act_contours;
         sf.nudge = nudge;
     }
 }
@@ -2198,5 +2251,6 @@ struct R2dForm {
     act_copy: bool,
     act_report: bool,
     act_dicom: bool,
+    act_contours: bool,
     nudge: Option<[f64; 6]>,
 }

@@ -41,6 +41,7 @@ impl ViewerApp {
         self.pacs_window(ctx);
         self.export_window(ctx);
         self.rename_window(ctx);
+        self.project_window(ctx);
         self.workflow_editor_window(ctx);
         self.picker_window(ctx);
         if let Some(msg) = self.notice.clone() {

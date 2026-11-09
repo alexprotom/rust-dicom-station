@@ -348,6 +348,12 @@ pub struct LoadedStudy {
     /// Patient setups found from radiographs: the 2D/3D registrations made
     /// here (not read from files).
     pub setups: Vec<crate::setup::SetupResult>,
+    /// 2D contours on the planar images ([`crate::planar_structs`]): drawn,
+    /// projected from the structures, carried by a 2D/2D registration, or
+    /// read from presentation states.
+    pub planar_structs: Vec<crate::planar_structs::PlanarStructureSet>,
+    /// 2D/2D registrations made here ([`crate::registration::planar`]).
+    pub planar_regs: Vec<crate::registration::planar::PlanarReg>,
     /// 4D sub-studies recognised among (or built by hand from) `series`.
     pub fourd_groups: Vec<crate::fourd::FourDGroup>,
     /// Respiratory traces kept out of `planar_images` (placeholder captures
@@ -374,6 +380,8 @@ impl Default for LoadedStudy {
             treat_records: Vec::new(),
             reports: Vec::new(),
             setups: Vec::new(),
+            planar_structs: Vec::new(),
+            planar_regs: Vec::new(),
             fourd_groups: Vec::new(),
             resp_traces: Vec::new(),
             warnings: Vec::new(),
@@ -390,6 +398,16 @@ impl LoadedStudy {
     /// needs voxels asks this first; see [`Volume::empty`].
     pub fn has_volume(&self) -> bool {
         !self.volume.is_empty()
+    }
+
+    /// The planar image of SOP Instance UID `uid`.
+    pub fn planar_by_uid(&self, uid: &str) -> Option<usize> {
+        if uid.is_empty() {
+            return None;
+        }
+        self.planar_images
+            .iter()
+            .position(|p| p.sop_instance_uid == uid)
     }
 
     /// Whether any planar image is a projection (a radiograph, an RT
@@ -434,6 +452,9 @@ pub enum FileClass {
     Plan,
     Registration,
     Record,
+    /// A grayscale or colour softcopy presentation state: its graphic
+    /// annotations are read as a planar structure set ([`crate::gsps`]).
+    Presentation,
     /// Readable as DICOM, but nothing here reads it: an object without an
     /// image ([`crate::sop::is_non_image`]: a PDF, a presentation state, a
     /// key object selection), or an image that fits nowhere.
@@ -453,6 +474,7 @@ impl FileClass {
             FileClass::Plan => "plan",
             FileClass::Registration => "registration",
             FileClass::Record => "treatment record",
+            FileClass::Presentation => "presentation state",
             FileClass::Other => "other",
         }
     }
@@ -488,6 +510,11 @@ pub fn classify(
         // which would take it (`OT`, unpositioned) for an additional object
         // and look for pixels it does not have.
         FileClass::Report
+    } else if sop_class == crate::sop::SOP_GSPS || sop_class == crate::sop::SOP_COLOR_SOFTCOPY_PS {
+        // A softcopy presentation state: its graphics are 2D contours.
+        // Asked before the non-image check, which claims the other
+        // presentation states.
+        FileClass::Presentation
     } else if extras::is_non_image_sop(sop_class) {
         // Another document, a presentation state, a selection of keys: no
         // pixels to decode, whatever the Modality and however alone in its
@@ -693,6 +720,7 @@ fn load_files_with(
     let mut reg_files = Vec::new();
     let mut record_files = Vec::new();
     let mut report_files = Vec::new();
+    let mut pr_files = Vec::new();
     // What is left out, by the name of its SOP class: said once, in one
     // line, rather than once a file.
     let mut not_shown: std::collections::BTreeMap<String, usize> = Default::default();
@@ -733,6 +761,7 @@ fn load_files_with(
             FileClass::Registration => reg_files.push(s.path.clone()),
             FileClass::Record => record_files.push(s.path.clone()),
             FileClass::Report => report_files.push(s.path.clone()),
+            FileClass::Presentation => pr_files.push(s.path.clone()),
             // Both kinds of single image: `load_planar` tells them apart.
             FileClass::Projection | FileClass::Additional => planar_files.push(s.path.clone()),
             FileClass::Other => {
@@ -999,6 +1028,34 @@ fn load_files_with(
             ));
         }
     }
+    // Presentation states: planar structure sets, their images matched by
+    // SOP Instance UID; a set whose images are not all here is kept, and
+    // attaches when they arrive.
+    let mut planar_structs = Vec::new();
+    for (set, notes) in parse_group(
+        &pr_files,
+        "presentation state",
+        "Reading presentation states",
+        progress,
+        &mut warnings,
+        crate::gsps::load,
+    ) {
+        for n in notes {
+            warnings.push(format!("presentation state {}: {n}", set.label));
+        }
+        let missing = set
+            .images
+            .iter()
+            .filter(|u| !planar_images.iter().any(|p| p.sop_instance_uid == **u))
+            .count();
+        if missing > 0 {
+            warnings.push(format!(
+                "presentation state {} references {missing} image(s) not in this load;                  its contours attach when they are loaded",
+                set.label
+            ));
+        }
+        planar_structs.push(set);
+    }
     let treat_records = parse_group(
         &record_files,
         "RTRECORD",
@@ -1036,6 +1093,8 @@ fn load_files_with(
         treat_records,
         reports,
         setups: Vec::new(),
+        planar_structs,
+        planar_regs: Vec::new(),
         fourd_groups,
         warnings,
         default_window,
@@ -1574,6 +1633,21 @@ pub fn merge_study(dest: &mut LoadedStudy, src: LoadedStudy) -> Vec<String> {
             dest.reports.push(r);
         }
     }
+    // Planar structure sets: one of the same SOP Instance UID (the same
+    // presentation state read twice, or a set copied back) takes the
+    // other's structures by name; any other is added.
+    for ps in src.planar_structs {
+        let same = dest.planar_structs.iter_mut().find(|d| {
+            (!ps.sop_instance_uid.is_empty() && d.sop_instance_uid == ps.sop_instance_uid)
+                || (ps.sop_instance_uid.is_empty()
+                    && d.label == ps.label
+                    && d.file_name == ps.file_name)
+        });
+        match same {
+            Some(d) => d.merge(ps),
+            None => dest.planar_structs.push(ps),
+        }
+    }
     // 4D groups: carry over custom groups that don't collide with an
     // existing one, then re-detect around them for the merged series list.
     for g in src.fourd_groups {
@@ -1720,8 +1794,14 @@ mod tests {
             FileClass::Report
         );
         // Something readable as DICOM that nothing here reads.
+        // A grayscale softcopy presentation state: read as 2D contours.
         assert_eq!(
             classify("PR", "1.2.840.10008.5.1.4.1.1.11.1", false, true),
+            FileClass::Presentation
+        );
+        // Another presentation state (a blending one): left out.
+        assert_eq!(
+            classify("PR", "1.2.840.10008.5.1.4.1.1.11.4", false, true),
             FileClass::Other
         );
         // An encapsulated PDF, alone and unpositioned in its series, is no
@@ -1736,7 +1816,7 @@ mod tests {
         );
         assert_eq!(
             classify("PR", "1.2.840.10008.5.1.4.1.1.11.1", false, false),
-            FileClass::Other
+            FileClass::Presentation
         );
         // A key object selection is encoded as an SR but is not a report.
         assert_eq!(

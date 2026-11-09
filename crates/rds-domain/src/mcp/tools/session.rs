@@ -356,6 +356,8 @@ pub fn describe(ds: &Dataset) -> Value {
         "doses": doses,
         "plans": plans,
         "planar_images": planar,
+        "planar_structure_sets": super::planar::summary(st).0,
+        "planar_registrations": super::planar::summary(st).1,
         "reports": reports,
         "sessions": sessions_summary(st),
         "warnings": st.warnings.len(),

@@ -370,6 +370,8 @@ pub fn generate_transformed_study(
         reports: src.reports.clone(),
         // A setup belongs to the CT it was found against, not to a copy.
         setups: Vec::new(),
+        planar_structs: Vec::new(),
+        planar_regs: Vec::new(),
         fourd_groups: Vec::new(),
         warnings: vec![format!(
             "Simulated workspace - ground truth: {}",

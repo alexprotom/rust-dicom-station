@@ -727,6 +727,31 @@ impl ViewerApp {
                 self.remove_from_row(slot, pane_kind_of(k));
             }
         }
+        // A 2D/2D registration goes with its moved copy; the planar
+        // structures and the other registrations name images by UID and
+        // stay as they are.
+        let gone: Vec<usize> = self.slots[slot]
+            .study
+            .as_ref()
+            .map(|st| {
+                st.planar_regs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| {
+                        r.moved_copy_uid
+                            .as_ref()
+                            .is_some_and(|u| st.planar_by_uid(u).is_none())
+                    })
+                    .map(|(k, _)| k)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for k in gone.into_iter().rev() {
+            if let Some(st) = self.slots[slot].study.as_mut() {
+                st.planar_regs.remove(k);
+            }
+            self.reg2d_removed(slot, k);
+        }
         // The setups' radiographs and the DRRs drawn for one.
         if let Some(study) = self.slots[slot].study.as_mut() {
             for s in &mut study.setups {
@@ -1075,6 +1100,40 @@ impl ViewerApp {
         // the stack: radiographs only, an additional object has no geometry
         // to place them in.
         let marked = if kind_of_pane(k) == PlanarKind::Projection {
+            // The 2D contours of every image of the stack, the one under the
+            // scrubber in full colour.
+            let contour_layers: Vec<(usize, Rect, bool)> = v
+                .layers
+                .iter()
+                .enumerate()
+                .filter_map(|(li, l)| {
+                    study
+                        .planar_images
+                        .get(l.image)
+                        .map(|img| (l.image, rect_of(img), li == near))
+                })
+                .collect();
+            self.draw_planar_contours(&painter, slot, &contour_layers);
+            let hover_px = ui
+                .input(|i| i.pointer.hover_pos())
+                .filter(|p| rect.contains(*p))
+                .map(|p| {
+                    super::planar_contours::screen_to_px(
+                        p,
+                        [near_img.cols, near_img.rows],
+                        rect_of(near_img),
+                    )
+                });
+            self.draw_planar_preview(
+                &painter,
+                slot,
+                v.layers[near].image,
+                rect_of(near_img),
+                hover_px,
+            );
+            for (image, r, _) in &contour_layers {
+                self.reg2d_marks(&painter, slot, *image, *r);
+            }
             self.reg2d3d_overlay(&painter, slot, v.layers[near].image, rect_of(near_img));
             let layer_images: Vec<usize> = v.layers.iter().map(|l| l.image).collect();
             let marked = self
@@ -1244,6 +1303,40 @@ impl ViewerApp {
             Some((i, r)) if !over_buttons => self.reg2d3d_pane_input(slot, i, r, &resp),
             _ => None,
         };
+        // Then the contour tools, on the image under the scrubber (the hand
+        // still pans).
+        let near_image = v.layers[near].image;
+        // The 2D/2D section's *Place* tool next.
+        let placing = !tool_on && self.reg2d_placing(slot, near_image);
+        let place_click = (placing && !over_buttons && resp.clicked())
+            .then(|| resp.interact_pointer_pos())
+            .flatten()
+            .map(|mp| super::reg2d::PlaceClick {
+                slot,
+                image: near_image,
+                px: super::planar_contours::screen_to_px(
+                    mp,
+                    [near_img.cols, near_img.rows],
+                    near_rect,
+                ),
+            });
+        let contour_on = !tool_on
+            && !placing
+            && !self.hand_pan
+            && kind_of_pane(k) == PlanarKind::Projection
+            && self.seg_tool.draws_contours()
+            && !near_img.sop_instance_uid.is_empty();
+        let planar_edits = if contour_on && !over_buttons {
+            self.planar_contour_input(
+                ui,
+                near_image,
+                [near_img.cols, near_img.rows],
+                near_rect,
+                &resp,
+            )
+        } else {
+            Vec::new()
+        };
         let max_resp = ui
             .put(
                 max_rect,
@@ -1412,6 +1505,7 @@ impl ViewerApp {
             || (self.hand_pan
                 && !over_buttons
                 && !tool_on
+                && !contour_on
                 && resp.dragged_by(egui::PointerButton::Primary))
         {
             new_pan = Some(pan + resp.drag_delta() / zoom);
@@ -1443,6 +1537,12 @@ impl ViewerApp {
         }
         if let Some(e) = pane_edit {
             self.reg2d3d_pane_apply(e);
+        }
+        if !planar_edits.is_empty() {
+            self.planar_contour_apply(slot, planar_edits, wl);
+        }
+        if let Some(c) = place_click {
+            self.reg2d_place(c);
         }
         if new_wl.is_some() {
             // A window set by hand: the planar preset no longer holds.

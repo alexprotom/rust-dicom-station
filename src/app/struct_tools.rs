@@ -757,6 +757,37 @@ impl ViewerApp {
     /// Which structure the contour strokes land in, and what they do to
     /// what is already there.
     fn contour_target(&mut self, ui: &mut egui::Ui, slot: usize) {
+        // A planar pane took the last stroke: its structure, not the
+        // volume's.
+        if let Some(ps) = self.planar_tool_target() {
+            match self.planar_target_name(ps) {
+                Some((set, name, c)) => {
+                    ui.label(
+                        egui::RichText::new(format!("▸ 2D · {set} · {name}")).color(theme::rgb(c)),
+                    )
+                    .on_hover_text(
+                        "The planar structure being edited. Select another under Planar                          structures in the data tree, or Ctrl-click a contour in a pane",
+                    );
+                }
+                None => {
+                    ui.label(egui::RichText::new("▸ 2D · new structure").weak())
+                        .on_hover_text("The first stroke on a planar pane creates one");
+                }
+            }
+            if small_tip_button(ui, "+", "New planar structure, and edit it") {
+                self.new_planar_structure(ps);
+            }
+            for m in DrawMode::ALL {
+                if ui
+                    .add(egui::Button::selectable(self.draw_mode == m, m.label()).small())
+                    .on_hover_text(m.hint())
+                    .clicked()
+                {
+                    self.draw_mode = m;
+                }
+            }
+            return;
+        }
         match self.edit_roi_name(slot) {
             Some((name, c)) => {
                 ui.label(egui::RichText::new(format!("▸ {name}")).color(theme::rgb(c)))

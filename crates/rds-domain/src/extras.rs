@@ -116,8 +116,17 @@ pub struct PlanarImage {
     pub window: (f32, f32),
     /// Free-form metadata (name, value) for display.
     pub info: Vec<(String, String)>,
-    /// SOP Instance UID (empty for an image made here and not yet written).
+    /// SOP Instance UID: read from the file, or minted when the image is
+    /// made here (a DRR, a moved copy), so 2D contours can name it before
+    /// it is ever written; [`crate::dicom_export::write_rt_image`] writes
+    /// this one.
     pub sop_instance_uid: String,
+    /// SOP Class UID as read; empty for an image made here, which is
+    /// written as an RT Image.
+    pub sop_class_uid: String,
+    /// Series Instance UID: read from the file, or one per batch of images
+    /// made here together (the DRRs of one render).
+    pub series_instance_uid: String,
     /// Frame of Reference the image's geometry is in.
     pub frame_of_reference_uid: String,
     /// Study Instance UID: the study the data tree files it under. Empty
@@ -557,6 +566,8 @@ pub fn planar_of(obj: &dicom_object::DefaultDicomObject, path: &Path) -> Result<
         window,
         info,
         sop_instance_uid: str_of(obj, tags::SOP_INSTANCE_UID).unwrap_or_default(),
+        series_instance_uid: str_of(obj, tags::SERIES_INSTANCE_UID).unwrap_or_default(),
+        sop_class_uid: sop_class.clone(),
         frame_of_reference_uid: str_of(obj, tags::FRAME_OF_REFERENCE_UID).unwrap_or_default(),
         study_uid: str_of(obj, tags::STUDY_INSTANCE_UID).unwrap_or_default(),
         referenced_beam: i32_of(obj, tags::REFERENCED_BEAM_NUMBER),
