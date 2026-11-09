@@ -83,11 +83,15 @@ mod pane_windows;
 mod panels;
 mod pick;
 mod planar;
+mod planar_contours;
+mod planar_tools;
 mod play;
 mod poi;
+mod project_win;
 mod prompt_seg;
 mod propagate_win;
 mod record;
+mod reg2d;
 mod reg2d3d;
 mod reg_panel;
 mod reg_shape;
@@ -111,6 +115,7 @@ mod tree_dose;
 mod tree_menus;
 mod tree_model;
 mod tree_planar;
+mod tree_planar_structs;
 mod tree_plans;
 mod tree_records;
 mod tree_registrations;
@@ -626,6 +631,9 @@ pub struct ViewerApp {
     /// The buttons on every pane are folded away behind the ◀ on its bar.
     /// One switch for all of them, remembered between runs.
     pane_buttons_hidden: bool,
+    /// Opening the PACS window walks its folders
+    /// ([`Settings::pacs_scan_on_open`]).
+    pacs_scan_on_open: bool,
     /// The *Save image* dialog, and the picture it has asked for.
     save_img: Option<snapshot::SaveImgDialog>,
     snap: Option<snapshot::PendingShot>,
@@ -728,6 +736,9 @@ pub struct ViewerApp {
     /// *Image registration ▶ 2D/3D registration*: its state, and its run.
     r2d: Option<reg2d3d::Reg2d3dState>,
     r2d_job: Option<Job<reg2d3d::Reg2d3dJobOut>>,
+    /// The 2D contours of the planar panes: the projection prompt and job,
+    /// the contour tools' state on a planar target, the 2D/2D section.
+    planar2d: planar_contours::Planar2d,
     /// The 2D/3D section's remembered choices (persisted).
     r2d_prefs: settings::Reg2d3dPrefs,
 
@@ -1311,6 +1322,7 @@ impl ViewerApp {
             drr_job: None,
             r2d: None,
             r2d_job: None,
+            planar2d: Default::default(),
             r2d_prefs: prefs.reg2d3d.clone(),
             propagate_dialog: None,
             propagate_job: None,
@@ -1480,6 +1492,7 @@ impl ViewerApp {
             section_focus: None,
             reveal_section: None,
             pane_buttons_hidden: prefs.pane_buttons_hidden,
+            pacs_scan_on_open: prefs.pacs_scan_on_open,
             reg_matrix: matrix_edit::ManualMatrix::default(),
             reg_matrix_pick: 0,
             propagate_finish: crate::propagate::Finish::default(),
@@ -1546,6 +1559,7 @@ impl ViewerApp {
             models_dir,
             archive_dir,
             archive_more: self.archive_more.clone(),
+            pacs_scan_on_open: self.pacs_scan_on_open,
             modules: self.modules.clone(),
             pane_buttons_hidden: self.pane_buttons_hidden,
             modules_open: self.modules_open.clone(),
@@ -1926,7 +1940,9 @@ impl eframe::App for ViewerApp {
                 let slot = self.preferred_volume_slot();
                 // A contour tool undoes contours, a voxel tool voxels: the
                 // key follows the tool in hand rather than a global history.
-                if self.seg_tool.draws_contours() {
+                if let Some(ps) = self.planar_tool_target() {
+                    self.undo_planar_edit(ps);
+                } else if self.seg_tool.draws_contours() {
                     self.undo_roi_edit(slot);
                 } else {
                     self.undo_active_seg(slot);
@@ -1939,10 +1955,16 @@ impl eframe::App for ViewerApp {
                 self.draw = None;
                 self.livewire_reset();
             }
+            if esc && self.planar2d.draw.is_some() {
+                self.drop_planar_draw();
+            }
             // Enter closes the polygon under construction, for anyone who
             // would rather not reach for the right button.
             if self.draw.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.commit_draw();
+            }
+            if self.planar2d.draw.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.commit_planar_draw();
             }
             if self.seg_tool != SegTool::None {
                 if smaller {

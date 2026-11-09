@@ -25,7 +25,7 @@ use crate::projection::ProjectionGeometry;
 use crate::registration::markers::{self, Detect3d, Marker3d, MarkerRequest};
 use crate::registration::metric2d::{Image2d, Mask2d, Metric2d};
 use crate::registration::projective::{
-    self, ClipBox, Dof2d3d, Init2d3d, Optimizer2d, Request2d3d, Result2d3d, View2d,
+    self, ClipBox, Dof2d3d, Init2d3d, Optimizer2d, Request2d3d, Result2d3d, View2d, ViewOutcome,
 };
 use crate::registration::RigidTransform;
 use crate::rooms::RoomsFile;
@@ -198,6 +198,9 @@ pub enum SetupMethod {
     Markers,
     /// The markers' pose, then the intensity run from it.
     Hybrid,
+    /// Two (or more) 2D/2D matches read as one 3D correction
+    /// ([`from_planar`]); not a run of [`run`], so not in `ALL`.
+    Planar,
 }
 
 impl SetupMethod {
@@ -212,6 +215,7 @@ impl SetupMethod {
             SetupMethod::Intensity => "Intensity",
             SetupMethod::Markers => "Markers",
             SetupMethod::Hybrid => "Markers, then intensity",
+            SetupMethod::Planar => "2D matches",
         }
     }
 
@@ -220,12 +224,16 @@ impl SetupMethod {
             SetupMethod::Intensity => "intensity",
             SetupMethod::Markers => "markers",
             SetupMethod::Hybrid => "hybrid",
+            SetupMethod::Planar => "planar",
         }
     }
 
     pub fn from_key(s: &str) -> Option<SetupMethod> {
         let s = s.trim().to_ascii_lowercase();
-        SetupMethod::ALL.into_iter().find(|m| m.key() == s)
+        SetupMethod::ALL
+            .into_iter()
+            .chain([SetupMethod::Planar])
+            .find(|m| m.key() == s)
     }
 }
 
@@ -794,6 +802,8 @@ impl SetupResult {
             study_uid: radiograph.map(|r| r.study_uid.clone()).unwrap_or_default(),
             camera: Some(v.camera.transformed(&self.result.transform)),
             frame_count: 1,
+            sop_instance_uid: crate::dicom_export::new_uid(),
+            series_instance_uid: crate::dicom_export::new_uid(),
             ..Default::default()
         })
     }
@@ -892,6 +902,7 @@ pub fn run(
     req.device = opts.device;
     let vol = &study.volume;
     let result = match opts.method {
+        SetupMethod::Planar => bail!("a setup from 2D matches is made from 2D/2D registrations"),
         SetupMethod::Intensity => projective::register_2d3d(vol, &req, sink)?,
         SetupMethod::Markers | SetupMethod::Hybrid => {
             let found = study_markers(study, opts, clip.as_ref());
@@ -991,6 +1002,217 @@ pub fn run(
     })
 }
 
+/// A setup made of 2D/2D registrations: each match's shift at the
+/// isocentre's projection and its roll, read through the fixed images'
+/// cameras as one 3D correction (the reading of two orthogonal matches a
+/// therapist does by hand; Murphy 1997). The translation is the least
+/// squares of [`projective::translation_from_shifts`], the rotation the
+/// small-angle fit of [`projective::rotation_from_rolls`]; an axis the
+/// views barely see (the depth of one view, the rotation about the axis two
+/// detectors share) is reported weakly constrained. The answer is filed as
+/// a [`SetupResult`] of method [`SetupMethod::Planar`], so the readouts,
+/// the report, the positioned copy and the files are a 2D/3D run's; with a
+/// CT, its views' DRRs are rendered at the pose (the nudge and the outlines
+/// then work), without one the moved copies stand in.
+pub fn from_planar(
+    study: &LoadedStudy,
+    regs: &[&crate::registration::planar::PlanarReg],
+    opts: &SetupOptions,
+    sink: &dyn ProgressSink,
+) -> Result<SetupResult> {
+    use crate::registration::planar::{self as p2, Planar2d};
+    if regs.is_empty() {
+        bail!("choose the 2D/2D registrations to combine");
+    }
+    let t0 = std::time::Instant::now();
+    // The fixed image of every match, placed.
+    let mut fixed: Vec<(usize, &PlanarImage, ProjectionGeometry)> = Vec::new();
+    for r in regs {
+        let i = study
+            .planar_by_uid(&r.fixed_uid)
+            .ok_or_else(|| anyhow!("the fixed image of {} is not loaded", r.label))?;
+        let img = &study.planar_images[i];
+        let cam = img.camera.ok_or_else(|| {
+            anyhow!(
+                "{} has no geometry to read a 3D correction through",
+                img.label
+            )
+        })?;
+        fixed.push((
+            i,
+            img,
+            crate::planar_structs::rescaled(&cam, [img.cols, img.rows]),
+        ));
+    }
+    let iso = opts
+        .isocenter
+        .or_else(|| {
+            fixed
+                .iter()
+                .find_map(|(_, img, _)| img.iec.map(|g| g.isocenter))
+        })
+        .unwrap_or_else(|| {
+            let views: Vec<ViewChoice> = fixed
+                .iter()
+                .map(|(i, ..)| ViewChoice::new(*i, GeometrySource::Image))
+                .collect();
+            default_isocenter(study, &views)
+        });
+    let frame = opts.patient.unwrap_or_else(|| default_patient(study));
+    let mut warning: Vec<String> = Vec::new();
+    // Two images of one setup are a pair: taken together.
+    if fixed.len() >= 2 {
+        let a = &fixed[0].1.acquired;
+        let far = fixed.iter().skip(1).any(|(_, img, _)| {
+            match (
+                crate::sessions::seconds(a),
+                crate::sessions::seconds(&img.acquired),
+            ) {
+                (Some(x), Some(y)) => (x - y).abs() > crate::sessions::PAIR_SECONDS,
+                _ => false,
+            }
+        });
+        if far {
+            warning.push("the fixed images were not taken together".into());
+        }
+    }
+    let mut shifts = Vec::new();
+    let mut rolls = Vec::new();
+    for (r, (_, img, cam)) in regs.iter().zip(&fixed) {
+        let p = Planar2d {
+            camera: Some(*cam),
+            isocenter: Some(iso),
+            ..Planar2d::of(img)
+        };
+        let Some((c, _)) = p.iso_frame() else {
+            bail!("the isocentre does not project onto {}", img.label);
+        };
+        let rigid = &r.result.transform.rigid;
+        let m = rigid.map(c);
+        let shift = [m[0] - c[0], m[1] - c[1]];
+        // fixed(u) ≈ moving(u − s): the shift in the fixed image's pixels.
+        let s = [-shift[0] / img.spacing[0], -shift[1] / img.spacing[1]];
+        shifts.push((*cam, s, 1.0));
+        let n = cam.row_step.cross(cam.col_step);
+        let axis = n * (1.0 / n.length().max(1e-12));
+        // The pose turns as the 2D transform does: both map today's frame
+        // onto the reference's (the sign is held by the planar suite).
+        rolls.push((axis, rigid.theta, 1.0));
+    }
+    let (t, t_eig) = projective::translation_from_shifts(&shifts, iso)
+        .ok_or_else(|| anyhow!("the isocentre projects onto none of the images"))?;
+    let (w, w_eig) = projective::rotation_from_rolls(&rolls);
+    let weak = |eig: &[f64]| -> bool {
+        let top = eig.iter().copied().fold(0.0f64, f64::max);
+        eig.iter().any(|&e| e < 0.02 * top)
+    };
+    if weak(&t_eig) {
+        warning.push("a translation is weakly constrained (one view sees no depth)".into());
+    }
+    if weak(&w_eig) {
+        warning
+            .push("the rotation about the axis the detectors share is weakly constrained".into());
+    }
+    let pose = RigidTransform::new([w.x, w.y, w.z, t.x, t.y, t.z], iso);
+    let (couch, displacement) = projective::readout(&pose, &frame);
+    // The views as a 2D/3D run keeps them: the fixed image at the working
+    // raster, its camera and mask, and the moving image moved onto it (the
+    // DRRs at the pose replace these below when there is a CT).
+    let mut views = Vec::new();
+    for (r, (_, img, cam)) in regs.iter().zip(&fixed) {
+        let v2 = View2d {
+            label: img.label.clone(),
+            image: Image2d::new(img.data.clone(), [img.cols, img.rows]),
+            camera: *cam,
+            mask: None,
+            weight: 1.0,
+            transmission: false,
+        };
+        let (work, mask, wcam) = projective::working_view(&v2, opts.max_pixels, None)?;
+        let moved = study
+            .planar_by_uid(&r.moving_uid)
+            .map(|k| {
+                let mv = Planar2d::of(&study.planar_images[k]);
+                let f = img.cols as f64 / work.dims[0].max(1) as f64;
+                let onto = Planar2d {
+                    image: work.clone(),
+                    spacing: [img.spacing[0] * f, img.spacing[1] * f],
+                    camera: None,
+                    isocenter: None,
+                    transmission: false,
+                };
+                p2::resample(&mv, &r.result.transform, &onto)
+            })
+            .unwrap_or_else(|| work.clone());
+        views.push(ViewOutcome {
+            label: img.label.clone(),
+            before: r.result.before,
+            after: r.result.after,
+            inverted: r.result.inverted,
+            image: work,
+            drr: moved,
+            camera: wcam,
+            mask,
+        });
+    }
+    let metric = regs[0].result.metric;
+    let mut eig: Vec<f64> = t_eig.clone();
+    eig.extend(w_eig.iter().copied());
+    let result = Result2d3d {
+        transform: pose,
+        couch,
+        displacement,
+        metric,
+        views,
+        levels: Vec::new(),
+        start: "2D/2D matches".into(),
+        evaluations: regs.iter().map(|r| r.result.evaluations).sum(),
+        iterations: 0,
+        elapsed_secs: t0.elapsed().as_secs_f64(),
+        curvature: eig,
+        warning: (!warning.is_empty()).then(|| warning.join("; ")),
+        markers: None,
+        device: "CPU".into(),
+    };
+    let mut s = SetupResult {
+        label: format!(
+            "Setup · {}",
+            fixed
+                .iter()
+                .map(|(_, img, _)| img.label.clone())
+                .collect::<Vec<_>>()
+                .join(" + ")
+        ),
+        method: SetupMethod::Planar,
+        result,
+        images: fixed.iter().map(|(i, ..)| *i).collect(),
+        image_labels: fixed.iter().map(|(_, img, _)| img.label.clone()).collect(),
+        series_uid: study
+            .series
+            .get(study.active_series)
+            .map(|s| s.uid.clone())
+            .unwrap_or_default(),
+        for_uid: study.volume.frame_of_reference_uid.clone(),
+        isocenter: iso,
+        patient: frame,
+        hu: opts.hu,
+        threshold_hu: opts.threshold_hu,
+        when: now_text(),
+        adjusted: false,
+        fields: Vec::new(),
+    };
+    if study.has_volume() {
+        let pose = s.result.transform.clone();
+        let drrs = render_at(study, &s, &pose, sink)?;
+        for (v, d) in s.result.views.iter_mut().zip(drrs) {
+            if d.dims == v.image.dims {
+                v.drr = d;
+            }
+        }
+    }
+    Ok(s)
+}
+
 /// The DRR of every view of `s` at `pose`, at the resolution the run
 /// compared them at.
 pub fn render_at(
@@ -1057,6 +1279,8 @@ pub fn preview(
     let mu = crate::projection::MuVolume::prepare(&study.volume, opts.hu, opts.threshold_hu, None);
     let step = mu.finest_spacing().clamp(0.5, 2.0);
     let mut out = Vec::with_capacity(views.len());
+    // One series for the batch.
+    let series_uid = crate::dicom_export::new_uid();
     for v in views {
         let cam = camera_of(study, v.image, &v.source, iso, frame, rooms)?;
         let img = &study.planar_images[v.image];
@@ -1095,6 +1319,8 @@ pub fn preview(
             study_uid: img.study_uid.clone(),
             camera: Some(wcam.transformed(&pose)),
             frame_count: 1,
+            sop_instance_uid: crate::dicom_export::new_uid(),
+            series_instance_uid: series_uid.clone(),
             ..Default::default()
         });
     }
@@ -1102,32 +1328,17 @@ pub fn preview(
 }
 
 /// The outline of a structure (`mask` on the CT's grid) as the camera sees
-/// it at `pose`: where any ray crosses it, contoured, as line segments in
-/// the camera's raster scaled to `0..1` across and down.
+/// it at `pose`: its silhouette ([`crate::planar_structs::project_mask`],
+/// closed rings), as line segments in the camera's raster scaled to `0..1`
+/// across and down. The same rings, kept, are a projected 2D contour.
 pub fn silhouette(
     vol: &crate::volume::Volume,
     mask: &[u8],
     cam: &ProjectionGeometry,
     pose: &RigidTransform,
 ) -> Vec<([f32; 2], [f32; 2])> {
-    let Some(mu) = crate::projection::MuVolume::from_mask(vol, mask) else {
-        return Vec::new();
-    };
-    let step = mu.finest_spacing().clamp(0.5, 3.0);
-    let Ok(px) =
-        crate::projection::render_posed(&mu, &cam.transformed(pose), step, &crate::progress::Quiet)
-    else {
-        return Vec::new();
-    };
-    let [w, h] = cam.dims;
-    let field: Vec<f32> = px.iter().map(|v| (*v > 0.0) as u8 as f32).collect();
-    crate::render::marching_squares(&field, w, h, 0.5)
-        .into_iter()
-        .map(|(a, b)| {
-            let n = |p: [f32; 2]| [(p[0] + 0.5) / w as f32, (p[1] + 0.5) / h as f32];
-            (n(a), n(b))
-        })
-        .collect()
+    let region = crate::planar_structs::project_mask(vol, mask, cam, Some(pose));
+    crate::planar_structs::segments01(&region, cam.dims)
 }
 
 /// `YYYY-MM-DD HH:MM` (UTC).

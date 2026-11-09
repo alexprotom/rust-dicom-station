@@ -155,6 +155,17 @@ Planar images are not written by *File ▶ Export DICOM*, which covers CT,
 RTSTRUCT, SEG, RTDOSE and RTPLAN; a 2D/3D registration writes its DRRs as
 RT Images with their geometry ([registration-2d3d.md](registration-2d3d.md)).
 
+## Structures on the renderings
+
+The section's *Structures* fold ticks structures of the CT to project onto
+every rendering: when a render lands, the ticked structures are projected
+through each rendering's camera as 2D contours and filed as a planar
+structure set (*Planar structures* under the planar images), drawn on the
+DRR in the pane and saved with it as a presentation state. The DRRs of one
+render share a Series Instance UID, and every DRR has its SOP Instance UID
+from the moment it is made, which is what the contours reference and what
+`write_rt_image` writes. See [planar-2d.md](planar-2d.md).
+
 ## Where it fits
 
 The ray-cast is the projector of [2D/3D registration](registration-2d3d.md):

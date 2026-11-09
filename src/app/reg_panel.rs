@@ -1040,11 +1040,20 @@ impl ViewerApp {
             egui::CollapsingHeader::new(egui::RichText::new("Image registration").strong())
                 .default_open(false)
                 .show(ui, |ui| {
-                    if two_d {
-                        egui::CollapsingHeader::new(reg2d3d::REG2D3D_TOOL.menu_entry())
-                            .id_salt("reg2d3d")
-                            .default_open(true)
-                            .show(ui, |ui| self.reg2d3d_section(ui));
+                    let planar_pairs = self.reg2d_relevant();
+                    if two_d || planar_pairs {
+                        if two_d {
+                            egui::CollapsingHeader::new(reg2d3d::REG2D3D_TOOL.menu_entry())
+                                .id_salt("reg2d3d")
+                                .default_open(true)
+                                .show(ui, |ui| self.reg2d3d_section(ui));
+                        }
+                        if planar_pairs {
+                            egui::CollapsingHeader::new(reg2d::REG2D_TOOL.menu_entry())
+                                .id_salt("reg2d")
+                                .default_open(!two_d)
+                                .show(ui, |ui| self.reg2d_section(ui));
+                        }
                     } else {
                         ui.weak(
                             "Load a second workspace (File > Add DICOM folder), or a workspace \
@@ -1966,6 +1975,12 @@ impl ViewerApp {
                     .id_salt("reg2d3d")
                     .default_open(false)
                     .show(ui, |ui| self.reg2d3d_section(ui));
+            }
+            if self.reg2d_relevant() {
+                egui::CollapsingHeader::new(reg2d::REG2D_TOOL.menu_entry())
+                    .id_salt("reg2d")
+                    .default_open(false)
+                    .show(ui, |ui| self.reg2d_section(ui));
             }
             // A transform that is already known does not have to be
             // recovered: type it in and apply it, and everything

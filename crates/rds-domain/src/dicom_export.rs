@@ -1352,7 +1352,7 @@ pub fn write_deformable_registration(
 }
 
 /// A Content Label is CS: uppercase, 16 characters, a restricted alphabet.
-fn sanitize_cs(s: &str) -> String {
+pub(crate) fn sanitize_cs(s: &str) -> String {
     let mut out: String = s
         .chars()
         .map(|c| {
@@ -1796,9 +1796,27 @@ impl ObjectMeta {
     }
 
     fn write(&self, o: &mut InMemDicomObject, sop_class: &str, modality: &str) {
+        self.write_as(o, sop_class, modality, None, None);
+    }
+
+    /// [`Self::write`] with the SOP Instance and Series Instance UIDs given
+    /// (an object that already has its identity: a DRR named by 2D
+    /// contours before it was written); a fresh one for each `None` or
+    /// empty one. Returns the two UIDs written, SOP first.
+    pub fn write_as(
+        &self,
+        o: &mut InMemDicomObject,
+        sop_class: &str,
+        modality: &str,
+        sop_uid: Option<&str>,
+        series_uid: Option<&str>,
+    ) -> (String, String) {
+        let given = |u: Option<&str>| u.filter(|u| !u.is_empty()).map(str::to_string);
+        let sop = given(sop_uid).unwrap_or_else(new_uid);
+        let series = given(series_uid).unwrap_or_else(new_uid);
         put_str(o, tags::SPECIFIC_CHARACTER_SET, VR::CS, "ISO_IR 100");
         put_str(o, tags::SOP_CLASS_UID, VR::UI, sop_class);
-        put_str(o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
+        put_str(o, tags::SOP_INSTANCE_UID, VR::UI, sop.as_str());
         put_str(o, tags::MODALITY, VR::CS, modality);
         put_str(o, tags::PATIENT_NAME, VR::PN, self.patient_name.as_str());
         put_str(o, tags::PATIENT_ID, VR::LO, self.patient_id.as_str());
@@ -1808,7 +1826,7 @@ impl ObjectMeta {
             self.study_uid.clone()
         };
         put_str(o, tags::STUDY_INSTANCE_UID, VR::UI, study);
-        put_str(o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
+        put_str(o, tags::SERIES_INSTANCE_UID, VR::UI, series.as_str());
         put_is(o, tags::SERIES_NUMBER, 1);
         put_is(o, tags::INSTANCE_NUMBER, 1);
         put_str(o, tags::CONTENT_LABEL, VR::CS, sanitize_cs(&self.label));
@@ -1829,6 +1847,7 @@ impl ObjectMeta {
         put_str(o, tags::CONTENT_TIME, VR::TM, time.clone());
         put_str(o, tags::SERIES_DATE, VR::DA, date);
         put_str(o, tags::SERIES_TIME, VR::TM, time);
+        (sop, series)
     }
 }
 
@@ -1885,17 +1904,26 @@ pub fn write_rigid_registration(
 /// Write a planar image as an RT Image: the pixels as 16-bit values with
 /// the rescale that gives them back, and, when the image has its IEC
 /// geometry, every attribute [`crate::extras::rt_image_geometry`] reads
-/// it from.
+/// it from. The image's own SOP Instance and Series Instance UIDs are
+/// written when it has them (what 2D contours and a presentation state
+/// reference it by), fresh ones otherwise; the SOP Instance UID written is
+/// returned.
 pub fn write_rt_image(
     path: &Path,
     img: &crate::extras::PlanarImage,
     meta: &ObjectMeta,
-) -> Result<()> {
+) -> Result<String> {
     if img.data.len() != img.rows * img.cols || img.data.is_empty() {
         anyhow::bail!("the image has no pixels");
     }
     let mut o = InMemDicomObject::new_empty();
-    meta.write(&mut o, SOP_RTIMAGE, "RTIMAGE");
+    let (sop_uid, _) = meta.write_as(
+        &mut o,
+        SOP_RTIMAGE,
+        "RTIMAGE",
+        Some(&img.sop_instance_uid),
+        Some(&img.series_instance_uid),
+    );
     if !img.frame_of_reference_uid.is_empty() {
         put_str(
             &mut o,
@@ -2010,5 +2038,6 @@ pub fn write_rt_image(
         VR::OW,
         PrimitiveValue::U16(C::from_vec(words)),
     ));
-    write_object(o, SOP_RTIMAGE, path)
+    write_object(o, SOP_RTIMAGE, path)?;
+    Ok(sop_uid)
 }

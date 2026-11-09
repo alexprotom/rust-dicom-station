@@ -271,6 +271,53 @@ fn exercise(policy: PhiPolicy, tag: &str) {
     call(c, l, "export_setup", json!({"setup": "setup1"})).unwrap();
     call(c, l, "describe_dataset", json!({"dataset": "ds1"})).unwrap();
 
+    // Planar structures in a set labelled with the patient's name, on
+    // images labelled with it: neither label nor any file name returns it.
+    call(
+        c,
+        l,
+        "project_structures",
+        json!({"dataset": "ds1", "series": 1, "structures": ["TARGET"], "images": ["1", "2"],
+               "set": NAME}),
+    )
+    .unwrap();
+    call(
+        c,
+        l,
+        "draw_planar_structure",
+        json!({"dataset": "ds1", "image": "1", "name": "JANE MARK",
+               "polygons": [[[10.0, 10.0], [30.0, 10.0], [30.0, 30.0]]]}),
+    )
+    .unwrap();
+    call(c, l, "list_planar_structures", json!({"dataset": "ds1"})).unwrap();
+    call(
+        c,
+        l,
+        "register_planar",
+        json!({"dataset": "ds1", "fixed": "1", "moving": "3", "pixels": 64, "levels": 2}),
+    )
+    .unwrap();
+    call(
+        c,
+        l,
+        "carry_planar_structures",
+        json!({"dataset": "ds1", "registration": "1"}),
+    )
+    .ok();
+    call(
+        c,
+        l,
+        "save_planar_structures",
+        json!({"dataset": "ds1", "set": "1"}),
+    )
+    .unwrap();
+    let _ = call(
+        c,
+        l,
+        "register_planar",
+        json!({"dataset": "ds1", "fixed": NAME, "moving": "1"}),
+    );
+
     // A synthetic CT of phase 0 (the miniature network as a checkpoint
     // folder of the user's), and its evaluation against the 50% phase.
     let key = sct_app();

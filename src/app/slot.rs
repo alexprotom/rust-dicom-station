@@ -174,6 +174,12 @@ pub(super) struct StudySlot {
     /// tree adds to it, and a plain click with both panes on screen goes to
     /// the other one.
     pub(super) planar_last: usize,
+    /// Planar structures not drawn, by (set key, structure name)
+    /// ([`super::planar_contours::set_key`]): visible is the default.
+    pub(super) planar_hidden: std::collections::HashSet<(String, String)>,
+    /// The planar structure the 2D contour tools edit: (set, structure)
+    /// within `study.planar_structs`.
+    pub(super) active_planar: Option<(usize, usize)>,
 }
 
 /// The ROIs of one structure set prepared for drawing on one volume
@@ -386,6 +392,8 @@ impl StudySlot {
             roi_edits: std::collections::HashMap::new(),
             planar: Default::default(),
             planar_last: 1,
+            planar_hidden: Default::default(),
+            active_planar: None,
         }
     }
 }

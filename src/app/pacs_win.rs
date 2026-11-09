@@ -28,10 +28,10 @@
 //! by hand) into a JSON file, and *Import tags* merges such a file from
 //! another station into this one's catalog ([`crate::archive::tags`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 
-use crate::archive::{Archive, ImportSummary, Pick, Tree, UNSORTED};
+use crate::archive::{Archive, ImportSummary, PatientEntry, Pick, StudyEntry, Tree, UNSORTED};
 use crate::pacs::servers::Servers;
 
 use super::pacs_remote::{self, PairDialog, RemoteView, Source};
@@ -107,49 +107,172 @@ pub(super) struct PacsWindow {
     /// Asked once more before files are deleted: the selection and how
     /// many files it holds.
     pub confirm_remove: Option<(Vec<Pick>, usize)>,
-    /// Only the studies with a 4D set (or a probable one) are shown.
-    pub fourd_filter: FourdFilter,
+    /// Which studies are shown, by what they hold.
+    pub study_filter: StudyFilter,
+    /// What the last scan found to pick studies by, with how many studies
+    /// hold each.
+    pub facets: Vec<(Facet, usize)>,
 }
 
-/// Which studies the tree shows, by their 4D sets.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum FourdFilter {
-    #[default]
-    All,
+/// One thing a study can be picked by in the list beside 🔍: a 4D set, a
+/// word of its patient's row (`Adult`, `Phantom`, `Female`: what the name
+/// given says in brackets), or a modality one of its series has (CT, MR,
+/// DX, RTSTRUCT, SEG, ...). They sort in that order.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Facet {
     /// A confirmed 4DCT.
-    Has,
+    FourD,
     /// A set only the geometry says is one.
-    Probable,
+    ProbableFourD,
+    /// A word of [`patient_words`], matched without regard to case.
+    Patient(String),
+    Modality(String),
 }
 
-impl FourdFilter {
-    fn label(self) -> &'static str {
+impl Facet {
+    fn label(&self) -> String {
         match self {
-            FourdFilter::All => "all studies",
-            FourdFilter::Has => "has 4D",
-            FourdFilter::Probable => "has probable 4D",
+            Facet::FourD => "4D".into(),
+            Facet::ProbableFourD => "probable 4D".into(),
+            Facet::Patient(w) | Facet::Modality(w) => w.clone(),
         }
     }
 
-    fn keeps(self, s: &crate::archive::StudyEntry) -> bool {
+    fn holds(&self, p: &PatientEntry, s: &StudyEntry) -> bool {
         match self {
-            FourdFilter::All => true,
-            FourdFilter::Has => s.fourd.iter().any(|g| g.confirmed),
-            FourdFilter::Probable => s.fourd.iter().any(|g| !g.confirmed),
+            Facet::FourD => s.fourd.iter().any(|g| g.confirmed),
+            Facet::ProbableFourD => s.fourd.iter().any(|g| !g.confirmed),
+            Facet::Patient(w) => patient_words(p).iter().any(|x| x.eq_ignore_ascii_case(w)),
+            Facet::Modality(m) => s.modalities.iter().any(|x| x == m),
         }
     }
+}
+
+/// The words in the brackets that end a patient's row, `P01-095 (Adult,
+/// Thorax)` -> `Adult`, `Thorax`, split at commas, leaving out those that
+/// only repeat the patient's name, ID or code (`P01-096 (P01-096)`, the
+/// ID that ends a row with no name given).
+fn patient_words(p: &PatientEntry) -> Vec<String> {
+    let title = p.title();
+    let t = title.trim_end();
+    let Some(inner) = t
+        .strip_suffix(')')
+        .and_then(|t| t.rfind('(').map(|i| (&t[..i], &t[i + 1..])))
+    else {
+        return Vec::new();
+    };
+    let (head, words) = inner;
+    let same = |w: &str| {
+        [head, p.name.as_str(), p.id.as_str(), p.key.as_str()]
+            .iter()
+            .any(|x| x.replace('^', " ").trim().eq_ignore_ascii_case(w))
+    };
+    let mut out: Vec<String> = Vec::new();
+    for w in words.split(',').map(str::trim) {
+        if !w.is_empty() && !same(w) && !out.iter().any(|x| x.eq_ignore_ascii_case(w)) {
+            out.push(w.to_string());
+        }
+    }
+    out
+}
+
+/// Which studies the tree shows: every one while nothing is picked, else
+/// those holding every picked facet (`all`) or one of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct StudyFilter {
+    pub picked: BTreeSet<Facet>,
+    pub all: bool,
+}
+
+impl Default for StudyFilter {
+    fn default() -> Self {
+        StudyFilter {
+            picked: BTreeSet::new(),
+            all: true,
+        }
+    }
+}
+
+impl StudyFilter {
+    fn is_off(&self) -> bool {
+        self.picked.is_empty()
+    }
+
+    fn keeps(&self, p: &PatientEntry, s: &StudyEntry) -> bool {
+        if self.all {
+            self.picked.iter().all(|f| f.holds(p, s))
+        } else {
+            self.is_off() || self.picked.iter().any(|f| f.holds(p, s))
+        }
+    }
+
+    /// `all studies`, `Pediatric + CT`, `MR or DX`, `4 kinds (all)`.
+    fn label(&self) -> String {
+        match self.picked.len() {
+            0 => "all studies".into(),
+            1..=3 => self
+                .picked
+                .iter()
+                .map(Facet::label)
+                .collect::<Vec<_>>()
+                .join(if self.all { " + " } else { " or " }),
+            n => format!("{n} kinds ({})", if self.all { "all" } else { "any" }),
+        }
+    }
+}
+
+/// What the studies of `tree` can be picked by: the 4D sets first, then
+/// the words of the patients' rows, then the modalities, each by name and
+/// with how many hold it - studies for the 4D sets and modalities,
+/// patients for the words. A patient in two cohorts counts once; a word
+/// written in two cases is one word, under its first spelling.
+fn facets(tree: &Tree) -> Vec<(Facet, usize)> {
+    let mut n: BTreeMap<Facet, usize> = BTreeMap::new();
+    let mut spelled: BTreeMap<String, String> = BTreeMap::new();
+    let (mut patients, mut studies) = (HashSet::new(), HashSet::new());
+    for p in tree.cohorts.iter().flat_map(|c| c.patients.iter()) {
+        let mut put = |f: Facet| *n.entry(f).or_default() += 1;
+        if patients.insert(p.key()) {
+            for w in patient_words(p) {
+                let w = spelled.entry(w.to_lowercase()).or_insert(w).clone();
+                put(Facet::Patient(w));
+            }
+        }
+        for s in p
+            .studies
+            .iter()
+            .filter(|s| studies.insert(s.study_uid.clone()))
+        {
+            for f in [Facet::FourD, Facet::ProbableFourD] {
+                if f.holds(p, s) {
+                    put(f);
+                }
+            }
+            let mods: BTreeSet<&str> = s
+                .modalities
+                .iter()
+                .map(|m| m.trim())
+                .filter(|m| !m.is_empty())
+                .collect();
+            for m in mods {
+                put(Facet::Modality(m.to_string()));
+            }
+        }
+    }
+    n.into_iter().collect()
 }
 
 /// The tree with only the studies `f` keeps (and the patients and cohorts
 /// left with one).
-fn filtered(tree: &Tree, f: FourdFilter) -> Tree {
-    if f == FourdFilter::All {
+fn filtered(tree: &Tree, f: &StudyFilter) -> Tree {
+    if f.is_off() {
         return tree.clone();
     }
     let mut t = tree.clone();
     for c in &mut t.cohorts {
         for p in &mut c.patients {
-            p.studies.retain(|s| f.keeps(s));
+            let whole = p.clone();
+            p.studies.retain(|s| f.keeps(&whole, s));
         }
         c.patients.retain(|p| !p.studies.is_empty());
     }
@@ -172,14 +295,19 @@ impl PacsWindow {
             renaming: None,
             new_cohort: None,
             confirm_remove: None,
-            fourd_filter: FourdFilter::All,
+            study_filter: StudyFilter::default(),
+            facets: Vec::new(),
         }
     }
 
     /// Take a new tree, keeping what is unfolded and selected where those
-    /// rows are still there.
+    /// rows are still there, and what is picked in the list beside 🔍 where
+    /// the new tree still offers it.
     fn set_tree(&mut self, tree: Tree) {
-        self.nodes = local_nodes(&filtered(&tree, self.fourd_filter));
+        self.facets = facets(&tree);
+        let offered: BTreeSet<&Facet> = self.facets.iter().map(|(f, _)| f).collect();
+        self.study_filter.picked.retain(|f| offered.contains(f));
+        self.nodes = local_nodes(&filtered(&tree, &self.study_filter));
         self.view.retain_known(&self.nodes);
         if self.view.expanded.is_empty() {
             // Cohorts open at first: the patients are what one looks for.
@@ -201,6 +329,8 @@ const TAGS_FILES: pick::Filter = pick::Filter {
 pub(super) enum PacsOutcome {
     /// A scan: the folders walked and the catalog brought up to date.
     Scanned(Tree),
+    /// The catalog as it was: the folders not walked.
+    Listed(Tree),
     Imported(ImportSummary, Tree),
     /// Objects written back into the PACS: how many, and where.
     Uploaded(usize, String, Tree),
@@ -377,7 +507,7 @@ enum Act {
     /// A 4D set: confirmed (`Some(true)`), rejected (`Some(false)`), or what
     /// was decided forgotten (`None`).
     Decide4d(String, Option<bool>),
-    Filter4d(FourdFilter),
+    Filter(StudyFilter),
     /// *Settings ▶ Export tags* / *Import tags*.
     TagsExport,
     TagsImport,
@@ -407,7 +537,20 @@ impl ViewerApp {
         if self.pacs.is_none() {
             let servers = self.reload_servers();
             self.pacs = Some(PacsWindow::new(servers));
-            self.start_pacs_scan();
+            if self.pacs_scan_on_open {
+                self.start_pacs_scan();
+            } else {
+                // What the catalog last saw, at once; a PACS with no
+                // catalog yet is walked all the same, or there is nothing
+                // to show.
+                self.pacs_job_with("Reading the catalog", |a, p| {
+                    if a.catalog_path().is_file() {
+                        Ok(PacsOutcome::Listed(a.tree()))
+                    } else {
+                        a.scan_tree(p).map(PacsOutcome::Scanned)
+                    }
+                });
+            }
         }
     }
 
@@ -498,6 +641,15 @@ impl ViewerApp {
                 ));
                 w.set_tree(tree);
             }
+            PacsOutcome::Listed(tree) => {
+                w.status = Some(format!(
+                    "{}, {}, {} - as the catalog last saw them; ⟲ Rescan looks in the folders",
+                    count(tree.cohorts.len(), "cohort", "cohorts"),
+                    count(tree.patients().len(), "patient", "patients"),
+                    count(tree.studies(), "study", "studies")
+                ));
+                w.set_tree(tree);
+            }
             PacsOutcome::Imported(sum, tree) => {
                 w.status = Some(format!("✔ imported: {}", sum.describe()));
                 w.set_tree(tree);
@@ -546,6 +698,7 @@ impl ViewerApp {
         let server_busy = self.pacs_server_job.is_some();
         let server_msg = self.pacs_server_job.as_ref().map(|j| j.progress.get());
         let mut server_clicks = None;
+        let mut scan_on_open = self.pacs_scan_on_open;
 
         detach::tool_window(
             ctx,
@@ -564,11 +717,15 @@ impl ViewerApp {
                             acts.push(Act::Page(Page::Storage));
                             ui.close();
                         }
+                        ui.checkbox(&mut scan_on_open, "⟲ Rescan the folders on opening")
+                            .on_hover_text(
+                                "Look through the storage folders for new and changed files                                  each time this window is first opened. Off: the PACS is listed                                  at once as the catalog last saw it, and the folders are read                                  only on ⟲ Rescan (and when there is no catalog yet).",
+                            );
                         ui.separator();
                         if tip_button(
                             ui,
                             "📤 Export tags…",
-                            "Write the names given to patients, studies and series, the                              cohorts and who is in which, and the 4D groups decided by hand                              into a JSON file, to take them to another station",
+                            "Write the names given to patients, studies and series, the cohorts and who is in which, and the 4D groups decided by hand into a JSON file, to take them to another station",
                         ) {
                             acts.push(Act::TagsExport);
                             ui.close();
@@ -576,7 +733,7 @@ impl ViewerApp {
                         if tip_button(
                             ui,
                             "📥 Import tags…",
-                            "Merge a file of tags from another station into this PACS:                              names go to the patients, studies and series held here,                              cohorts are found by name or made, 4D decisions kept; what                              is not held here is counted and left",
+                            "Merge a file of tags from another station into this PACS: names go to the patients, studies and series held here, cohorts are found by name or made, 4D decisions kept; what is not held here is counted and left",
                         ) {
                             acts.push(Act::TagsImport);
                             ui.close();
@@ -675,6 +832,10 @@ impl ViewerApp {
             },
         );
 
+        if scan_on_open != self.pacs_scan_on_open {
+            self.pacs_scan_on_open = scan_on_open;
+            self.persist_settings();
+        }
         if !open {
             // Closing the window stops asking the server how it is.
             self.pacs_server = None;
@@ -805,9 +966,9 @@ impl ViewerApp {
                     });
                 });
             }
-            Act::Filter4d(f) => {
+            Act::Filter(f) => {
                 if let Some(w) = self.pacs.as_mut() {
-                    w.fourd_filter = f;
+                    w.study_filter = f;
                     if let Some(t) = w.tree.take() {
                         w.set_tree(t);
                     }
@@ -1116,6 +1277,82 @@ fn put_in(a: &Archive, members: &[(String, String)], to: &str, copy: bool) -> an
     Ok(())
 }
 
+/// The list beside 🔍: what the last scan found the studies to hold (4D
+/// sets, then the modalities of their series), ticked as many as wanted;
+/// it stays open while ticking, so several are picked in one visit.
+fn study_filter_list(ui: &mut egui::Ui, w: &PacsWindow, acts: &mut Vec<Act>) {
+    let mut f = w.study_filter.clone();
+    egui::ComboBox::from_id_salt("pacs_study_filter")
+        .selected_text(f.label())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            if w.facets.is_empty() {
+                ui.weak("Nothing scanned yet");
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.label("Studies with");
+                ui.selectable_value(&mut f.all, true, "all")
+                    .on_hover_text("Every ticked kind: CT + RTSTRUCT is a study holding both");
+                ui.selectable_value(&mut f.all, false, "any")
+                    .on_hover_text("One of the ticked kinds at least: MR or DX");
+                ui.label("of:");
+            });
+            ui.separator();
+            // The 4D sets, the patients' words, the modalities: a line
+            // between the groups.
+            let group = |x: &Facet| match x {
+                Facet::FourD | Facet::ProbableFourD => 0,
+                Facet::Patient(_) => 1,
+                Facet::Modality(_) => 2,
+            };
+            let mut last = None;
+            for (x, n) in &w.facets {
+                if last.is_some_and(|g| g != group(x)) {
+                    ui.separator();
+                }
+                last = Some(group(x));
+                let mut on = f.picked.contains(x);
+                let r = ui.checkbox(&mut on, format!("{}  ({n})", x.label()));
+                let r = match x {
+                    Facet::FourD => r.on_hover_text("A 4DCT the catalog found from the headers"),
+                    Facet::ProbableFourD => r.on_hover_text(
+                        "One geometry and nothing else says 4D: to confirm or reject",
+                    ),
+                    Facet::Patient(_) => r.on_hover_text(
+                        "Every study of the patients whose row says this in its brackets \
+                         (the count is of patients)",
+                    ),
+                    Facet::Modality(_) => r,
+                };
+                if r.changed() {
+                    if on {
+                        f.picked.insert(x.clone());
+                    } else {
+                        f.picked.remove(x);
+                    }
+                }
+            }
+            ui.separator();
+            if ui
+                .add_enabled(!f.picked.is_empty(), egui::Button::new("Show all studies"))
+                .clicked()
+            {
+                f.picked.clear();
+            }
+        })
+        .response
+        .on_hover_text(
+            "Only the studies holding what is ticked: a 4DCT as the catalog finds it from the \
+             headers, a word in the brackets of their patient's row (Adult, Phantom, Female, \
+             ...), or a modality one of their series has. The kinds offered are those the last \
+             scan found, with how many hold each.",
+        );
+    if f != w.study_filter {
+        acts.push(Act::Filter(f));
+    }
+}
+
 /// The body for this station's PACS: the buttons, the tree, the bars that
 /// ask for a name or a confirmation, and the load row.
 fn local_body(
@@ -1166,22 +1403,7 @@ fn local_body(
                 .hint_text("🔍 find a patient, study or series")
                 .desired_width(220.0),
         );
-        let mut f = w.fourd_filter;
-        egui::ComboBox::from_id_salt("pacs_fourd_filter")
-            .selected_text(f.label())
-            .show_ui(ui, |ui| {
-                for x in [FourdFilter::All, FourdFilter::Has, FourdFilter::Probable] {
-                    ui.selectable_value(&mut f, x, x.label());
-                }
-            })
-            .response
-            .on_hover_text(
-                "Only the studies holding a 4DCT, as the catalog finds it from the headers \
-                 (probable: one geometry and nothing else says 4D, to confirm or reject)",
-            );
-        if f != w.fourd_filter {
-            acts.push(Act::Filter4d(f));
-        }
+        study_filter_list(ui, w, acts);
     });
     if let Some(p) = job_progress {
         progress_row(ui, p);
@@ -1721,4 +1943,138 @@ fn move_page(ui: &mut egui::Ui, d: &mut MoveDialog, busy: bool, acts: &mut Vec<A
             None => ui.weak("choose a folder"),
         };
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::archive::fourd::StudyFourD;
+    use crate::archive::CohortEntry;
+
+    fn study(uid: &str, mods: &[&str], fourd: Option<bool>) -> StudyEntry {
+        StudyEntry {
+            study_uid: uid.into(),
+            modalities: mods.iter().map(|m| m.to_string()).collect(),
+            fourd: fourd
+                .map(|confirmed| StudyFourD {
+                    confirmed,
+                    ..Default::default()
+                })
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn tree() -> Tree {
+        // A name given with words in brackets, a header's `name (ID)`
+        // (nothing to offer), and words in another case.
+        let p = |key: &str, label: &str, studies: Vec<StudyEntry>| PatientEntry {
+            key: key.into(),
+            name: key.to_uppercase(),
+            id: key.to_uppercase(),
+            label: label.into(),
+            studies,
+            ..Default::default()
+        };
+        let both = p(
+            "p1",
+            "P1 (Adult, Male, Thorax)",
+            vec![study("1", &["CT", "RTSTRUCT"], Some(true))],
+        );
+        Tree {
+            cohorts: vec![
+                CohortEntry {
+                    id: "a".into(),
+                    patients: vec![both.clone(), p("p2", "", vec![study("2", &["MR"], None)])],
+                    ..Default::default()
+                },
+                CohortEntry {
+                    id: "b".into(),
+                    // p1 again in a second cohort: their study counts once.
+                    patients: vec![
+                        both,
+                        p(
+                            "p3",
+                            "Mattia (Phantom, male, P3)",
+                            vec![study("3", &["DX", "CT", ""], Some(false))],
+                        ),
+                    ],
+                    ..Default::default()
+                },
+            ],
+        }
+    }
+
+    fn uids(t: &Tree) -> BTreeSet<String> {
+        t.cohorts
+            .iter()
+            .flat_map(|c| c.patients.iter())
+            .flat_map(|p| p.studies.iter())
+            .map(|s| s.study_uid.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_scan_offers_what_the_studies_hold_and_several_can_be_picked() {
+        let t = tree();
+        let m = |s: &str| Facet::Modality(s.into());
+        let w = |s: &str| Facet::Patient(s.into());
+        assert_eq!(
+            facets(&t),
+            vec![
+                (Facet::FourD, 1),
+                (Facet::ProbableFourD, 1),
+                (w("Adult"), 1),
+                (w("Male"), 2),
+                (w("Phantom"), 1),
+                (w("Thorax"), 1),
+                (m("CT"), 2),
+                (m("DX"), 1),
+                (m("MR"), 1),
+                (m("RTSTRUCT"), 1),
+            ]
+        );
+        let pick = |all: bool, fs: &[Facet]| StudyFilter {
+            picked: fs.iter().cloned().collect(),
+            all,
+        };
+        let shown = |f: &StudyFilter| uids(&filtered(&t, f));
+        let set = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+        assert_eq!(shown(&StudyFilter::default()), set(&["1", "2", "3"]));
+        assert_eq!(shown(&pick(true, &[m("CT")])), set(&["1", "3"]));
+        assert_eq!(shown(&pick(true, &[m("CT"), m("RTSTRUCT")])), set(&["1"]));
+        assert_eq!(shown(&pick(false, &[m("MR"), m("DX")])), set(&["2", "3"]));
+        assert_eq!(shown(&pick(true, &[m("MR"), m("DX")])), set(&[]));
+        assert_eq!(shown(&pick(true, &[Facet::ProbableFourD])), set(&["3"]));
+        assert_eq!(shown(&pick(true, &[w("Male")])), set(&["1", "3"]));
+        assert_eq!(shown(&pick(true, &[w("Male"), m("DX")])), set(&["3"]));
+        assert_eq!(
+            shown(&pick(false, &[w("Adult"), m("MR")])),
+            set(&["1", "2"])
+        );
+        // Cohorts and patients left with no study go too.
+        let f = filtered(&t, &pick(true, &[m("MR")]));
+        assert_eq!(f.cohorts.len(), 1);
+        assert_eq!(f.cohorts[0].patients.len(), 1);
+        assert_eq!(
+            pick(true, &[m("CT"), m("RTSTRUCT")]).label(),
+            "CT + RTSTRUCT"
+        );
+        assert_eq!(pick(false, &[m("MR"), m("DX")]).label(), "DX or MR");
+    }
+
+    #[test]
+    fn a_new_scan_drops_what_it_no_longer_offers() {
+        let mut w = PacsWindow::new(Servers::default());
+        w.study_filter.picked = [Facet::Modality("MR".into()), Facet::Modality("PT".into())]
+            .into_iter()
+            .collect();
+        w.set_tree(tree());
+        assert_eq!(
+            w.study_filter.picked,
+            [Facet::Modality("MR".into())].into_iter().collect()
+        );
+        assert_eq!(w.nodes.len(), 1, "only the cohort holding the MR study");
+    }
 }

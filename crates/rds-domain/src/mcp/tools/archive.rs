@@ -614,12 +614,14 @@ pub fn describe_archive_study(core: &mut Core, a: ArchiveStudyArgs, p: &Progress
                 FileClass::Projection
                     | FileClass::Additional
                     | FileClass::Report
+                    | FileClass::Presentation
                     | FileClass::Other
             ) {
                 v["shown_in"] = json!(match class {
                     FileClass::Projection => "a planar pane",
                     FileClass::Report if pdf => "the Additional pane, as its pages",
                     FileClass::Report => "the Additional pane, as a table",
+                    FileClass::Presentation => "planar structures: its graphics as 2D contours",
                     FileClass::Other => "nowhere: it is left out when the study is loaded",
                     _ => "the Additional pane",
                 });

@@ -84,6 +84,58 @@ impl Image2d {
         }
     }
 
+    /// Bilinear value at pixel `(x, y)` (centre of the first pixel at `(0,
+    /// 0)`); `None` outside the pixel centres' hull, half a pixel short of
+    /// the raster's edge.
+    #[inline]
+    pub fn sample(&self, x: f64, y: f64) -> Option<f32> {
+        let [w, h] = self.dims;
+        if !(x >= 0.0 && y >= 0.0 && x <= (w - 1) as f64 && y <= (h - 1) as f64) {
+            return None;
+        }
+        Some(self.sample_clamped(x, y))
+    }
+
+    /// Bilinear value at `(x, y)`, the position first clamped onto the
+    /// raster: outside, the nearest edge.
+    #[inline]
+    pub fn sample_clamped(&self, x: f64, y: f64) -> f32 {
+        self.sample_with_gradient(x, y).0
+    }
+
+    /// Bilinear value and its gradient `(∂/∂x, ∂/∂y)` per pixel at `(x,
+    /// y)`, clamped onto the raster (outside, the gradient across the edge
+    /// is zero).
+    #[inline]
+    pub fn sample_with_gradient(&self, x: f64, y: f64) -> (f32, f32, f32) {
+        let [w, h] = self.dims;
+        if w == 0 || h == 0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let (mx, my) = ((w - 1) as f64, (h - 1) as f64);
+        let (cx, cy) = (x.clamp(0.0, mx), y.clamp(0.0, my));
+        let (i0, j0) = (
+            (cx.floor() as usize).min(w.saturating_sub(2)),
+            (cy.floor() as usize).min(h.saturating_sub(2)),
+        );
+        let (i1, j1) = ((i0 + 1).min(w - 1), (j0 + 1).min(h - 1));
+        let (fx, fy) = ((cx - i0 as f64) as f32, (cy - j0 as f64) as f32);
+        let at = |i: usize, j: usize| self.data[j * w + i];
+        let (a, b, c, d) = (at(i0, j0), at(i1, j0), at(i0, j1), at(i1, j1));
+        let top = a + (b - a) * fx;
+        let bot = c + (d - c) * fx;
+        let v = top + (bot - top) * fy;
+        let inside_x = x >= 0.0 && x <= mx && i1 != i0;
+        let inside_y = y >= 0.0 && y <= my && j1 != j0;
+        let gx = if inside_x {
+            (b - a) * (1.0 - fy) + (d - c) * fy
+        } else {
+            0.0
+        };
+        let gy = if inside_y { bot - top } else { 0.0 };
+        (v, gx, gy)
+    }
+
     /// The same image with the sign of every pixel turned.
     pub fn negate(&mut self) {
         for v in &mut self.data {

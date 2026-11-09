@@ -2179,6 +2179,17 @@ impl ViewerApp {
         if grow_done {
             self.commit_grow();
         }
+        // A stroke in an MPR view makes the volume the tools' target again
+        // (a planar pane made itself the target with its last stroke).
+        if draw_click.is_some()
+            || draw_drag.is_some()
+            || cbrush_to.is_some()
+            || nudge_to.is_some()
+            || pick_at.is_some()
+            || paint_to.is_some()
+        {
+            self.planar2d.target = None;
+        }
         if let Some(v) = pick_at {
             self.pick_roi_at(slot, plane, v);
         }

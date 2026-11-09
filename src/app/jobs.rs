@@ -1030,6 +1030,9 @@ impl ViewerApp {
             self.on_reg2d3d_done(out);
         }
 
+        // Poll a projection of structures onto planar images.
+        self.poll_planar_jobs(ctx);
+
         // Poll a DRR rendering.
         match poll_job(&mut self.drr_job, ctx, "DRR", &mut self.error) {
             Some(Ok(run)) => self.on_drr_done(run),

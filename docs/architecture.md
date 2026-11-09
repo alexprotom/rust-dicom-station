@@ -396,6 +396,10 @@ src/
     reg_shape.rs      its Align by structures sub-section: the structures
                       both images carry, paired and weighted, the run, the
                       per-structure report
+    reg2d.rs          its 2D/2D registration sub-section: the fixed and moving
+                      planar images, the method, the pairs and the Place tool,
+                      the run, the moved copy stacked over the fixed image,
+                      carrying contours, the setup from two matches
     reg2d3d.rs        its 2D/3D registration sub-section: the radiographs and
                       their geometry, the isocentre, the region, the method,
                       the run, the result rows, the nudge, the positioned
@@ -419,6 +423,16 @@ src/
                       fade, checkerboard, difference, edges or flicker,
                       with a window per image, zoom and pan; showing an image
                       from the tree puts its pane into the row
+    planar_contours.rs the 2D contours over a planar pane's stack, the
+                      projection job, saving a set as a presentation state
+    planar_tools.rs   the contour tools on a planar pane (the planar target of
+                      the Draw structure row): strokes in the image's pixels,
+                      the Auto / Extend / Subtract rule, brush, nudge, live
+                      wire, undo, the preview
+    project_win.rs    the Project structures dialog (structures, images, pose,
+                      the set)
+    tree_planar_structs.rs the Planar structures and 2D registrations
+                      sections of the data tree
     report_view.rs    a report in the Additional pane: its facts, lines and
                       tables, the page behind a toggle
     object_view.rs    a registration or a treatment record in the Additional
@@ -606,6 +620,14 @@ src/
                     table (siemens.rs), encapsulated PDFs
                     drawn page by page with hayro (document.rs), and
                     Report / Table                                              DICOM
+  planar_structs.rs planar structure sets: 2D contours on planar images by
+                    SOP Instance UID, the silhouette projection of a
+                    structure through a camera (closed rings), carrying a
+                    contour through a 2D/2D registration                         DICOM
+  gsps.rs           a planar structure set as a Grayscale Softcopy
+                    Presentation State, written and read (POLYLINE,
+                    INTERPOLATED, CIRCLE, ELLIPSE, POINT; PIXEL and DISPLAY
+                    units)                                                       DICOM
   dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
                     its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
                     and rigid Spatial Registration, RT Image with its
@@ -681,6 +703,10 @@ src/
     metric2d.rs       2D images, pyramids and masks; NCC, gradient
                       correlation, gradient difference, pattern intensity,
                       local NCC, Mattes MI
+    planar.rs         2D/2D registration: the millimetre frames, the similarity
+                      and the B-spline warp and their inverses, the resampler,
+                      intensity / points / markers / deformable (MSD, Mattes
+                      MI, bending energy, L-BFGS), the moved copy
     projective.rs     2D/3D registration by intensity: polarity, the in-plane
                       search and the grid, coarse to fine over posed
                       renderings, the curvature check, the readouts
@@ -766,6 +792,7 @@ src/
                         transfer, copy-to-phases, DVH, dose, archive-import
                         and DRR steps
       nodes/setup.rs    the 2D/3D registration and positioned copy steps
+      nodes/planar.rs   the 2D/2D registration and projection steps
       store.rs          the user's workflow folder, load / save, the recent
                         list, the examples compiled in
 

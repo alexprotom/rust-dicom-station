@@ -259,6 +259,22 @@ the same way.
   them as RT Images to load with the CT. `--bench` times the projector,
   with and without the empty-block skipping, `--device gpu` puts it (and the registration's renderings) on the GPU.
 
+### 2D contours and setups from 2D matches
+
+The *Outlines* fold's *⇩ As 2D contours* projects the ticked structures
+onto the setup's radiographs at the setup's pose and files them as a planar
+structure set: real 2D contours, edited with the contour tools, carried by
+a 2D/2D registration, saved as a presentation state. The live outlines are
+the same silhouettes (`setup::silhouette` wraps
+`planar_structs::project_mask`: the half-level surface of the mask, closed
+rings, where it used to be any ray that met a voxel's interpolation - a
+tighter outline by about half a voxel). A setup can also be read from two
+2D/2D matches of two placed views (`setup::from_planar`, method `planar`,
+*2D matches*): the in-plane start of this engine, lifted out as
+`projective::translation_from_shifts`, turns the matches' shifts into the
+translation, `rotation_from_rolls` their rolls into the rotation. See
+[planar-2d.md](planar-2d.md).
+
 ## Validation
 
 `tests/registration_2d3d.rs` (run with `--release`) on a torso phantom

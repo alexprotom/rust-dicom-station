@@ -884,6 +884,75 @@ fn radiographs_register_to_the_ct_and_export() {
     );
     let s = call(c, "describe_session", json!({}));
     assert_eq!(s["setups"][0]["setup"], "setup1");
+
+    // The target projected onto both radiographs at the plan, then at the
+    // setup's pose; each radiograph matched in 2D against its DRR at the
+    // answer (images 3 and 4), the two matches read as a setup.
+    let pr = call(
+        c,
+        "project_structures",
+        json!({"dataset": "ds1", "series": 1, "structures": ["TARGET"], "images": ["1", "2"]}),
+    );
+    let st = &pr["structures"][0];
+    assert_eq!(st["name"], "TARGET", "{pr}");
+    assert_eq!(st["contours"].as_array().unwrap().len(), 2, "{pr}");
+    assert!(
+        st["contours"][0]["area_mm2"].as_f64().unwrap() > 100.0,
+        "{pr}"
+    );
+    let at = call(
+        c,
+        "project_structures",
+        json!({"dataset": "ds1", "series": 1, "structures": ["TARGET"], "images": ["1"],
+               "pose": "setup1"}),
+    );
+    assert_eq!(at["number"], 2, "a set of its own: {at}");
+    let dr = call(
+        c,
+        "draw_planar_structure",
+        json!({"dataset": "ds1", "image": "1", "set": "1", "name": "MARK",
+               "polygons": [[[10.0, 10.0], [30.0, 10.0], [30.0, 30.0], [10.0, 30.0]]]}),
+    );
+    assert_eq!(dr["structures"].as_array().unwrap().len(), 2, "{dr}");
+    for (f, m) in [("1", "3"), ("2", "4")] {
+        let r = call(
+            c,
+            "register_planar",
+            json!({"dataset": "ds1", "fixed": f, "moving": m, "metric": "ncc", "pixels": 96,
+                   "dof": "shift", "levels": 2}),
+        );
+        assert!(
+            r["after"].as_f64().unwrap() >= r["before"].as_f64().unwrap() - 1e-9,
+            "{r}"
+        );
+        assert!(r["moved_copy_image"].as_u64().is_some(), "{r}");
+    }
+    let _ = fail(
+        c,
+        "carry_planar_structures",
+        json!({"dataset": "ds1", "registration": "9"}),
+    );
+    let su = call(
+        c,
+        "setup_from_planar",
+        json!({"dataset": "ds1", "series": 1, "registrations": ["1", "2"]}),
+    );
+    assert_eq!(su["setup"], "setup2", "{su}");
+    assert_eq!(su["result"]["method"], "planar", "{su}");
+    let ls = call(c, "list_planar_structures", json!({"dataset": "ds1"}));
+    assert_eq!(ls["registrations"].as_array().unwrap().len(), 2);
+    let sv = call(
+        c,
+        "save_planar_structures",
+        json!({"dataset": "ds1", "set": "1"}),
+    );
+    let files: Vec<&str> = sv["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert!(files.iter().any(|f| f.starts_with("gsps_")), "{sv}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

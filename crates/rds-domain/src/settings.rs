@@ -39,6 +39,8 @@ const MODULE_SYNTH_KEY: &str = "module_image_synthesis";
 const MODULES_OPEN_KEY: &str = "modules_open";
 /// Whether the row of buttons on each pane is folded away.
 const PANE_BUTTONS_KEY: &str = "pane_buttons";
+/// Whether opening the PACS window walks its storage folders.
+const PACS_SCAN_ON_OPEN_KEY: &str = "pacs_scan_on_open";
 
 /// Settings keys of the last session's sources, one per workspace. The paths
 /// are separated by `|`, which no path on any supported system contains.
@@ -325,6 +327,13 @@ pub struct Settings {
     /// The PACS's other storage folders, read and listed like the main one.
     pub archive_more: Vec<PathBuf>,
 
+    /// Opening the PACS window walks the storage folders for new and
+    /// changed files (*Rescan*). Off: the window lists what the catalog
+    /// last saw at once, and the folders are walked on *Rescan* only (or
+    /// when there is no catalog yet). On for a fresh installation, as the
+    /// window always did.
+    pub pacs_scan_on_open: bool,
+
     /// The modules switched on in the *Modules* menu, each a section of the
     /// right panel.
     pub modules: std::collections::BTreeSet<Module>,
@@ -386,6 +395,7 @@ impl Default for Settings {
             models_dir: None,
             archive_dir: None,
             archive_more: Vec::new(),
+            pacs_scan_on_open: true,
             // Every module off on a fresh installation: the right panel is
             // not there at all until one is asked for, so a first run opens
             // on the images and nothing else. The Modules menu says what
@@ -1120,6 +1130,10 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .collect();
+        } else if key.eq_ignore_ascii_case(PACS_SCAN_ON_OPEN_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.pacs_scan_on_open = b;
+            }
         } else if key.eq_ignore_ascii_case(PANE_BUTTONS_KEY) {
             // The file says what is *shown*, which reads better by hand than
             // a double negative; the field holds the other way round.
@@ -1182,6 +1196,11 @@ fn render(s: &Settings) -> String {
     for dir in &s.archive_more {
         out.push_str(&format!("{ARCHIVE_MORE_KEY} = {}\n", dir.display()));
     }
+    out.push_str(&format!(
+        "# walk the PACS folders when its window opens = on | off\n\
+         {PACS_SCAN_ON_OPEN_KEY} = {}\n",
+        bool_to_str(s.pacs_scan_on_open)
+    ));
     out.push_str("# optional modules-panel sections (Modules menu) = on | off\n");
     for m in Module::ALL {
         out.push_str(&format!(
@@ -1827,6 +1846,20 @@ mod tests {
             }))
             .pane_buttons_hidden,
             "and it survives a write and a read"
+        );
+    }
+
+    #[test]
+    fn the_pacs_is_scanned_on_opening_unless_told_not_to() {
+        assert!(Settings::default().pacs_scan_on_open);
+        assert!(!parse(&format!("{PACS_SCAN_ON_OPEN_KEY} = off")).pacs_scan_on_open);
+        assert!(
+            !parse(&render(&Settings {
+                pacs_scan_on_open: false,
+                ..Settings::default()
+            }))
+            .pacs_scan_on_open,
+            "it survives a write and a read"
         );
     }
 }

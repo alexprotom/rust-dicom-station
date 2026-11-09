@@ -21,6 +21,8 @@ impl ViewerApp {
         node: &StudyNode,
     ) {
         self.planar_kind_section(ui, slot, at, PlanarKind::Projection, &node.planar);
+        self.planar_structs_section(ui, slot, at, node);
+        self.planar_regs_section(ui, slot, at, node);
         self.planar_kind_section(ui, slot, at, PlanarKind::Additional, &node.additional);
     }
 
@@ -80,6 +82,7 @@ impl ViewerApp {
         let mut rename: Option<RenameTarget> = None;
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
+        let mut project: Option<usize> = None;
         let current = self.tree_focus.clone();
         let panes: Vec<Vec<usize>> = images
             .iter()
@@ -187,6 +190,27 @@ impl ViewerApp {
                             }
                         }
                         ui.separator();
+                        if kind == PlanarKind::Projection {
+                            let placed = img.camera.is_some()
+                                || study.setups.iter().any(|s| s.images.contains(&i));
+                            if ui
+                                .add_enabled(
+                                    placed && study.has_volume(),
+                                    egui::Button::new("⇩ Project structures"),
+                                )
+                                .on_hover_text("The CT's structures on this image, as 2D contours")
+                                .on_disabled_hover_text(if placed {
+                                    "the workspace has no CT"
+                                } else {
+                                    "no geometry"
+                                })
+                                .clicked()
+                            {
+                                project = Some(i);
+                                ui.close();
+                            }
+                            ui.separator();
+                        }
                         if Self::rename_entry(ui) {
                             rename = Some(RenameTarget::Planar { slot, idx: i });
                             ui.close();
@@ -212,6 +236,17 @@ impl ViewerApp {
         }
         if focus.is_some() {
             self.tree_focus = focus;
+        }
+        if let Some(i) = project {
+            // At the setup that placed it when its own camera does not.
+            let pose = self.slots[slot]
+                .study
+                .as_ref()
+                .filter(|st| st.planar_images.get(i).is_some_and(|p| p.camera.is_none()))
+                .and_then(|st| st.setups.iter().rposition(|s| s.images.contains(&i)))
+                .map(crate::planar_structs::PoseChoice::Setup)
+                .unwrap_or_default();
+            self.open_project_prompt(slot, &[i], pose, None);
         }
         let Some(a) = act else { return };
         match a {

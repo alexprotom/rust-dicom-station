@@ -741,6 +741,57 @@ impl MuVolume {
         acc * h as f32
     }
 
+    /// The largest trilinear sample on the segment from `a` to `b` at a step
+    /// of about `step_mm`: the maximum intensity along a ray. Of a 0/1 mask
+    /// ([`MuVolume::from_mask`]) it is at least one half exactly where the
+    /// ray crosses the mask's half-level surface, which makes `>= 0.5` the
+    /// silhouette of the surface marching cubes would draw, neither the
+    /// voxels' centres nor their outer faces.
+    pub fn max_along(&self, a: Vec3, b: Vec3, step_mm: f64) -> f32 {
+        let ia = self.to_index(a);
+        let ib = self.to_index(b);
+        let d = ib - ia;
+        let (av, dv) = ([ia.x, ia.y, ia.z], [d.x, d.y, d.z]);
+        let mut t0 = 0.0f64;
+        let mut t1 = 1.0f64;
+        for ax in 0..3 {
+            let hi = (self.dims[ax].max(1) - 1) as f64;
+            if dv[ax].abs() < 1e-12 {
+                if av[ax] < 0.0 || av[ax] > hi {
+                    return 0.0;
+                }
+                continue;
+            }
+            let mut ta = (0.0 - av[ax]) / dv[ax];
+            let mut tb = (hi - av[ax]) / dv[ax];
+            if ta > tb {
+                std::mem::swap(&mut ta, &mut tb);
+            }
+            t0 = t0.max(ta);
+            t1 = t1.min(tb);
+            if t0 >= t1 {
+                return 0.0;
+            }
+        }
+        let span_mm = (t1 - t0) * (b - a).length();
+        if span_mm <= 0.0 {
+            return 0.0;
+        }
+        let n = ((span_mm / step_mm.max(1e-3)).ceil() as usize).max(1);
+        let dt = (t1 - t0) / n as f64;
+        let mut best = 0.0f32;
+        for s in 0..=n {
+            let t = t0 + dt * s as f64;
+            let v = self.sample(
+                (av[0] + dv[0] * t) as f32,
+                (av[1] + dv[1] * t) as f32,
+                (av[2] + dv[2] * t) as f32,
+            );
+            best = best.max(v);
+        }
+        best
+    }
+
     /// The same volume marched without skipping empty space: every step
     /// sampled. The same renderings to the bit, slower; what the skipping
     /// is measured (`reg2d3d_cli --bench`) and proved against.

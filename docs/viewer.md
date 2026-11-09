@@ -1025,6 +1025,18 @@ The section is closed by default when there is a volume beside it and open
 when there is not. A multi-frame image is loaded with its first frame shown
 when it stands alone; as part of a volume series it is reported as a warning.
 
+### Planar structures and 2D registrations
+
+Under *Planar images*, *Planar structures (n)* lists the workspace's
+planar structure sets - 2D contours drawn on the panes, projected from the
+CT's structures (*⇩ Project structures* in a planar image's menu), carried
+by a 2D/2D registration, or read from presentation states found in the
+folder - each structure with its tick, colour and menu; *2D registrations
+(n)* lists the 2D/2D registrations whose fixed image is in the study (a
+click shows the fixed image with the moved copy over it). The panes draw
+the contours of every image of their stack, the image under the scrubber in
+full colour. See [planar-2d.md](planar-2d.md).
+
 ### Reports
 
 A CT study carries, beside its images, what the scanner wrote about them,

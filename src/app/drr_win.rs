@@ -54,6 +54,9 @@ pub(super) struct DrrState {
     /// The station's calibrated rooms, read the first time they are asked
     /// for, and why they could not be read.
     pub rooms: Option<(crate::rooms::RoomsFile, Option<String>)>,
+    /// The structures projected onto every rendering as 2D contours, by
+    /// name ([`crate::planar_structs`]).
+    pub project: Vec<String>,
 }
 
 impl DrrState {
@@ -70,6 +73,7 @@ impl DrrState {
             last_panes: Vec::new(),
             camera_from: None,
             rooms: None,
+            project: Vec::new(),
         }
     }
 
@@ -214,7 +218,10 @@ impl ViewerApp {
         };
         let mut filed = Vec::new();
         let study_uid = study.displayed_study_uid();
+        // One series for the renderings of one run.
+        let series_uid = crate::dicom_export::new_uid();
         for mut img in made {
+            img.series_instance_uid = series_uid.clone();
             img.frame_of_reference_uid = run.for_uid.clone();
             // Under the study of the CT it was rendered from.
             img.study_uid = study_uid.clone();
@@ -256,6 +263,24 @@ impl ViewerApp {
             s != run.slot || !matches!(k, PaneKind::Planar(_) | PaneKind::Additional)
         }) {
             self.maximized = None;
+        }
+        // The ticked structures onto the renderings (not their difference).
+        let project = self
+            .drr
+            .as_ref()
+            .map(|d| d.project.clone())
+            .unwrap_or_default();
+        if !project.is_empty() {
+            self.start_projection(
+                run.slot,
+                crate::planar_structs::ProjectRequest {
+                    structures: project,
+                    images: filed.iter().take(shown).copied().collect(),
+                    pose: crate::planar_structs::PoseChoice::AsIs,
+                    label: String::new(),
+                },
+                None,
+            );
         }
         if let Some(d) = &mut self.drr {
             d.comparison = comparison;
@@ -611,6 +636,48 @@ impl ViewerApp {
                          the line integral itself, bright where attenuation is high.",
                     );
             });
+
+        // Structures projected onto the renderings as 2D contours.
+        let names: Vec<(String, [u8; 3])> = self.slots[d.slot]
+            .study
+            .as_ref()
+            .map(|st| {
+                let mut v: Vec<(String, [u8; 3])> = Vec::new();
+                for e in crate::workflow::select::list(st) {
+                    if !v.iter().any(|(n, _)| *n == e.name) {
+                        v.push((e.name, e.color));
+                    }
+                }
+                v
+            })
+            .unwrap_or_default();
+        if !names.is_empty() {
+            d.project.retain(|n| names.iter().any(|(m, _)| m == n));
+            egui::CollapsingHeader::new(if d.project.is_empty() {
+                "Structures".to_string()
+            } else {
+                format!("Structures ({})", d.project.len())
+            })
+            .id_salt("drr_project")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.weak("Projected onto every rendering as 2D contours");
+                egui::ScrollArea::vertical()
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        for (name, _) in &names {
+                            let mut on = d.project.contains(name);
+                            if ui.checkbox(&mut on, name.as_str()).changed() {
+                                if on {
+                                    d.project.push(name.clone());
+                                } else {
+                                    d.project.retain(|n| n != name);
+                                }
+                            }
+                        }
+                    });
+            });
+        }
 
         ui.separator();
         match &self.drr_job {

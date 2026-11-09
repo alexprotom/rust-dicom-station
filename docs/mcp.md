@@ -209,6 +209,16 @@ for a STAR case, and the documentation pages on registration, propagation,
 4D motion, DVH and structure algebra are served as resources so the assistant
 can read what the numbers mean.
 
+### Planar images
+
+`project_structures` (structures onto planar images as 2D contours, at the
+plan or at a setup), `list_planar_structures`, `draw_planar_structure`
+(polygons in pixels), `register_planar` (2D/2D: intensity, points,
+markers, deformable), `carry_planar_structures`, `setup_from_planar` (two
+matches as one 3D correction, a setup handle) and `save_planar_structures`
+(a Grayscale Softcopy Presentation State and the RT Images it needs, file
+names without labels). See [planar-2d.md](planar-2d.md).
+
 ## Patient identity never leaves
 
 Whatever the server answers ends up in a language model's context, and for

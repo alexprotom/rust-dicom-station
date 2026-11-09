@@ -481,7 +481,7 @@ pub(crate) fn pixel_at(cam: &ProjectionGeometry, p: Vec3) -> f64 {
 /// The best integer shift `s` (pixels) of `drr` against `image` - the one
 /// with `image(u) ≈ drr(u − s)` - within `±r`, refined to a fraction of a
 /// pixel by a parabola through its neighbours; and its NCC.
-fn best_shift(
+pub(crate) fn best_shift(
     image: &[f32],
     drr: &[f32],
     dims: [usize; 2],
@@ -1358,17 +1358,15 @@ pub(crate) fn inverted(
 fn in_plane(eng: &mut Engine, start: &RigidTransform) -> Result<Option<[f64; 3]>> {
     let coarsest = eng.n_levels() - 1;
     let req = eng.req;
-    let mut a = [[0.0f64; 3]; 3];
-    let mut b = [0.0f64; 3];
     let target = start.map(req.isocenter);
-    let mut used = 0;
+    let mut views = Vec::new();
     for v in 0..req.views.len() {
         let drr = eng.render(coarsest, v, start)?;
         let lv = &eng.levels[coarsest][v];
         let cam0 = lv.camera.transformed(start);
-        let Some((_, [di, dj])) = cam0.project_with_jacobian(target) else {
+        if cam0.project_with_jacobian(target).is_none() {
             continue;
-        };
+        }
         let px = pixel_at(&cam0, target);
         let r = ((req.range_mm / px).ceil() as isize).clamp(
             1,
@@ -1378,8 +1376,46 @@ fn in_plane(eng: &mut Engine, start: &RigidTransform) -> Result<Option<[f64; 3]>
         if !score.is_finite() {
             continue;
         }
-        // J t = −s, every view weighted as the cost weighs it.
-        let w = req.views[v].weight.max(0.0);
+        // Every view weighted as the cost weighs it.
+        views.push((cam0, s, req.views[v].weight.max(0.0)));
+    }
+    let Some((t, _)) = translation_from_shifts(&views, target) else {
+        return Ok(None);
+    };
+    // In the parameters' frame: the extra translation is added after the
+    // start, which the parameters' translation is.
+    let lim = req.range_mm;
+    Ok(Some([
+        t.x.clamp(-lim, lim),
+        t.y.clamp(-lim, lim),
+        t.z.clamp(-lim, lim),
+    ]))
+}
+
+/// The 3D translation `t` that per-view 2D shifts say: each view's camera,
+/// its shift `s` in that camera's pixels (`image(u) ≈ reference(u − s)`,
+/// the image the radiograph, the reference what it is compared with) and a
+/// weight. The weighted normal equations of `J t = −s` at `iso`, `J` the
+/// projection's Jacobian there; a ridge of `1e-6` of the trace keeps a
+/// single view from inventing a depth (the translation with no component
+/// along its ray). Returns the translation and the eigenvalues of the
+/// normal matrix, strongest first (a small one names an axis the views
+/// barely see); `None` when no view projects `iso`.
+///
+/// The in-plane start of the 2D/3D engine is this function; the setup from
+/// 2D matches ([`crate::setup::from_planar`]) is the other caller.
+pub fn translation_from_shifts(
+    views: &[(ProjectionGeometry, [f64; 2], f64)],
+    iso: Vec3,
+) -> Option<(Vec3, Vec<f64>)> {
+    let mut a = [[0.0f64; 3]; 3];
+    let mut b = [0.0f64; 3];
+    let mut used = 0;
+    for (cam, s, w) in views {
+        let Some((_, [di, dj])) = cam.project_with_jacobian(iso) else {
+            continue;
+        };
+        let w = *w;
         let rows = [(di, s[0]), (dj, s[1])];
         for (g, sv) in rows {
             let g = [g.x, g.y, g.z];
@@ -1393,25 +1429,43 @@ fn in_plane(eng: &mut Engine, start: &RigidTransform) -> Result<Option<[f64; 3]>
         used += 1;
     }
     if used == 0 {
-        return Ok(None);
+        return None;
     }
-    // A single view leaves the depth free: a small ridge picks the
-    // translation with no component along it.
+    let (eig, _) = symmetric_eigen(a.iter().map(|r| r.to_vec()).collect());
     let tr = a[0][0] + a[1][1] + a[2][2];
     for (k, row) in a.iter_mut().enumerate() {
         row[k] += 1e-6 * tr.max(1e-12);
     }
-    let Some(t) = solve3(a, b) else {
-        return Ok(None);
-    };
-    // In the parameters' frame: the extra translation is added after the
-    // start, which the parameters' translation is.
-    let lim = req.range_mm;
-    Ok(Some([
-        t[0].clamp(-lim, lim),
-        t[1].clamp(-lim, lim),
-        t[2].clamp(-lim, lim),
-    ]))
+    let t = solve3(a, b)?;
+    Some((Vec3::new(t[0], t[1], t[2]), eig))
+}
+
+/// The small rotation `ω` (a rotation vector, radians, patient axes) that
+/// per-view in-plane rolls say: each view's axis (the unit normal of its
+/// detector, `row × column`), the roll about it (radians, counter-clockwise
+/// from row to column) and a weight - the least squares of `ω · a = θ`
+/// with the same ridge as [`translation_from_shifts`]. Two views see two of
+/// the three components; the third (about the axis both detectors contain)
+/// is what the smallest eigenvalue returned says is weak.
+pub fn rotation_from_rolls(views: &[(Vec3, f64, f64)]) -> (Vec3, Vec<f64>) {
+    let mut a = [[0.0f64; 3]; 3];
+    let mut b = [0.0f64; 3];
+    for (axis, theta, w) in views {
+        let g = [axis.x, axis.y, axis.z];
+        for r in 0..3 {
+            for c in 0..3 {
+                a[r][c] += w * g[r] * g[c];
+            }
+            b[r] += w * g[r] * theta;
+        }
+    }
+    let (eig, _) = symmetric_eigen(a.iter().map(|r| r.to_vec()).collect());
+    let tr = a[0][0] + a[1][1] + a[2][2];
+    for (k, row) in a.iter_mut().enumerate() {
+        row[k] += 1e-6 * tr.max(1e-12);
+    }
+    let w = solve3(a, b).unwrap_or([0.0; 3]);
+    (Vec3::new(w[0], w[1], w[2]), eig)
 }
 
 /// The curvature of the cost at `x` (finite differences one millimetre

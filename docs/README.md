@@ -10,6 +10,7 @@ Each page here covers one area.
 | [rt-objects.md](rt-objects.md) | RTSTRUCT, RTDOSE, RTPLAN, REG, RT treatment records, and how their reference chains are resolved |
 | [registration.md](registration.md) | The four registration engines, local registration, analytics, vector fields, fusion, the transform simulator, verification |
 | [registration-2d3d.md](registration-2d3d.md) | 2D/3D registration: the CT's pose from kV radiographs, a room-mounted pair or portal images, by intensity, by markers or both; the conventions, the couch readout, the setups, the positioned copy, the files, validation |
+| [planar-2d.md](planar-2d.md) | Planar images: 2D contours (drawn on the panes, projected from the CT's structures, carried), presentation states written and read, 2D/2D registration (rigid, points, markers, deformable), a setup from two 2D matches |
 | [propagation.md](propagation.md) | Carrying contours and segmentations across a registration |
 | [volumes.md](volumes.md) | How every volume is calculated: voxels-based, surface-based (a closed triangle surface reconstructed from the contours), planimetry, the propagation volumes - the exact rules and formulas |
 | [star-target-propagation.md](star-target-propagation.md) | Step by step: a cardiac target from the CCT onto every 4DCT phase, anchored on the heart, in the viewer and from the MCP server |

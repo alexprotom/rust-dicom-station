@@ -223,6 +223,8 @@ pub enum Kind {
     Register,
     RegisterByStructures,
     Register2d3d,
+    Register2d,
+    ProjectStructures,
     PositionedCopy,
     Propagate,
     Transfer,
@@ -240,7 +242,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 29] = [
+    pub const ALL: [Kind; 31] = [
         Kind::LoadFolder,
         Kind::LoadFolders,
         Kind::LoadFromArchive,
@@ -256,6 +258,8 @@ impl Kind {
         Kind::Register,
         Kind::RegisterByStructures,
         Kind::Register2d3d,
+        Kind::Register2d,
+        Kind::ProjectStructures,
         Kind::PositionedCopy,
         Kind::Propagate,
         Kind::Transfer,
@@ -428,6 +432,29 @@ impl Kind {
                         objects in the folder.",
                 ends_a_branch: false,
                 writes: true,
+            },
+            Kind::Register2d => &KindInfo {
+                name: "2D/2D registration",
+                glyph: "⇄",
+                category: Category::Register,
+                blurb: "Planar images of the study matched in pairs, one image onto \
+                        another (the day's radiograph onto the reference or the DRR at the \
+                        plan): shift, rotation, optionally scale, or deformably. Each match \
+                        filed with the study with its moved copy; two matches of two placed \
+                        views optionally read as one 3D correction, filed under Setups.",
+                ends_a_branch: false,
+                writes: false,
+            },
+            Kind::ProjectStructures => &KindInfo {
+                name: "Project structures",
+                glyph: "⇩",
+                category: Category::Register,
+                blurb: "Structures of the image series projected onto the study's planar \
+                        images as 2D contours: their silhouettes through each image's camera, \
+                        at the plan or at the study's last setup. Filed as a planar structure \
+                        set; Export DICOM writes it as a presentation state.",
+                ends_a_branch: false,
+                writes: false,
             },
             Kind::PositionedCopy => &KindInfo {
                 name: "Positioned copy",
@@ -765,6 +792,22 @@ impl Kind {
                 )];
                 P
             }
+            Kind::Register2d => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Image",
+                    &[T::Image],
+                    "an image series of the study whose planar images are matched",
+                )];
+                P
+            }
+            Kind::ProjectStructures => {
+                const P: &[PortSpec] = &[PortSpec::one(
+                    "Image",
+                    &[T::Image],
+                    "the CT the structures are on; its study holds the planar images",
+                )];
+                P
+            }
             Kind::PositionedCopy => {
                 const P: &[PortSpec] = &[
                     PortSpec::one("Image", &[T::Image], "the image series to move"),
@@ -988,6 +1031,22 @@ impl Kind {
                 ];
                 P
             }
+            Kind::Register2d => {
+                const P: &[OutSpec] = &[out(
+                    "Report",
+                    T::Report,
+                    "each match's shift, rotation and measure, and the setup",
+                )];
+                P
+            }
+            Kind::ProjectStructures => {
+                const P: &[OutSpec] = &[out(
+                    "Report",
+                    T::Report,
+                    "per structure and image, the rings and the area",
+                )];
+                P
+            }
             Kind::Register2d3d => {
                 const P: &[OutSpec] = &[
                     out("Pose", T::Registration, "the room onto the CT"),
@@ -1066,6 +1125,8 @@ impl Kind {
             Kind::Register => Op::Register(Default::default()),
             Kind::RegisterByStructures => Op::RegisterByStructures(Default::default()),
             Kind::Register2d3d => Op::Register2d3d(Default::default()),
+            Kind::Register2d => Op::Register2d(Default::default()),
+            Kind::ProjectStructures => Op::ProjectStructures(Default::default()),
             Kind::PositionedCopy => Op::PositionedCopy(Default::default()),
             Kind::Propagate => Op::Propagate(Default::default()),
             Kind::PropagateToGroup => Op::PropagateToGroup(Default::default()),
@@ -1114,6 +1175,8 @@ pub enum Op {
     Register(Register),
     RegisterByStructures(RegisterByStructures),
     Register2d3d(Register2d3d),
+    Register2d(Register2d),
+    ProjectStructures(ProjectStructures),
     PositionedCopy(PositionedCopy),
     Propagate(Propagate),
     PropagateToGroup(PropagateToGroup),
@@ -1148,6 +1211,8 @@ impl Op {
             Op::Register(_) => Kind::Register,
             Op::RegisterByStructures(_) => Kind::RegisterByStructures,
             Op::Register2d3d(_) => Kind::Register2d3d,
+            Op::Register2d(_) => Kind::Register2d,
+            Op::ProjectStructures(_) => Kind::ProjectStructures,
             Op::PositionedCopy(_) => Kind::PositionedCopy,
             Op::Propagate(_) => Kind::Propagate,
             Op::PropagateToGroup(_) => Kind::PropagateToGroup,
@@ -1496,6 +1561,38 @@ impl Op {
                 }
                 v
             }
+            Op::Register2d(p) => {
+                let mut v = vec![format!(
+                    "{} · {}",
+                    crate::registration::planar::Method2d::from_key(&p.method)
+                        .unwrap_or_default()
+                        .label(),
+                    crate::registration::metric2d::Metric2d::from_key(&p.metric)
+                        .unwrap_or_default()
+                        .tag()
+                )];
+                v.push(format!("pairs {}", p.pairs.trim()));
+                if p.as_setup {
+                    v.push("read as a setup".into());
+                }
+                v
+            }
+            Op::ProjectStructures(p) => vec![
+                format!(
+                    "{} onto {}",
+                    p.structures.trim(),
+                    if p.images.trim().is_empty() {
+                        "every placed planar image".to_string()
+                    } else {
+                        format!("images {}", p.images.trim())
+                    }
+                ),
+                if p.at_setup {
+                    "at the last setup".to_string()
+                } else {
+                    "at the plan".to_string()
+                },
+            ],
             Op::PositionedCopy(p) => vec![format!(
                 "or by {:.1}, {:.1}, {:.1} mm",
                 p.translation_mm[0], p.translation_mm[1], p.translation_mm[2]
@@ -1621,6 +1718,28 @@ impl Op {
                 }
                 if p.difference && p.folder.trim().is_empty() {
                     v.push("no folder is given".into());
+                }
+            }
+            Op::Register2d(p) => {
+                if crate::registration::planar::Method2d::from_key(&p.method).is_none() {
+                    v.push(
+                        "the method is intensity, points, points_then_intensity or deformable"
+                            .into(),
+                    );
+                }
+                if crate::registration::metric2d::Metric2d::from_key(&p.metric).is_none() {
+                    v.push("the measure is ncc, gc, gd, pi, lncc or mi".into());
+                }
+                if parse_pairs(&p.pairs).is_none() {
+                    v.push(
+                        "the pairs are fixed:moving images by number or label, separated by                          commas"
+                            .into(),
+                    );
+                }
+            }
+            Op::ProjectStructures(p) => {
+                if p.structures.trim().is_empty() {
+                    v.push("no structure is named".into());
                 }
             }
             Op::Register2d3d(p) => {
@@ -2726,6 +2845,74 @@ impl Default for Register2d3d {
             device: Device::Auto,
         }
     }
+}
+
+/// The `fixed:moving` pairs of a [`Register2d`], as written; `None` when
+/// one is not of that form or there is none.
+pub fn parse_pairs(text: &str) -> Option<Vec<(String, String)>> {
+    let v: Option<Vec<(String, String)>> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            let (a, b) = t.split_once(':')?;
+            let (a, b) = (a.trim(), b.trim());
+            (!a.is_empty() && !b.is_empty()).then(|| (a.to_string(), b.to_string()))
+        })
+        .collect();
+    v.filter(|v| !v.is_empty())
+}
+
+/// 2D/2D registrations of a study's planar images, in pairs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Register2d {
+    /// `fixed:moving` per match, by number or label, separated by commas
+    /// (`1:3, 2:4`).
+    pub pairs: String,
+    /// `intensity`, `points`, `points_then_intensity` or `deformable`.
+    pub method: String,
+    /// `ncc`, `gc`, `gd`, `pi`, `lncc` or `mi`.
+    pub metric: String,
+    /// `shift`, `shift_rotation` or `similarity`.
+    pub dof: String,
+    pub levels: usize,
+    pub pixels: usize,
+    /// Find markers of this size (mm) for the points methods; 0 for none.
+    pub markers_mm: f64,
+    /// Read the matches (two views, placed) as one 3D correction, filed
+    /// under the study's setups.
+    pub as_setup: bool,
+}
+
+impl Default for Register2d {
+    fn default() -> Self {
+        Register2d {
+            pairs: "1:2".into(),
+            method: "intensity".into(),
+            metric: "gc".into(),
+            dof: "shift_rotation".into(),
+            levels: 3,
+            pixels: 256,
+            markers_mm: 0.0,
+            as_setup: false,
+        }
+    }
+}
+
+/// Structures projected onto planar images as 2D contours.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectStructures {
+    /// Structure names, separated by commas.
+    pub structures: String,
+    /// Planar images by number or label, separated by commas; empty is
+    /// every image that states its geometry.
+    pub images: String,
+    /// At the study's last setup rather than at the plan.
+    pub at_setup: bool,
+    /// The set's label; after the pose when empty.
+    pub set: String,
 }
 
 /// The study moved by a pose: a 2D/3D registration's, or the displacement

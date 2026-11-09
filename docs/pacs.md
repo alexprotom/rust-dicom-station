@@ -29,6 +29,7 @@ network and over the internet, and the two ways of working.
 | **🔍** | Show only the rows whose name (or UID, or folder) holds the text, with what leads to them |
 | **📩 Load into workspace A / B** | Read the selected rows into a viewer workspace |
 | **⚙ Settings ▶ Storage folders** | The folders the PACS reads (below) |
+| **⚙ Settings ▶ ⟲ Rescan the folders on opening** | On (a fresh installation): opening the window walks the folders, as ⟲ Rescan does. Off: the window lists the PACS at once as the catalog last saw it, and the folders are read only on ⟲ Rescan, or when there is no catalog yet. Remembered as `pacs_scan_on_open` in `viewer_settings.txt` |
 | **⚙ Settings ▶ 📤 Export tags… / 📥 Import tags…** | What was decided about the PACS - names, cohorts, 4D decisions - to and from a JSON file, to share between stations ([Tags](#tags)) |
 | **⚙ Settings ▶ PACS server** | The server on this station: start, stop, connection details, pairing, its settings ([pacs-server.md](pacs-server.md)) |
 
@@ -51,9 +52,17 @@ phases, reconstructions, evidence), and each set is a row of its own under
 the study holding its phases in order (`30%`, `~30%` when the phase was
 inferred from the series' place), its reconstructions (`untagged`, `AVG`,
 `MIP`), its respiratory trace and the structure sets drawn on a phase.
-Selecting that row and *Load* loads the set alone. The list beside 🔍 shows
-**all studies**, those that **has 4D**, or those that **has probable 4D**;
-the search finds `4DCT` too. A probable set is drawn muted, and its menu
+Selecting that row and *Load* loads the set alone. The list beside 🔍
+filters the studies by what they hold: each scan offers the kinds it found,
+with how many hold each - **4D** and **probable 4D**, then the words in the
+brackets of the patients' rows (`P01-095 (Adult, Thorax)` offers `Adult` and
+`Thorax`, counted in patients; words that only repeat the patient's name, ID
+or code are left out, and `Male` / `male` are one word), then every
+modality of their series (`CT`, `MR`, `DX`, `RTIMAGE`, `RTSTRUCT`, `RTDOSE`,
+`SEG`, `REG`, ...). Several can be ticked in one visit, and the studies shown
+hold **all** of them (`Pediatric + CT`) or **any** (`MR or DX`); nothing
+ticked shows all studies, and a kind the next scan no longer finds is
+unticked. The search finds `4DCT` too. A probable set is drawn muted, and its menu
 **✔ Confirms** it or says **✖ Not a 4DCT** (the set is dissolved and stays
 so); a set decided on offers **Let the headers decide again**.
 

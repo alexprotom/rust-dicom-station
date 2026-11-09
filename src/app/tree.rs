@@ -256,6 +256,10 @@ impl ViewerApp {
                     .map(|idx| obj(slot, ObjKind::Planar, idx))
                     .collect();
             }
+            // Removed from their own rows' menus.
+            RenameTarget::PlanarSet { .. }
+            | RenameTarget::PlanarStructure { .. }
+            | RenameTarget::PlanarReg { .. } => {}
         }
     }
 
@@ -538,6 +542,16 @@ impl ViewerApp {
             },
             setups: if masks.take_extras {
                 study.setups.clone()
+            } else {
+                Vec::new()
+            },
+            planar_structs: if masks.take_extras {
+                study.planar_structs.clone()
+            } else {
+                Vec::new()
+            },
+            planar_regs: if masks.take_extras {
+                study.planar_regs.clone()
             } else {
                 Vec::new()
             },
@@ -915,6 +929,8 @@ mod tree_tests {
             treat_records: Vec::new(),
             reports: Vec::new(),
             setups: Vec::new(),
+            planar_structs: Vec::new(),
+            planar_regs: Vec::new(),
             fourd_groups: Vec::new(),
             resp_traces: Vec::new(),
             warnings: Vec::new(),

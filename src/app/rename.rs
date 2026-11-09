@@ -48,6 +48,12 @@ pub(super) enum RenameTarget {
     /// keyboard like any row: the arrows walk the pairs of its beam, Delete
     /// removes both images.
     Pair { slot: usize, images: Vec<usize> },
+    /// Label of one planar structure set.
+    PlanarSet { slot: usize, idx: usize },
+    /// Name of one structure of a planar structure set.
+    PlanarStructure { slot: usize, set: usize, idx: usize },
+    /// Label of one 2D/2D registration.
+    PlanarReg { slot: usize, idx: usize },
 }
 
 impl RenameTarget {
@@ -64,7 +70,10 @@ impl RenameTarget {
             | RenameTarget::Report { slot, .. }
             | RenameTarget::Setup { slot, .. }
             | RenameTarget::FourD { slot, .. }
-            | RenameTarget::Pair { slot, .. } => *slot,
+            | RenameTarget::Pair { slot, .. }
+            | RenameTarget::PlanarSet { slot, .. }
+            | RenameTarget::PlanarStructure { slot, .. }
+            | RenameTarget::PlanarReg { slot, .. } => *slot,
             RenameTarget::Set(r) => r.slot,
             RenameTarget::Item { set, .. } => set.slot,
         }
@@ -87,6 +96,9 @@ impl RenameTarget {
             RenameTarget::Setup { .. } => "setup",
             RenameTarget::FourD { .. } => "4D group",
             RenameTarget::Pair { .. } => "radiograph pair",
+            RenameTarget::PlanarSet { .. } => "planar structure set",
+            RenameTarget::PlanarStructure { .. } => "planar structure",
+            RenameTarget::PlanarReg { .. } => "2D registration",
         }
     }
 
@@ -116,6 +128,11 @@ impl RenameTarget {
             // A 4D group is an application grouping, not a DICOM object.
             RenameTarget::FourD { .. } => "the group's name (application-side only)",
             RenameTarget::Pair { .. } => "nothing: rename its images",
+            RenameTarget::PlanarSet { .. } => "the set label (ContentLabel once saved)",
+            RenameTarget::PlanarStructure { .. } => {
+                "the structure name (its Graphic Layer once saved)"
+            }
+            RenameTarget::PlanarReg { .. } => "the registration label",
         }
     }
 }
@@ -170,6 +187,15 @@ impl ViewerApp {
             RenameTarget::Setup { idx, .. } => study.setups.get(*idx)?.label.clone(),
             RenameTarget::FourD { idx, .. } => study.fourd_groups.get(*idx)?.name.clone(),
             RenameTarget::Pair { .. } => return None,
+            RenameTarget::PlanarSet { idx, .. } => study.planar_structs.get(*idx)?.label.clone(),
+            RenameTarget::PlanarStructure { set, idx, .. } => study
+                .planar_structs
+                .get(*set)?
+                .structures
+                .get(*idx)?
+                .name
+                .clone(),
+            RenameTarget::PlanarReg { idx, .. } => study.planar_regs.get(*idx)?.label.clone(),
         })
     }
 
@@ -278,6 +304,19 @@ impl ViewerApp {
                 }
             }
             RenameTarget::Pair { .. } => false,
+            RenameTarget::PlanarSet { idx, .. } => {
+                set_opt(study.planar_structs.get_mut(*idx).map(|s| &mut s.label))
+            }
+            RenameTarget::PlanarStructure { set, idx, .. } => set_opt(
+                study
+                    .planar_structs
+                    .get_mut(*set)
+                    .and_then(|s| s.structures.get_mut(*idx))
+                    .map(|s| &mut s.name),
+            ),
+            RenameTarget::PlanarReg { idx, .. } => {
+                set_opt(study.planar_regs.get_mut(*idx).map(|r| &mut r.label))
+            }
         }
     }
 
@@ -444,6 +483,8 @@ mod rename_tests {
             treat_records: Vec::new(),
             reports: Vec::new(),
             setups: Vec::new(),
+            planar_structs: Vec::new(),
+            planar_regs: Vec::new(),
             fourd_groups: Vec::new(),
             resp_traces: Vec::new(),
             warnings: Vec::new(),

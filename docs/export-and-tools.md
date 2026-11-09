@@ -127,6 +127,15 @@ where they are - use *📤 Send workspace* in the [patient archive](pacs.md)
 window instead. The exports round-trip through this viewer and pydicom; they
 are QA/research objects, not guaranteed-complete clinical IODs.
 
+### Planar structures
+
+A planar structure set is saved from its menu in the data tree (*💾 Save as
+presentation state*): a DICOM Grayscale Softcopy Presentation State with
+every referenced image that has no file of its own (a DRR, a moved copy)
+written beside it as an RT Image under the UIDs the state references. The
+export window does not carry planar images or planar structure sets yet.
+See [planar-2d.md](planar-2d.md).
+
 ## Saving a picture of the views
 
 *File ▸ 💾 Save image* writes what the central area shows as a **PNG** or a

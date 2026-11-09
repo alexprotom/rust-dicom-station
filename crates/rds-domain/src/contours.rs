@@ -581,6 +581,53 @@ fn segments_cross(a0: Pt, a1: Pt, b0: Pt, b1: Pt) -> bool {
     ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0))
 }
 
+/// A closed centripetal Catmull-Rom spline through the given points, with
+/// `per_segment` points between two of them - the curve the spline tool
+/// draws, and the only reason it differs from the polygon tool.
+pub fn spline_points(pts: &[[f64; 2]], per_segment: usize) -> Vec<[f64; 2]> {
+    let n = pts.len();
+    if n < 3 {
+        return pts.to_vec();
+    }
+    let mut out = Vec::with_capacity(n * per_segment);
+    for i in 0..n {
+        let p0 = pts[(i + n - 1) % n];
+        let p1 = pts[i];
+        let p2 = pts[(i + 1) % n];
+        let p3 = pts[(i + 2) % n];
+        // Centripetal parameterisation: no cusps, no self-intersection from
+        // a doubled click.
+        let t = |a: [f64; 2], b: [f64; 2], t0: f64| -> f64 {
+            let d = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+            t0 + d.sqrt().max(1e-6)
+        };
+        let (t0, t1) = (0.0, t(p0, p1, 0.0));
+        let (t2, t3) = (t(p1, p2, t1), 0.0);
+        let t3 = t(p2, p3, t2).max(t3);
+        for s in 0..per_segment {
+            let tt = t1 + (t2 - t1) * (s as f64 / per_segment as f64);
+            let a1 = lerp2(p0, p1, (t1 - tt) / (t1 - t0), (tt - t0) / (t1 - t0));
+            let a2 = lerp2(p1, p2, (t2 - tt) / (t2 - t1), (tt - t1) / (t2 - t1));
+            let a3 = lerp2(p2, p3, (t3 - tt) / (t3 - t2), (tt - t2) / (t3 - t2));
+            let b1 = lerp2(a1, a2, (t2 - tt) / (t2 - t0), (tt - t0) / (t2 - t0));
+            let b2 = lerp2(a2, a3, (t3 - tt) / (t3 - t1), (tt - t1) / (t3 - t1));
+            out.push(lerp2(b1, b2, (t2 - tt) / (t2 - t1), (tt - t1) / (t2 - t1)));
+        }
+    }
+    out
+}
+
+#[inline]
+fn lerp2(a: [f64; 2], b: [f64; 2], wa: f64, wb: f64) -> [f64; 2] {
+    [a[0] * wa + b[0] * wb, a[1] * wa + b[1] * wb]
+}
+
+/// The *auto* rule of the drawing tools: a ring that crosses an existing
+/// contour and starts outside it cuts; anything else adds.
+pub fn auto_cuts(region: &Region, ring: &Poly) -> bool {
+    !ring.is_empty() && region.crosses(ring) && !region.contains(ring.pts[0])
+}
+
 // ---------------------------------------------------------------------------
 // Region - the polygons of one slice
 // ---------------------------------------------------------------------------

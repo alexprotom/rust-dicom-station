@@ -927,3 +927,53 @@ fn a_setup_from_radiographs_moves_a_copy_of_the_study_where_the_patient_was() {
     assert!(landed.iter().any(|n| n.starts_with("TARGET")), "{landed:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_target_is_projected_onto_the_radiographs_and_they_are_matched_in_2d() {
+    let dir = common::target_dir("test_workflow_steps_planar");
+    let plan = phantom(&dir, "plan", 0.0);
+    common::radiographs_into(&plan, [0.0, 0.0, 0.0], "kV");
+    let mut wf = Workflow::new("planar");
+    let l = wf.add(load(&plan), "Plan", [0.0, 0.0]);
+    let img = wf.add(Op::SelectImage(SelectImage::default()), "", [250.0, 0.0]);
+    let proj = wf.add(
+        Op::ProjectStructures(ProjectStructures {
+            structures: "TARGET, CORD".into(),
+            ..ProjectStructures::default()
+        }),
+        "",
+        [500.0, 0.0],
+    );
+    let reg = wf.add(
+        Op::Register2d(Register2d {
+            // Each radiograph onto the other: two matches, a report row each.
+            pairs: "1:2, 2:1".into(),
+            metric: "ncc".into(),
+            pixels: 96,
+            levels: 2,
+            ..Register2d::default()
+        }),
+        "",
+        [500.0, 200.0],
+    );
+    wf.link(l, 0, img, 0);
+    wf.link(img, 0, proj, 0);
+    wf.link(img, 0, reg, 0);
+    assert!(wf.check().ok(), "{:?}", wf.check().errors);
+    let wf = Workflow::from_json(&wf.to_json()).expect("reads back");
+    let out = run(&wf, &options(&dir, &wf));
+    assert!(out.ok(), "{:?}", out.error);
+    let study = &out.studies[0].study;
+    assert_eq!(study.planar_structs.len(), 1);
+    let set = &study.planar_structs[0];
+    let target = set.structure("TARGET").expect("the target projected");
+    assert_eq!(target.contours.len(), 2, "on both radiographs");
+    assert_eq!(study.planar_regs.len(), 2);
+    let rep = out
+        .reports
+        .iter()
+        .find(|r| r.title.starts_with("2D/2D registration"))
+        .expect("a report");
+    assert_eq!(rep.tables[0].rows.len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
