@@ -733,18 +733,7 @@ impl ViewerApp {
         let gone: Vec<usize> = self.slots[slot]
             .study
             .as_ref()
-            .map(|st| {
-                st.planar_regs
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| {
-                        r.moved_copy_uid
-                            .as_ref()
-                            .is_some_and(|u| st.planar_by_uid(u).is_none())
-                    })
-                    .map(|(k, _)| k)
-                    .collect()
-            })
+            .map(crate::planar_structs::orphaned_regs)
             .unwrap_or_default();
         for k in gone.into_iter().rev() {
             if let Some(st) = self.slots[slot].study.as_mut() {
@@ -1306,20 +1295,13 @@ impl ViewerApp {
         // Then the contour tools, on the image under the scrubber (the hand
         // still pans).
         let near_image = v.layers[near].image;
-        // The 2D/2D section's *Place* tool next.
-        let placing = !tool_on && self.reg2d_placing(slot, near_image);
-        let place_click = (placing && !over_buttons && resp.clicked())
-            .then(|| resp.interact_pointer_pos())
-            .flatten()
-            .map(|mp| super::reg2d::PlaceClick {
-                slot,
-                image: near_image,
-                px: super::planar_contours::screen_to_px(
-                    mp,
-                    [near_img.cols, near_img.rows],
-                    near_rect,
-                ),
-            });
+        // The 2D/2D section's *Place* and region tools next.
+        let placing = !tool_on && self.reg2d_pane_tool(slot, near_image);
+        let place_edits = if placing && !over_buttons {
+            self.reg2d_pane_input(near_image, [near_img.cols, near_img.rows], near_rect, &resp)
+        } else {
+            Vec::new()
+        };
         let contour_on = !tool_on
             && !placing
             && !self.hand_pan
@@ -1506,6 +1488,7 @@ impl ViewerApp {
                 && !over_buttons
                 && !tool_on
                 && !contour_on
+                && !placing
                 && resp.dragged_by(egui::PointerButton::Primary))
         {
             new_pan = Some(pan + resp.drag_delta() / zoom);
@@ -1541,8 +1524,8 @@ impl ViewerApp {
         if !planar_edits.is_empty() {
             self.planar_contour_apply(slot, planar_edits, wl);
         }
-        if let Some(c) = place_click {
-            self.reg2d_place(c);
+        if !place_edits.is_empty() {
+            self.reg2d_pane_apply(place_edits);
         }
         if new_wl.is_some() {
             // A window set by hand: the planar preset no longer holds.

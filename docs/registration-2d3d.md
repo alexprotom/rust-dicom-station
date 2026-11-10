@@ -272,7 +272,8 @@ tighter outline by about half a voxel). A setup can also be read from two
 2D/2D matches of two placed views (`setup::from_planar`, method `planar`,
 *2D matches*): the in-plane start of this engine, lifted out as
 `projective::translation_from_shifts`, turns the matches' shifts into the
-translation, `rotation_from_rolls` their rolls into the rotation. See
+translation, `rotation_from_rolls` their rolls into the rotation. The *Start* row of this section takes a setup of the study as the start
+pose (*Refine in 3D*: the two-step reading refined by intensity). See
 [planar-2d.md](planar-2d.md).
 
 ## Validation

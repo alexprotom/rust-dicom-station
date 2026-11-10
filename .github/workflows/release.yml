@@ -594,8 +594,9 @@ jobs:
   # winget-create. No third-party action: the one used before broke on
   # 2026-10-07 when its `main` was rewritten.
   #
-  # Needs a classic personal access token with the `public_repo` scope,
-  # saved as the repository secret WINGET_TOKEN. winget-create pushes a
+  # Needs a classic personal access token with the `public_repo` and
+  # `workflow` scopes, saved as the repository secret WINGET_TOKEN (why
+  # `workflow`: see the fast-forward step). winget-create pushes a
   # branch to the fork of winget-pkgs under that account (it creates the
   # fork if there is none) and opens the pull request from it. Without the
   # secret the job only says so and succeeds, so a release is never held up
@@ -623,7 +624,11 @@ jobs:
       # submission and the next release was enough (2026-10-10). A
       # fast-forward of the fork's master through the refs API has no such
       # limit, so it is done here first. No fork yet: nothing to do,
-      # winget-create creates one.
+      # winget-create creates one. Whenever the commits brought in touch
+      # winget-pkgs' own .github/workflows/, GitHub accepts the update only
+      # from a token with the `workflow` scope and answers any other with a
+      # bare 404 (and gh with a hint about the `repo` scope that does not
+      # apply, 2026-11-10), so a failure prints the scopes the token has.
       - name: Fast-forward the fork of winget-pkgs
         if: env.WINGET_CREATE_GITHUB_TOKEN != ''
         shell: pwsh
@@ -640,7 +645,11 @@ jobs:
           $sha = gh api repos/microsoft/winget-pkgs/git/ref/heads/master --jq .object.sha
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           gh api -X PATCH "repos/$env:FORK/git/refs/heads/master" -f sha=$sha -F force=false --jq .object.sha
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            $scopes = (gh api -i user | Select-String '^X-OAuth-Scopes:').Line
+            Write-Host "::error::could not fast-forward $env:FORK to $sha. WINGET_TOKEN needs the public_repo and workflow scopes ($scopes)."
+            exit 1
+          }
 
       - name: Download the manifests from the release
         if: env.WINGET_CREATE_GITHUB_TOKEN != ''

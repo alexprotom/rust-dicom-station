@@ -467,6 +467,16 @@ pub fn addresses(v4: bool, v6: bool) -> Vec<Address> {
             });
         }
     }
+    order(&mut out);
+    out
+}
+
+/// The order [`addresses`] lists them in: by kind of link (real networks,
+/// then VPNs, then virtual adapters), within a kind IPv4 before IPv6, then
+/// the default route's address first, then by interface and address. The
+/// kind comes before the family on purpose: a VPN's IPv6 address is more
+/// use to another station than a virtual switch's IPv4 one.
+fn order(out: &mut [Address]) {
     out.sort_by_key(|a| {
         (
             a.link,
@@ -476,7 +486,6 @@ pub fn addresses(v4: bool, v6: bool) -> Vec<Address> {
             a.ip,
         )
     });
-    out
 }
 
 /// What the Windows firewall says about `rds-pacs.exe`. Read from the
@@ -727,8 +736,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The documented order, whatever this machine's interfaces are: the
+    /// kinds of link in turn, and within one kind IPv4 before IPv6.
+    fn assert_ordered(all: &[Address]) {
+        for w in all.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            assert!(a.link <= b.link, "the kinds in turn: {all:?}");
+            if a.link == b.link {
+                assert!(
+                    !(a.ip.is_ipv6() && b.ip.is_ipv4()),
+                    "IPv4 before IPv6 within a kind: {all:?}"
+                );
+            }
+        }
+    }
+
     #[test]
-    fn the_address_list_holds_no_loopback_and_puts_ipv4_first() {
+    fn the_address_list_holds_no_loopback_and_goes_by_kind_then_family() {
         let all = addresses(true, true);
         for a in &all {
             assert!(!a.ip.is_loopback() && !a.ip.is_unspecified(), "{a:?}");
@@ -736,17 +760,57 @@ mod tests {
                 assert_ne!(v.segments()[0] & 0xffc0, 0xfe80, "link-local: {a:?}");
             }
         }
-        let first_v6 = all.iter().position(|a| a.ip.is_ipv6());
-        let last_v4 = all.iter().rposition(|a| a.ip.is_ipv4());
-        if let (Some(v6), Some(v4)) = (first_v6, last_v4) {
-            assert!(v4 < v6, "IPv4 before IPv6: {all:?}");
-        }
+        assert_ordered(&all);
         assert!(addresses(true, false).iter().all(|a| a.ip.is_ipv4()));
         assert!(addresses(false, true).iter().all(|a| a.ip.is_ipv6()));
         assert!(addresses(false, false).is_empty());
         let mut ips: Vec<IpAddr> = all.iter().map(|a| a.ip).collect();
         ips.dedup();
         assert_eq!(ips.len(), all.len(), "no address twice");
+    }
+
+    /// A wired network, a VPN that carries the default route with an IPv4
+    /// and an IPv6 address, and two virtual switches (Hyper-V, WSL): the
+    /// VPN's IPv6 address comes before the switches' IPv4 ones, and the
+    /// VPN's IPv4 address before its IPv6 one.
+    #[test]
+    fn a_vpn_s_ipv6_address_comes_before_a_virtual_switch() {
+        let at = |ip: &str, interface: &str, link: Link, default_route: bool| Address {
+            ip: ip.parse().unwrap(),
+            interface: interface.into(),
+            link,
+            default_route,
+        };
+        let mut list = vec![
+            at("172.25.96.1", "vEthernet (WSL)", Link::Virtual, false),
+            at(
+                "2a00:1398:4:f201::1",
+                "OpenVPN TAP-Windows6",
+                Link::Vpn,
+                true,
+            ),
+            at(
+                "172.23.240.1",
+                "vEthernet (Default Switch)",
+                Link::Virtual,
+                false,
+            ),
+            at("172.22.144.225", "OpenVPN TAP-Windows6", Link::Vpn, true),
+            at("172.22.52.11", "Ethernet", Link::Lan, false),
+        ];
+        order(&mut list);
+        let ips: Vec<String> = list.iter().map(|a| a.ip.to_string()).collect();
+        assert_eq!(
+            ips,
+            [
+                "172.22.52.11",
+                "172.22.144.225",
+                "2a00:1398:4:f201::1",
+                "172.23.240.1",
+                "172.25.96.1",
+            ]
+        );
+        assert_ordered(&list);
     }
 
     #[test]

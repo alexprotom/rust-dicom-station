@@ -456,6 +456,8 @@ fn object_node(ui: &mut egui::Ui, o: &mut ObjNode, formats: &mut bool) {
                         ObjKind::Plan => "RTPlanName",
                         ObjKind::Structures | ObjKind::Segmentation => "StructureSetLabel",
                         ObjKind::Dose => "SeriesDescription",
+                        ObjKind::Planar => "RTImageLabel",
+                        ObjKind::PlanarStructures => "ContentDescription",
                     };
                     text_row(ui, label, &mut o.description, NAME_W);
                     text_row(ui, "SeriesNumber", &mut o.number, 60.0);

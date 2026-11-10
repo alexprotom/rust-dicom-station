@@ -94,6 +94,15 @@ pub fn export(core: &mut Core, a: ExportArgs, p: &Progress) -> Result<Value> {
                 }
                 ObjKind::Dose => a.include_doses,
                 ObjKind::Plan => a.include_plans,
+                // Planar structure sets go with the structures, planar
+                // images with the images.
+                ObjKind::PlanarStructures => {
+                    a.include_structures
+                        && needle
+                            .as_ref()
+                            .is_none_or(|n| ob.label.to_lowercase().contains(n))
+                }
+                ObjKind::Planar => a.include_images,
             };
         }
     }

@@ -70,6 +70,8 @@ const REG2D3D_METRIC_KEY: &str = "reg2d3d_metric";
 const REG2D3D_OPTIMIZER_KEY: &str = "reg2d3d_optimizer";
 const REG2D3D_TOLERANCE_KEY: &str = "reg2d3d_tolerance";
 const REG2D3D_ROOM_KEY: &str = "reg2d3d_room";
+/// The 2D/2D registration's remembered choices ([`Reg2dPrefs`]).
+const REG2D_KEY: &str = "reg2d";
 
 /// Settings keys of what each row of the central area shows, one per row.
 const VIEW_ROW_KEYS: [&str; MAX_WORKSPACES] =
@@ -305,6 +307,71 @@ impl Default for Reg2d3dPrefs {
     }
 }
 
+/// What the 2D/2D registration section remembers between runs: the
+/// method, the measure, the freedom and the deformable measure by their
+/// keys, the grid's first and last spacing in mm, and the bending energy's
+/// weight in thousandths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reg2dPrefs {
+    pub method: String,
+    pub metric: String,
+    pub dof: String,
+    pub deform_metric: String,
+    pub grid_mm: u16,
+    pub grid_min_mm: u16,
+    pub lambda_milli: u32,
+}
+
+impl Default for Reg2dPrefs {
+    fn default() -> Self {
+        Reg2dPrefs {
+            method: "intensity".into(),
+            metric: "gc".into(),
+            dof: "shift_rotation".into(),
+            deform_metric: "msd".into(),
+            grid_mm: 32,
+            grid_min_mm: 8,
+            lambda_milli: 10,
+        }
+    }
+}
+
+impl Reg2dPrefs {
+    /// `method, metric, dof, deform metric, grid, last grid, lambda`.
+    fn render(&self) -> String {
+        format!(
+            "{}, {}, {}, {}, {}, {}, {:.3}",
+            self.method,
+            self.metric,
+            self.dof,
+            self.deform_metric,
+            self.grid_mm,
+            self.grid_min_mm,
+            self.lambda_milli as f64 / 1000.0
+        )
+    }
+
+    /// The line [`Self::render`] wrote; `None` when it is not seven values
+    /// of the right kinds.
+    fn parse(v: &str) -> Option<Reg2dPrefs> {
+        let p: Vec<&str> = v.split(',').map(str::trim).collect();
+        let [method, metric, dof, deform, grid, last, lambda] = p[..] else {
+            return None;
+        };
+        let word = |s: &str| (!s.is_empty()).then(|| s.to_ascii_lowercase());
+        let lambda: f64 = lambda.parse().ok()?;
+        Some(Reg2dPrefs {
+            method: word(method)?,
+            metric: word(metric)?,
+            dof: word(dof)?,
+            deform_metric: word(deform)?,
+            grid_mm: grid.parse().ok()?,
+            grid_min_mm: last.parse().ok()?,
+            lambda_milli: (lambda * 1000.0).round().clamp(0.0, 1e7) as u32,
+        })
+    }
+}
+
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -384,6 +451,8 @@ pub struct Settings {
 
     /// The 2D/3D registration's measure, search, tolerances and room.
     pub reg2d3d: Reg2d3dPrefs,
+    /// The 2D/2D registration's method, measures, freedom and grid.
+    pub reg2d: Reg2dPrefs,
 }
 
 impl Default for Settings {
@@ -410,6 +479,7 @@ impl Default for Settings {
             nnunet_folders: Vec::new(),
             synth_folders: Vec::new(),
             reg2d3d: Reg2d3dPrefs::default(),
+            reg2d: Reg2dPrefs::default(),
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -1168,6 +1238,10 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             }
         } else if key.eq_ignore_ascii_case(REG2D3D_ROOM_KEY) {
             s.reg2d3d.room = value.trim().to_string();
+        } else if key.eq_ignore_ascii_case(REG2D_KEY) {
+            if let Some(p) = Reg2dPrefs::parse(value) {
+                s.reg2d = p;
+            }
         } else if key.eq_ignore_ascii_case(GRAPHICS_BACKEND_KEY) {
             // An unreadable value leaves the default rather than failing to
             // start: this file is edited by hand and by an installer, and a
@@ -1243,6 +1317,11 @@ fn render(s: &Settings) -> String {
             r.room
         ));
     }
+    out.push_str(&format!(
+        "# 2D/2D registration: method, measure, freedom, deformable measure, grid (mm), \
+         last grid (mm), smoothness\n{REG2D_KEY} = {}\n",
+        s.reg2d.render()
+    ));
     if !s.nnunet_folders.is_empty() {
         out.push_str("# nnU-Net model folders added in the model manager, one per line\n");
         for f in &s.nnunet_folders {
@@ -1536,6 +1615,27 @@ mod tests {
         assert_eq!(
             parse(&format!("{REG2D3D_TOLERANCE_KEY} = three")).reg2d3d,
             Reg2d3dPrefs::default()
+        );
+    }
+
+    #[test]
+    fn round_trips_the_2d2d_choices() {
+        let s = Settings {
+            reg2d: Reg2dPrefs {
+                method: "deformable".into(),
+                metric: "ncc".into(),
+                dof: "similarity".into(),
+                deform_metric: "mi".into(),
+                grid_mm: 40,
+                grid_min_mm: 10,
+                lambda_milli: 300,
+            },
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s);
+        assert_eq!(
+            parse(&format!("{REG2D_KEY} = a, b")).reg2d,
+            Reg2dPrefs::default()
         );
     }
 

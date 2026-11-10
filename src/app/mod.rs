@@ -1322,7 +1322,10 @@ impl ViewerApp {
             drr_job: None,
             r2d: None,
             r2d_job: None,
-            planar2d: Default::default(),
+            planar2d: planar_contours::Planar2d {
+                prefs: prefs.reg2d.clone(),
+                ..Default::default()
+            },
             r2d_prefs: prefs.reg2d3d.clone(),
             propagate_dialog: None,
             propagate_job: None,
@@ -1574,6 +1577,7 @@ impl ViewerApp {
             nnunet_folders: self.nnunet_folders.clone(),
             synth_folders: self.synth_folders.clone(),
             reg2d3d: self.r2d_prefs.clone(),
+            reg2d: self.planar2d.prefs.clone(),
         }) {
             Ok(()) => self.settings_error = None,
             Err(e) => {

@@ -95,6 +95,9 @@ pub(super) struct Reg2d3dState {
     /// One per planar image of the workspace, in order.
     pub views: Vec<ViewPick>,
     pub opts: SetupOptions,
+    /// Start from the pose of this setup of the study (*Refine in 3D*: a
+    /// setup read from 2D matches, or an earlier run) rather than the plan.
+    pub start_setup: Option<usize>,
     pub clip_on: bool,
     pub clip_half: f64,
     /// The isocentre typed or taken from the crosshair; the images' or the
@@ -149,6 +152,7 @@ impl Reg2d3dState {
                 optimizer: Optimizer2d::from_key(&prefs.optimizer).unwrap_or_default(),
                 ..SetupOptions::default()
             },
+            start_setup: None,
             clip_on: false,
             clip_half: 100.0,
             iso: None,
@@ -350,7 +354,10 @@ impl ViewerApp {
             self.error = Some("Tick at least one radiograph".into());
             return;
         }
-        let opts = st.options();
+        let mut opts = st.options();
+        if let Some(s) = st.start_setup.and_then(|k| study.setups.get(k)) {
+            opts.start = Some(s.result.transform.clone());
+        }
         let rooms = st.rooms.as_ref().map(|(f, _)| f.clone());
         let study = study.clone();
         let (dims, for_uid) = (
@@ -1240,6 +1247,7 @@ impl ViewerApp {
             st.clip_shown = Some((clip_key, b));
         }
         let current = st.current.and_then(|i| study.setups.get(i)).cloned();
+        let setup_labels: Vec<String> = study.setups.iter().map(|s| s.label.clone()).collect();
         let job_line = self
             .r2d_job
             .as_ref()
@@ -1270,6 +1278,7 @@ impl ViewerApp {
             marker_names,
             n_markers,
             current,
+            setup_labels,
             job_line,
             busy,
             id,
@@ -1360,10 +1369,23 @@ impl ViewerApp {
 }
 
 impl ViewerApp {
+    /// The 2D/2D section took the pane's left button: the 2D/3D section's
+    /// region and marker tools let go of it.
+    pub(super) fn reg2d3d_drop_pane_tool(&mut self) {
+        if let Some(st) = &mut self.r2d {
+            st.tool = PaneTool::None;
+        }
+    }
+
     /// Setup `idx` of `slot` was taken out of the study.
     pub(super) fn setup_removed(&mut self, slot: usize, idx: usize) {
         if let Some(st) = self.r2d.as_mut().filter(|st| st.slot == slot) {
             st.current = match st.current {
+                Some(c) if c == idx => None,
+                Some(c) if c > idx => Some(c - 1),
+                c => c,
+            };
+            st.start_setup = match st.start_setup {
                 Some(c) if c == idx => None,
                 Some(c) if c > idx => Some(c - 1),
                 c => c,
@@ -1610,6 +1632,7 @@ impl ViewerApp {
     fn r2d_setup_rows(&self, ui: &mut egui::Ui, sf: &mut R2dForm) {
         let st = &mut sf.st;
         let structures = &sf.structures;
+        let setup_labels = &sf.setup_labels;
         let default_iso = sf.default_iso;
         let crosshair = sf.crosshair;
         let marker_names = &sf.marker_names;
@@ -1823,6 +1846,34 @@ impl ViewerApp {
                                         ui.selectable_value(&mut st.opts.init, i, i.label());
                                     }
                                 });
+                            // From the plan, or from a setup's pose: a setup
+                            // read from 2D matches refined in 3D.
+                            let name = |k: Option<usize>| match k {
+                                None => "at the plan".to_string(),
+                                Some(k) => setup_labels
+                                    .get(k)
+                                    .map(|l| format!("from {l}"))
+                                    .unwrap_or_else(|| "at the plan".into()),
+                            };
+                            if !setup_labels.is_empty() {
+                                egui::ComboBox::from_id_salt((id, "start_setup"))
+                                    .selected_text(name(st.start_setup))
+                                    .width(140.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut st.start_setup, None, name(None));
+                                        for k in 0..setup_labels.len() {
+                                            ui.selectable_value(
+                                                &mut st.start_setup,
+                                                Some(k),
+                                                name(Some(k)),
+                                            );
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(
+                                        "Start the search from this setup's pose (Refine in 3D)",
+                                    );
+                            }
                         });
                         f.row("Levels · pixels", |ui| {
                             ui.add(egui::DragValue::new(&mut st.opts.levels).range(1..=5));
@@ -2240,6 +2291,8 @@ struct R2dForm {
     marker_names: Vec<String>,
     n_markers: usize,
     current: Option<crate::setup::SetupResult>,
+    /// The study's setups, for the *Start* combo.
+    setup_labels: Vec<String>,
     job_line: Option<(String, f32)>,
     busy: bool,
     id: egui::Id,

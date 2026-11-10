@@ -127,6 +127,18 @@ pub fn write(
     images: &[(&PlanarImage, (f32, f32))],
     meta: &ObjectMeta,
 ) -> Result<String> {
+    write_as(path, set, images, meta, "")
+}
+
+/// [`write`] under a SOP Instance UID given (an export keeping or choosing
+/// the state's identity); a fresh one when `sop_uid` is empty.
+pub fn write_as(
+    path: &Path,
+    set: &PlanarStructureSet,
+    images: &[(&PlanarImage, (f32, f32))],
+    meta: &ObjectMeta,
+    sop_uid: &str,
+) -> Result<String> {
     // Every image a graphic is on, in the set's order.
     let mut used: Vec<&str> = Vec::new();
     for s in &set.structures {
@@ -161,7 +173,13 @@ pub fn write(
         },
         ..meta.clone()
     };
-    let (sop_uid, _) = meta.write_as(&mut o, SOP_GSPS, "PR", None, Some(&set.series_instance_uid));
+    let (sop_uid, _) = meta.write_as(
+        &mut o,
+        SOP_GSPS,
+        "PR",
+        Some(sop_uid),
+        Some(&set.series_instance_uid),
+    );
     put_str(&mut o, tags::CONTENT_LABEL, VR::CS, sanitize_cs(&set.label));
     let (date, time) = today();
     put_str(&mut o, tags::PRESENTATION_CREATION_DATE, VR::DA, date);

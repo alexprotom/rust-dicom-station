@@ -866,6 +866,85 @@ pub fn brush(
 }
 
 // ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+/// One planar structure's contours before an edit: what Ctrl+Z puts back.
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    /// The workspace, the set within its study, and the structure by name
+    /// (a structure removed or renamed meanwhile is not resurrected).
+    pub slot: usize,
+    pub set: usize,
+    pub structure: String,
+    pub contours: Vec<PlanarContour>,
+}
+
+/// The planar contour tools' undo: at most [`Undo::DEPTH`] snapshots, the
+/// newest last, per workspace on one stack.
+#[derive(Clone, Debug, Default)]
+pub struct Undo {
+    pub steps: Vec<Snapshot>,
+}
+
+impl Undo {
+    pub const DEPTH: usize = 32;
+
+    /// Keep structure `j` of set `k` of `study` as it is now.
+    pub fn push(&mut self, slot: usize, study: &LoadedStudy, k: usize, j: usize) {
+        let Some(s) = study
+            .planar_structs
+            .get(k)
+            .and_then(|set| set.structures.get(j))
+        else {
+            return;
+        };
+        self.steps.push(Snapshot {
+            slot,
+            set: k,
+            structure: s.name.clone(),
+            contours: s.contours.clone(),
+        });
+        if self.steps.len() > Self::DEPTH {
+            self.steps.remove(0);
+        }
+    }
+
+    /// Put the newest snapshot of workspace `slot` back into `study`;
+    /// whether there was one.
+    pub fn undo(&mut self, slot: usize, study: &mut LoadedStudy) -> bool {
+        let Some(pos) = self.steps.iter().rposition(|u| u.slot == slot) else {
+            return false;
+        };
+        let u = self.steps.remove(pos);
+        if let Some(set) = study.planar_structs.get_mut(u.set) {
+            if let Some(s) = set.structures.iter_mut().find(|s| s.name == u.structure) {
+                s.contours = u.contours;
+            }
+            set.refresh_images();
+        }
+        true
+    }
+}
+
+/// The 2D/2D registrations of `study` whose moved copy has left its planar
+/// images (indices, ascending): they go with it. The planar structure sets
+/// and the other registrations name their images by UID and stay.
+pub fn orphaned_regs(study: &LoadedStudy) -> Vec<usize> {
+    study
+        .planar_regs
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.moved_copy_uid
+                .as_ref()
+                .is_some_and(|u| study.planar_by_uid(u).is_none())
+        })
+        .map(|(k, _)| k)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Carrying through a 2D/2D registration
 // ---------------------------------------------------------------------------
 
