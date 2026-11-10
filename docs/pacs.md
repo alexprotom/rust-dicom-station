@@ -27,9 +27,12 @@ network and over the internet, and the two ways of working.
 | **📤 Send workspace A / B** | Write that workspace's structure sets and segmentation series back into the PACS, attached to the study they belong to |
 | **⟲ Rescan** | Look through the storage folders again; only files not seen before are read |
 | **🔍** | Show only the rows whose name (or UID, or folder) holds the text, with what leads to them |
+| **✖ Reset filters** | Clear the search text and untick everything in the list beside 🔍: every study shows again (also under the scope in the [analytics](#analytics) while anything filters) |
 | **📩 Load into workspace A / B** | Read the selected rows into a viewer workspace |
 | **⚙ Settings ▶ Storage folders** | The folders the PACS reads (below) |
 | **⚙ Settings ▶ ⟲ Rescan the folders on opening** | On (a fresh installation): opening the window walks the folders, as ⟲ Rescan does. Off: the window lists the PACS at once as the catalog last saw it, and the folders are read only on ⟲ Rescan, or when there is no catalog yet. Remembered as `pacs_scan_on_open` in `viewer_settings.txt` |
+| **⚙ Settings ▶ 📊 Recalculate the analytics on every click** | On (a fresh installation): the [analytics](#analytics) follow the selection. Off: they are worked out on their ⟳ only, and say when they are stale. `pacs_stats_auto` |
+| **▶ / ◀ on the right edge** | Show or hide the [analytics](#analytics) panel |
 | **⚙ Settings ▶ 📤 Export tags… / 📥 Import tags…** | What was decided about the PACS - names, cohorts, 4D decisions - to and from a JSON file, to share between stations ([Tags](#tags)) |
 | **⚙ Settings ▶ PACS server** | The server on this station: start, stop, connection details, pairing, its settings ([pacs-server.md](pacs-server.md)) |
 
@@ -57,7 +60,10 @@ filters the studies by what they hold: each scan offers the kinds it found,
 with how many hold each - **4D** and **probable 4D**, then the words in the
 brackets of the patients' rows (`P01-095 (Adult, Thorax)` offers `Adult` and
 `Thorax`, counted in patients; words that only repeat the patient's name, ID
-or code are left out, and `Male` / `male` are one word), then every
+or code are left out, and `Male` / `male` are one word), grouped by what
+they say - **age group** (Adult, Pediatric, Child, ...), **sex** (Male,
+Female), **site** (every word that is none of the others: Thorax, HN,
+Pancreas, ...) and **subject** (Phantom, Volunteer, ...) - then every
 modality of their series (`CT`, `MR`, `DX`, `RTIMAGE`, `RTSTRUCT`, `RTDOSE`,
 `SEG`, `REG`, ...). Several can be ticked in one visit, and the studies shown
 hold **all** of them (`Pediatric + CT`) or **any** (`MR or DX`); nothing
@@ -89,6 +95,36 @@ selection when the row is part of it:
 | **➕ New cohort** / **🗑 Delete this cohort** | On a cohort row; only a cohort made here can be deleted, and its patients go back to their folders' cohorts |
 | **📁 Move the files to a folder** | Move the DICOM files themselves (below) |
 | **🗑 Remove from the PACS** | Delete the files from the disk, asked once more |
+
+## Analytics
+
+The panel on the right of the window (its ◀ / ▶ strip folds it away, as
+the viewer's side panels do; it can be dragged wider) counts what the rows
+in view hold, in charts one above the other:
+
+- **Patients' words**, above: the words in the brackets of the patients'
+  rows - those the filter offers - counted in patients, one chart per kind
+  of word: **age group**, **sex**, **site**, **subject** (Adult and
+  Pancreas are no shares of one whole). Each chart has the patients whose
+  row says nothing of its kind as *not given*, and a kind no patient of the
+  scope has is left out. A patient may name two sites, so the site bars can
+  add up to more than the patients.
+- **Modalities**, below: the modalities of the series, counted in studies,
+  or in series once the scope is one study.
+
+**📊** draws bars, **◐** rings (the slices past the tenth are one *other*);
+the choice is remembered (`pacs_stats_rings`). The scope is the
+selection: nothing selected is the whole PACS as the tree shows it (the
+filter applies, and the heading says so), a cohort row its patients, a
+patient, study or series row that one; several rows are their union, a
+patient listed in two cohorts counting once. The heading names the scope
+and its patients, studies, series and files. Hovering a bar, a slice or a
+legend line gives its count and share (and the series and files of a
+modality); clicking it ticks that word or modality in the filter beside 🔍,
+and clicking it again unticks it - the ticked ones are outlined - and
+**✖ Reset filters** under the scope shows every study again. The
+figures follow every click unless *Settings* says otherwise; then **⟳**
+works them out for the rows selected at that moment.
 
 ## Cohorts
 

@@ -83,7 +83,7 @@ impl EdgeBand {
 /// Keep one connected piece of a small binary image: the one `seed` sits
 /// in, or the largest when there is no seed. 4-connected, which is what
 /// matches the even-odd filling the contours use.
-fn keep_one_piece(mask: &mut [u8], w: usize, h: usize, seed: Option<(usize, usize)>) {
+pub(super) fn keep_one_piece(mask: &mut [u8], w: usize, h: usize, seed: Option<(usize, usize)>) {
     if w == 0 || h == 0 || mask.iter().all(|&m| m == 0) {
         return;
     }

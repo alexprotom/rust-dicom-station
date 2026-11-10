@@ -129,11 +129,14 @@ are QA/research objects, not guaranteed-complete clinical IODs.
 
 ### Planar structures
 
-A planar structure set is saved from its menu in the data tree (*💾 Save as
-presentation state*): a DICOM Grayscale Softcopy Presentation State with
-every referenced image that has no file of its own (a DRR, a moved copy)
-written beside it as an RT Image under the UIDs the state references. The
-export window does not carry planar images or planar structure sets yet.
+The export tree lists a study's planar images (⬚: a file of its own copied
+with its identity patched, a DRR or a moved copy written as an RT Image)
+and its planar structure sets (◌: a DICOM Grayscale Softcopy Presentation
+State per set, referencing the images under the UIDs they are written
+with; the planar images follow the UID mode as the series do). A set is
+also saved on its own from its menu in the data tree (*💾 Save as
+presentation state*), with every referenced image that has no file of its
+own written beside it.
 See [planar-2d.md](planar-2d.md).
 
 ## Saving a picture of the views

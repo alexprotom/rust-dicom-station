@@ -81,9 +81,12 @@ image with no structure chosen makes one (`2D n`) in an unlocked set that
 already has contours on the image, else in a new set labelled after it;
 `+` makes a new structure. The brush radius is millimetres of the image's
 own pixel spacing (an ellipse in pixels when the spacings differ). The
-live wire runs on the image's pixels under the pane's window. The voxel
-tools (brush, erase, grow) and the smart brush's tissue bands are for CT
-values and do nothing on a pane.
+live wire runs on the image's pixels under the pane's window. The smart
+brush's *Bright* and *Dark* bands cut the stamp back to what looks bright
+or dark in the pane's window, as on a slice; *Bone* and *Air* are CT numbers
+and leave the stamp as it is on a radiograph. The voxel tools (brush, erase,
+grow) edit segmentations and do nothing on a pane. Undo is
+`planar_structs::Undo` (32 steps, per workspace).
 
 ## Projection
 
@@ -130,6 +133,16 @@ window each image is shown with as its Softcopy VOI LUT, and an `IDENTITY`
 presentation LUT. Many viewers draw every layer in one colour and show the
 16-character layer name rather than the description.
 
+A study export (the Export window, the MCP `export`, the workflow step
+*Export DICOM*) carries the planar images (`ObjKind::Planar`: a file of its
+own copied with only its identity patched, an image made here written as
+an RT Image; their UIDs follow the export's UID mode as the series' do) and
+the planar structure sets (`ObjKind::PlanarStructures`: a presentation
+state per set, referencing the images under the UIDs they go out with).
+The workflow step writes every planar structure set and the images made
+here; the MCP tool takes planar sets with the structures and planar images
+with the images.
+
 *💾 Save as presentation state* (and the MCP `save_planar_structures`)
 writes the state into a folder together with every referenced image that
 has no file of its own (a DRR, a moved copy) as an RT Image under the UIDs
@@ -150,10 +163,10 @@ than counting them among the objects not displayed, and warns once per
 state that references images not in the load; the archive description
 says a PR series is shown in *planar structures*.
 
-The half-pixel offset of `PIXEL` units follows the standard's text; it has
-not yet been checked against a state written by another system (see the
-plan's risk 1). A wrong reading would be a half-pixel shift of every
-imported contour.
+The half-pixel offset of `PIXEL` units is the standard's (C.10.5.1.2:
+`0.0\0.0` the top left corner of the top left pixel, `1.0\1.0` its bottom
+right corner); a reader that put the first pixel's centre at `0\0` would
+see every contour half a pixel up and left.
 
 ## 2D/2D registration
 
@@ -202,11 +215,23 @@ under the planar images: rename, remove), with the moving image resampled
 onto the fixed one as a planar image of its own (`"<moving> onto
 <fixed>"`, the fixed image's spacing and camera), stacked over the fixed
 image in a pane where fade, checkerboard, difference and edges show the
-agreement. Removing the moved copy removes the registration with it. The
+agreement. Removing the moved copy removes the registration with it (the planar
+structure sets stay: they name their images by UID). The
 section's apply row: *⇥ Carry contours* (the moving image's structures onto
 the fixed one, through the inverse - exact for the rigid part, by
 fixed-point iteration for the warp - into *Carried · <registration>*),
 *⌖ As setup*, *💾 Report* (JSON), *📋 Copy*.
+
+The section's *Region* row draws the part of the fixed image the measure is
+taken over: a rectangle (a drag corner to corner) or polygons (click the
+corners, right click or double click to close), any number of them, shown
+in green over the fixed image; *Place* and the region tools take the pane's
+left button from the 2D/3D section's tools (one section at a time). For a
+deformable result, *Field* draws the warp over the fixed image: an arrow
+per node of a lattice about 24 screen pixels apart (where the warp sends
+the point, the rigid part left out) and the lattice deformed. The method,
+the measure, the freedom, the deformable measure, the grid and the
+smoothness are remembered between runs (`reg2d` in the settings file).
 
 ### Two matches as one correction
 
@@ -225,6 +250,12 @@ of method `planar` (*2D matches*): the couch readout, the tolerance
 colouring, the report, the positioned copy, the REG and the RT Images work
 as for a 2D/3D run; with a CT the views' DRRs are rendered at the pose.
 Two fixed images taken more than two seconds apart are warned about.
+
+**Refine in 3D.** The 2D/3D section's *Start* row takes a setup of the
+study as the start pose (*from <setup>*); *⌖ As setup* sets it to the setup
+it files, so the next 2D/3D run refines the two-step reading by intensity
+(`SetupOptions::start`). The suite holds a planar setup refined in 3D to
+0.5 mm.
 
 ## Headless
 
@@ -271,7 +302,10 @@ given bone-like texture - the smooth phantom's DRR alone leaves a warp
 undetermined between the organs' outlines); a ring carried through a warp
 and back to 0.1 px; two matches giving the translation to 0.5 mm with the
 2D/3D suite's couch signs, the shared rotation axis named weak, a roll read
-about its ray. Unit tests hold the cost gradients to finite differences,
+about its ray, and a planar setup refined in 3D to 0.5 mm; a study export
+carrying a made-here DRR and its set (both UID modes) that loads back with
+the set attached; undo 32 deep and per workspace; a removed moved copy
+taking its registration and nothing else. Unit tests hold the cost gradients to finite differences,
 the bending energy of an affine field at zero, the B-spline refinement and
 the GSPS reader's substitutions. `tests/load_warnings.rs`,
 `tests/mcp_tools.rs`, `tests/mcp_phi.rs` and `tests/workflow_steps.rs` have
@@ -280,13 +314,17 @@ a case each.
 Before a correction of *As setup* is used in a room, the room's own images
 decide, with the phantom procedure of `docs/registration-2d3d.md`.
 
-## Not done yet
+## Limits
 
-- The 2D/2D section's region tools (the rectangle and polygon of the 2D/3D
-  section on the fixed image); the MCP tool takes a region.
-- The deformable result's field drawn in the pane.
-- *Refine in 3D*: a planar setup as the start of a 2D/3D run.
-- The section's choices are not remembered between runs.
-- The Export window and `export::ExportPlan` do not carry planar images
-  and planar structure sets yet; *💾 Save as presentation state* writes
-  them.
+- The presentation state's conventions follow PS3.3 C.10.5 as checked on
+  the standard's text (`PIXEL` units with `0\0` at the top left corner of
+  the first pixel and `Columns\Rows` at the image's bottom right corner,
+  column first; a closed polyline repeats its first point; `CIRCLE` the
+  centre and a point on it; `ELLIPSE` the ends of the major then the minor
+  axis; `DISPLAY` fractions of the displayed area). It has not been tried
+  on a state written by another system, nor opened in another viewer.
+- The deformable method has not been tried on two megavoltage images.
+- The *2D/2D registration* workflow step puts out a report only; a setup it
+  reads from its matches is filed on the study rather than handed on as a
+  pose.
+- Text objects are read as points of their layer; none is written.

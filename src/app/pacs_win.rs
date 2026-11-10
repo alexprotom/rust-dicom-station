@@ -112,20 +112,31 @@ pub(super) struct PacsWindow {
     /// What the last scan found to pick studies by, with how many studies
     /// hold each.
     pub facets: Vec<(Facet, usize)>,
+    /// The tree as the filter leaves it: what the rows are made of.
+    pub shown: Tree,
+    /// Counts the trees taken, so the analytics know theirs is stale.
+    pub tree_gen: u64,
+    /// The analytics panel is unfolded.
+    pub stats_open: bool,
+    /// The analytics last worked out, and for which tree and rows.
+    pub stats: Option<super::pacs_stats::Stats>,
+    pub stats_for: Option<(u64, Vec<NodeId>)>,
 }
 
 /// One thing a study can be picked by in the list beside 🔍: a 4D set, a
 /// word of its patient's row (`Adult`, `Phantom`, `Female`: what the name
-/// given says in brackets), or a modality one of its series has (CT, MR,
-/// DX, RTSTRUCT, SEG, ...). They sort in that order.
+/// given says in brackets) under its [`WordKind`], or a modality one of
+/// its series has (CT, MR, DX, RTSTRUCT, SEG, ...). They sort in that
+/// order, the words kind by kind.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Facet {
     /// A confirmed 4DCT.
     FourD,
     /// A set only the geometry says is one.
     ProbableFourD,
-    /// A word of [`patient_words`], matched without regard to case.
-    Patient(String),
+    /// A word of [`patient_words`], matched without regard to case, and
+    /// what it says ([`WordKind::of`]).
+    Patient(WordKind, String),
     Modality(String),
 }
 
@@ -134,7 +145,7 @@ impl Facet {
         match self {
             Facet::FourD => "4D".into(),
             Facet::ProbableFourD => "probable 4D".into(),
-            Facet::Patient(w) | Facet::Modality(w) => w.clone(),
+            Facet::Patient(_, w) | Facet::Modality(w) => w.clone(),
         }
     }
 
@@ -142,7 +153,7 @@ impl Facet {
         match self {
             Facet::FourD => s.fourd.iter().any(|g| g.confirmed),
             Facet::ProbableFourD => s.fourd.iter().any(|g| !g.confirmed),
-            Facet::Patient(w) => patient_words(p).iter().any(|x| x.eq_ignore_ascii_case(w)),
+            Facet::Patient(_, w) => patient_words(p).iter().any(|x| x.eq_ignore_ascii_case(w)),
             Facet::Modality(m) => s.modalities.iter().any(|x| x == m),
         }
     }
@@ -152,7 +163,7 @@ impl Facet {
 /// Thorax)` -> `Adult`, `Thorax`, split at commas, leaving out those that
 /// only repeat the patient's name, ID or code (`P01-096 (P01-096)`, the
 /// ID that ends a row with no name given).
-fn patient_words(p: &PatientEntry) -> Vec<String> {
+pub(super) fn patient_words(p: &PatientEntry) -> Vec<String> {
     let title = p.title();
     let t = title.trim_end();
     let Some(inner) = t
@@ -174,6 +185,79 @@ fn patient_words(p: &PatientEntry) -> Vec<String> {
         }
     }
     out
+}
+
+/// What a word of a patient's row says: the age group, the sex, the kind
+/// of subject (a phantom, a volunteer), or - every word none of those
+/// knows - the site (`Thorax`, `HN`, `Pancreas`). Words of one kind are
+/// one chart of the analytics and one group of the list beside 🔍: `Adult`
+/// and `Pancreas` are not shares of one whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(super) enum WordKind {
+    Age,
+    Sex,
+    Site,
+    Subject,
+}
+
+impl WordKind {
+    /// The kind of `word`, by the words each kind knows (in any case).
+    pub fn of(word: &str) -> WordKind {
+        const AGE: &[&str] = &[
+            "adult",
+            "adults",
+            "pediatric",
+            "paediatric",
+            "pediatrics",
+            "paediatrics",
+            "peds",
+            "child",
+            "children",
+            "kid",
+            "infant",
+            "neonate",
+            "neonatal",
+            "newborn",
+            "adolescent",
+            "teen",
+            "teenager",
+            "juvenile",
+            "young adult",
+            "aya",
+            "elderly",
+            "geriatric",
+        ];
+        const SEX: &[&str] = &["male", "female", "m", "f", "man", "woman", "boy", "girl"];
+        const SUBJECT: &[&str] = &[
+            "volunteer",
+            "healthy volunteer",
+            "cadaver",
+            "animal",
+            "canine",
+            "porcine",
+            "mouse",
+            "rat",
+        ];
+        let w = word.trim().to_lowercase();
+        if AGE.contains(&w.as_str()) {
+            WordKind::Age
+        } else if SEX.contains(&w.as_str()) {
+            WordKind::Sex
+        } else if SUBJECT.contains(&w.as_str()) || w.contains("phantom") {
+            WordKind::Subject
+        } else {
+            WordKind::Site
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            WordKind::Age => "Age group",
+            WordKind::Sex => "Sex",
+            WordKind::Site => "Site",
+            WordKind::Subject => "Subject",
+        }
+    }
 }
 
 /// Which studies the tree shows: every one while nothing is picked, else
@@ -235,7 +319,7 @@ fn facets(tree: &Tree) -> Vec<(Facet, usize)> {
         if patients.insert(p.key()) {
             for w in patient_words(p) {
                 let w = spelled.entry(w.to_lowercase()).or_insert(w).clone();
-                put(Facet::Patient(w));
+                put(Facet::Patient(WordKind::of(&w), w));
             }
         }
         for s in p
@@ -297,6 +381,11 @@ impl PacsWindow {
             confirm_remove: None,
             study_filter: StudyFilter::default(),
             facets: Vec::new(),
+            shown: Tree::default(),
+            tree_gen: 0,
+            stats_open: true,
+            stats: None,
+            stats_for: None,
         }
     }
 
@@ -307,7 +396,9 @@ impl PacsWindow {
         self.facets = facets(&tree);
         let offered: BTreeSet<&Facet> = self.facets.iter().map(|(f, _)| f).collect();
         self.study_filter.picked.retain(|f| offered.contains(f));
-        self.nodes = local_nodes(&filtered(&tree, &self.study_filter));
+        self.shown = filtered(&tree, &self.study_filter);
+        self.nodes = local_nodes(&self.shown);
+        self.tree_gen += 1;
         self.view.retain_known(&self.nodes);
         if self.view.expanded.is_empty() {
             // Cohorts open at first: the patients are what one looks for.
@@ -699,6 +790,8 @@ impl ViewerApp {
         let server_msg = self.pacs_server_job.as_ref().map(|j| j.progress.get());
         let mut server_clicks = None;
         let mut scan_on_open = self.pacs_scan_on_open;
+        let mut stats_auto = self.pacs_stats_auto;
+        let mut stats_pie = self.pacs_stats_pie;
 
         detach::tool_window(
             ctx,
@@ -720,6 +813,12 @@ impl ViewerApp {
                         ui.checkbox(&mut scan_on_open, "⟲ Rescan the folders on opening")
                             .on_hover_text(
                                 "Look through the storage folders for new and changed files                                  each time this window is first opened. Off: the PACS is listed                                  at once as the catalog last saw it, and the folders are read                                  only on ⟲ Rescan (and when there is no catalog yet).",
+                            );
+                        ui.checkbox(&mut stats_auto, "📊 Recalculate the analytics on every click")
+                            .on_hover_text(
+                                "Work the analytics panel out again each time the selection \
+                                 in the tree changes. Off: only on its ⟳ button, the figures \
+                                 marked stale meanwhile.",
                             );
                         ui.separator();
                         if tip_button(
@@ -804,6 +903,57 @@ impl ViewerApp {
                     Page::Studies => {}
                 }
 
+                // The analytics, on the right of everything below the menu,
+                // for this station's PACS.
+                if matches!(w.source, Source::Local) && w.pairing.is_none() {
+                    let mut clicked = None;
+                    let open = w.stats_open;
+                    w.stats_open = ViewerApp::edge_panel(
+                        ui,
+                        super::panels::EdgePanel {
+                            id: "pacs_stats",
+                            left: false,
+                            width: 260.0,
+                            name: "analytics",
+                            key: "",
+                        },
+                        open,
+                        |ui| {
+                            clicked = super::pacs_stats::panel_body(
+                                ui,
+                                &mut w,
+                                stats_auto,
+                                &mut stats_pie,
+                            );
+                        },
+                    );
+                    use super::pacs_stats::PanelClick;
+                    if let Some(PanelClick::Reset) = clicked {
+                        reset_filters(&mut w, &mut acts);
+                    }
+                    if let Some(PanelClick::Toggle(f)) = clicked {
+                        // A word as the filter spells it (`male` in the
+                        // scope may be `Male` across the PACS).
+                        let f = w
+                            .facets
+                            .iter()
+                            .map(|(o, _)| o)
+                            .find(|o| match (o, &f) {
+                                (Facet::Patient(_, a), Facet::Patient(_, b)) => {
+                                    a.eq_ignore_ascii_case(b)
+                                }
+                                (o, f) => *o == f,
+                            })
+                            .cloned()
+                            .unwrap_or(f);
+                        let mut sf = w.study_filter.clone();
+                        if !sf.picked.remove(&f) {
+                            sf.picked.insert(f);
+                        }
+                        acts.push(Act::Filter(sf));
+                    }
+                }
+
                 let rctx = pacs_remote::Ctx {
                     servers: &w.servers,
                     busy: rbusy,
@@ -832,8 +982,16 @@ impl ViewerApp {
             },
         );
 
-        if scan_on_open != self.pacs_scan_on_open {
+        if (scan_on_open, stats_auto, stats_pie)
+            != (
+                self.pacs_scan_on_open,
+                self.pacs_stats_auto,
+                self.pacs_stats_pie,
+            )
+        {
             self.pacs_scan_on_open = scan_on_open;
+            self.pacs_stats_auto = stats_auto;
+            self.pacs_stats_pie = stats_pie;
             self.persist_settings();
         }
         if !open {
@@ -1277,8 +1435,15 @@ fn put_in(a: &Archive, members: &[(String, String)], to: &str, copy: bool) -> an
     Ok(())
 }
 
+/// Clear the search text and untick everything in the list beside 🔍.
+fn reset_filters(w: &mut PacsWindow, acts: &mut Vec<Act>) {
+    w.view.filter.clear();
+    acts.push(Act::Filter(StudyFilter::default()));
+}
+
 /// The list beside 🔍: what the last scan found the studies to hold (4D
-/// sets, then the modalities of their series), ticked as many as wanted;
+/// sets, the patients' words, the modalities of their series), ticked as
+/// many as wanted;
 /// it stays open while ticking, so several are picked in one visit.
 fn study_filter_list(ui: &mut egui::Ui, w: &PacsWindow, acts: &mut Vec<Act>) {
     let mut f = w.study_filter.clone();
@@ -1299,19 +1464,23 @@ fn study_filter_list(ui: &mut egui::Ui, w: &PacsWindow, acts: &mut Vec<Act>) {
                 ui.label("of:");
             });
             ui.separator();
-            // The 4D sets, the patients' words, the modalities: a line
-            // between the groups.
+            // The 4D sets, the patients' words kind by kind, the
+            // modalities: a line and a heading for each group.
             let group = |x: &Facet| match x {
-                Facet::FourD | Facet::ProbableFourD => 0,
-                Facet::Patient(_) => 1,
-                Facet::Modality(_) => 2,
+                Facet::FourD | Facet::ProbableFourD => (0, "4D sets"),
+                Facet::Patient(k, _) => (1 + *k as usize, k.title()),
+                Facet::Modality(_) => (9, "Modality"),
             };
             let mut last = None;
             for (x, n) in &w.facets {
-                if last.is_some_and(|g| g != group(x)) {
-                    ui.separator();
+                let (g, title) = group(x);
+                if last != Some(g) {
+                    if last.is_some() {
+                        ui.separator();
+                    }
+                    ui.weak(title);
                 }
-                last = Some(group(x));
+                last = Some(g);
                 let mut on = f.picked.contains(x);
                 let r = ui.checkbox(&mut on, format!("{}  ({n})", x.label()));
                 let r = match x {
@@ -1319,7 +1488,7 @@ fn study_filter_list(ui: &mut egui::Ui, w: &PacsWindow, acts: &mut Vec<Act>) {
                     Facet::ProbableFourD => r.on_hover_text(
                         "One geometry and nothing else says 4D: to confirm or reject",
                     ),
-                    Facet::Patient(_) => r.on_hover_text(
+                    Facet::Patient(..) => r.on_hover_text(
                         "Every study of the patients whose row says this in its brackets \
                          (the count is of patients)",
                     ),
@@ -1404,6 +1573,14 @@ fn local_body(
                 .desired_width(220.0),
         );
         study_filter_list(ui, w, acts);
+        let on = !w.study_filter.is_off() || !w.view.filter.is_empty();
+        if ui
+            .add_enabled(on, egui::Button::new("✖ Reset filters"))
+            .on_hover_text("Show every study again: clear the search text and untick every kind")
+            .clicked()
+        {
+            reset_filters(w, acts);
+        }
     });
     if let Some(p) = job_progress {
         progress_row(ui, p);
@@ -2019,7 +2196,7 @@ mod tests {
     fn the_scan_offers_what_the_studies_hold_and_several_can_be_picked() {
         let t = tree();
         let m = |s: &str| Facet::Modality(s.into());
-        let w = |s: &str| Facet::Patient(s.into());
+        let w = |s: &str| Facet::Patient(WordKind::of(s), s.into());
         assert_eq!(
             facets(&t),
             vec![
@@ -2027,8 +2204,8 @@ mod tests {
                 (Facet::ProbableFourD, 1),
                 (w("Adult"), 1),
                 (w("Male"), 2),
-                (w("Phantom"), 1),
                 (w("Thorax"), 1),
+                (w("Phantom"), 1),
                 (m("CT"), 2),
                 (m("DX"), 1),
                 (m("MR"), 1),
@@ -2062,6 +2239,25 @@ mod tests {
             "CT + RTSTRUCT"
         );
         assert_eq!(pick(false, &[m("MR"), m("DX")]).label(), "DX or MR");
+    }
+
+    #[test]
+    fn a_word_is_an_age_group_a_sex_a_subject_or_else_a_site() {
+        for (w, k) in [
+            ("Adult", WordKind::Age),
+            ("pediatric", WordKind::Age),
+            ("Paediatric", WordKind::Age),
+            ("Male", WordKind::Sex),
+            ("female", WordKind::Sex),
+            ("Phantom", WordKind::Subject),
+            ("CIRS phantom", WordKind::Subject),
+            ("Volunteer", WordKind::Subject),
+            ("Pancreas", WordKind::Site),
+            ("HN", WordKind::Site),
+            ("Thoraco-abdominal", WordKind::Site),
+        ] {
+            assert_eq!(WordKind::of(w), k, "{w}");
+        }
     }
 
     #[test]

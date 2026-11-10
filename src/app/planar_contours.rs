@@ -31,7 +31,7 @@ pub(super) struct Planar2d {
     /// wire).
     pub(super) draw: Option<super::planar_tools::PlanarDraw>,
     /// Undo snapshots of planar structures, newest last.
-    pub(super) undo: Vec<super::planar_tools::PlanarSnapshot>,
+    pub(super) undo: crate::planar_structs::Undo,
     /// The contour brush's and the nudge's last sample, whether the brush
     /// stroke cuts (decided at its start) and whether the stroke has taken
     /// its undo snapshot.
@@ -40,8 +40,10 @@ pub(super) struct Planar2d {
     pub(super) stroke_saved: bool,
     /// The live wire on the image being drawn on.
     pub(super) wire: Option<super::planar_tools::PlanarWire>,
-    /// The 2D/2D registration section and its run.
+    /// The 2D/2D registration section and its run, and what it remembers
+    /// between runs (persisted).
     pub(super) reg: Option<super::reg2d::Reg2dState>,
+    pub(super) prefs: settings::Reg2dPrefs,
     pub(super) reg_job: Option<Job<(usize, anyhow::Result<super::reg2d::Reg2dOut>)>>,
 }
 

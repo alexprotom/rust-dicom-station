@@ -1151,3 +1151,171 @@ fn a_roll_in_one_view_reads_as_the_rotation_about_its_ray() {
     let got = s.result.transform.params();
     assert!((got[1] - 0.03).abs() < 0.005, "{got:?}");
 }
+
+// ---------------------------------------------------------------------------
+// P7: the export plan carries planar images and planar structure sets
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_study_export_carries_its_drr_and_the_contours_on_it() {
+    use rust_dicom_station::dicom_export::ExportParams;
+    use rust_dicom_station::export::{self, ExportPlan, ObjKind, UidMode};
+    let mut study = LoadedStudy::default();
+    let img = drr_like("1.2.826.0.7.11", "1.2.826.0.7.10");
+    study.planar_images.push(img.clone());
+    let mut set = PlanarStructureSet::new("Exported", "", "projected");
+    set.structure_entry("PTV", Some([230, 60, 60]))
+        .contour_entry(&img.sop_instance_uid)
+        .region = Region::from_ring(square([30.0, 20.0], 6.0));
+    set.refresh_images();
+    study.planar_structs.push(set);
+
+    for mode in [UidMode::Keep, UidMode::New] {
+        let mut plan =
+            ExportPlan::build(export::one_study(&study), ExportParams::for_study(&study));
+        plan.set_uid_mode(mode);
+        let kinds: Vec<ObjKind> = plan
+            .studies()
+            .flat_map(|s| s.objects.iter().map(|o| o.kind))
+            .collect();
+        assert!(kinds.contains(&ObjKind::Planar) && kinds.contains(&ObjKind::PlanarStructures));
+        let dir = scratch(&format!("export_{mode:?}"));
+        let sum = export::run(
+            &plan,
+            export::one_study(&study),
+            &dir,
+            &rust_dicom_station::progress::Progress::default(),
+        )
+        .unwrap();
+        assert_eq!(sum.files, 2, "{:?}", sum.warnings);
+        let back = rust_dicom_station::loader::load_directory(
+            &dir,
+            &rust_dicom_station::progress::Progress::default(),
+        )
+        .unwrap();
+        assert_eq!(back.planar_images.len(), 1);
+        assert_eq!(back.planar_structs.len(), 1);
+        let s = &back.planar_structs[0];
+        assert!(
+            s.missing_images(&back).is_empty(),
+            "{mode:?}: the state names the image as written"
+        );
+        let uid = &back.planar_images[0].sop_instance_uid;
+        assert_eq!(
+            uid == &img.sop_instance_uid,
+            mode == UidMode::Keep,
+            "{mode:?}: the image keeps its UID only when told to"
+        );
+        assert!(s.structure("PTV").unwrap().contour(uid).is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Undo, removals, and a planar setup refined in 3D
+// ---------------------------------------------------------------------------
+
+#[test]
+fn undo_restores_the_contours_and_goes_32_deep() {
+    use rust_dicom_station::planar_structs::Undo;
+    let mut study = LoadedStudy::default();
+    study
+        .planar_structs
+        .push(set_with("S", "", "PTV", "9.1", [20.0, 20.0]));
+    let before = study.planar_structs[0].structures[0].contours.clone();
+    let mut undo = Undo::default();
+    undo.push(0, &study, 0, 0);
+    let c = study.planar_structs[0].structures[0]
+        .contour_mut("9.1")
+        .unwrap();
+    planar_structs::apply_ring(&mut c.region, &square([40.0, 40.0], 5.0), false);
+    assert_ne!(study.planar_structs[0].structures[0].contours, before);
+    // Another workspace's step does not take this one back.
+    assert!(!undo.undo(1, &mut study));
+    assert!(undo.undo(0, &mut study));
+    assert_eq!(study.planar_structs[0].structures[0].contours, before);
+    assert!(!undo.undo(0, &mut study), "nothing left");
+    for _ in 0..40 {
+        undo.push(0, &study, 0, 0);
+    }
+    assert_eq!(undo.steps.len(), Undo::DEPTH);
+}
+
+#[test]
+fn removing_a_moved_copy_drops_its_registration_and_nothing_else() {
+    let fixed = radiograph(40, 6.0, [48, 48]);
+    let mut req = Request2d::new(fixed.clone(), fixed.clone());
+    req.max_pixels = 48;
+    req.levels = 1;
+    let result = p2::register(&req, &rust_dicom_station::progress::Quiet).unwrap();
+    let mut study = LoadedStudy::default();
+    for uid in ["f", "m", "copy"] {
+        study.planar_images.push(blank(uid, [48, 48], [1.5, 1.5]));
+    }
+    study
+        .planar_structs
+        .push(set_with("On the copy", "", "PTV", "copy", [20.0, 20.0]));
+    let reg = |copy: Option<&str>| p2::PlanarReg {
+        label: "r".into(),
+        fixed_uid: "f".into(),
+        moving_uid: "m".into(),
+        result: result.clone(),
+        moved_copy_uid: copy.map(String::from),
+        when: String::new(),
+    };
+    study.planar_regs.push(reg(Some("copy")));
+    study.planar_regs.push(reg(None));
+    assert!(planar_structs::orphaned_regs(&study).is_empty());
+    study.planar_images.remove(2);
+    assert_eq!(planar_structs::orphaned_regs(&study), [0]);
+    // The set on the copy stays, its image now not loaded.
+    assert_eq!(study.planar_structs[0].missing_images(&study), ["copy"]);
+}
+
+#[test]
+fn a_setup_from_2d_matches_refines_in_3d() {
+    use rust_dicom_station::iec::{PatientFrame, PatientPosition};
+    use rust_dicom_station::nn::device::DevicePref;
+    use rust_dicom_station::setup::{self, GeometrySource, SetupOptions, ViewChoice};
+    let truth = RigidTransform::new([0.0, 0.0, 0.0, 4.0, -3.0, 5.0], Vec3::ZERO);
+    let study = setup_study(&truth);
+    let regs = matches(&study);
+    let refs: Vec<&p2::PlanarReg> = regs.iter().collect();
+    let frame = Some(PatientFrame::Position(PatientPosition::Hfs));
+    let opts = SetupOptions {
+        patient: frame,
+        max_pixels: 128,
+        ..Default::default()
+    };
+    let planar =
+        setup::from_planar(&study, &refs, &opts, &rust_dicom_station::progress::Quiet).unwrap();
+    // Today's images, each with its own geometry, from the planar pose.
+    let views = vec![
+        ViewChoice::new(1, GeometrySource::Image),
+        ViewChoice::new(3, GeometrySource::Image),
+    ];
+    let refine = SetupOptions {
+        patient: frame,
+        metric: Metric2d::Ncc,
+        max_pixels: 96,
+        levels: 2,
+        step_mm: 1.5,
+        conditioning: false,
+        device: DevicePref::Cpu,
+        start: Some(planar.result.transform.clone()),
+        ..Default::default()
+    };
+    let s = setup::run(
+        &study,
+        &views,
+        &refine,
+        None,
+        &rust_dicom_station::progress::Quiet,
+    )
+    .unwrap();
+    let (got, want) = (s.result.transform.params(), truth.params());
+    for k in 3..6 {
+        assert!((got[k] - want[k]).abs() < 0.5, "{got:?} vs {want:?}");
+    }
+    assert!(s.result.start.contains("start") || !s.result.start.is_empty());
+}

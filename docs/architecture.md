@@ -554,6 +554,11 @@ src/
     pacs_remote.rs    the PACS window on a paired server: its tree, pull
                       (patients, studies, single series), load, send, sync,
                       upload, the Tasks tab, Add server / pairing
+    pacs_stats.rs     the PACS window's analytics panel (an edge_panel): the
+                      patients' words (a chart per WordKind: age group,
+                      sex, site, subject) and the modalities of the
+                      selection (or the whole tree shown), as bars or
+                      rings, a click ticking the filter
     pacs_tree.rs      the tree both draw: rows drawn only where visible,
                       selection with Ctrl / Shift and the keyboard, filter;
                       a course's series by treatment day (study_rows; series_ids
@@ -633,8 +638,9 @@ src/
                     and rigid Spatial Registration, RT Image with its
                     geometry) and the patching file copier                     DICOM
   export.rs         what one export run is: the workspace / patient / study /
-                    series selection tree, every editable name and UID, the
-                    RTSTRUCT / SEG choice, and the runner that keeps the
+                    series selection tree (planar images and planar
+                    structure sets among a study's objects), every editable
+                    name and UID, the RTSTRUCT / SEG choice, and the runner that keeps the
                     references between the written objects resolvable          DICOM
   anonymize.rs      interactive DICOM anonymizer engine                          DICOM
   curation/         curating an archive: raw.rs (DICOM files as bytes - elements

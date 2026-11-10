@@ -1885,6 +1885,17 @@ fn export_dicom(
                         prm.sets == cat::WhichSets::All || d.touched_segs.contains(&ob.index)
                     }
                     ObjKind::Dose | ObjKind::Plan => prm.doses_and_plans,
+                    // Every planar structure set, and the planar images
+                    // with the images or when made here (a DRR, a moved
+                    // copy: what the run produced).
+                    ObjKind::PlanarStructures => true,
+                    ObjKind::Planar => {
+                        prm.images
+                            || d.study
+                                .planar_images
+                                .get(ob.index)
+                                .is_some_and(|p| p.source_path.is_none())
+                    }
                 };
             }
         }

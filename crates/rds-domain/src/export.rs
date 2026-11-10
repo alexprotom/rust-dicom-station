@@ -221,6 +221,12 @@ pub enum ObjKind {
     Segmentation,
     Dose,
     Plan,
+    /// A planar image (radiograph, RT image, DRR): its file copied with the
+    /// plan's identifiers, or, made here, written as an RT Image.
+    Planar,
+    /// A planar structure set, written as a Grayscale Softcopy
+    /// Presentation State referencing the planar images as they go out.
+    PlanarStructures,
 }
 
 impl ObjKind {
@@ -233,6 +239,8 @@ impl ObjKind {
             ObjKind::Segmentation => "◍",
             ObjKind::Dose => "⊞",
             ObjKind::Plan => "☢",
+            ObjKind::Planar => "⬚",
+            ObjKind::PlanarStructures => "◌",
         }
     }
     /// Whether the RTSTRUCT / SEG radio applies.
@@ -398,6 +406,10 @@ impl ExportPlan {
                         se.uid.apply_mode(mode);
                         se.for_uid.apply_mode(mode);
                     }
+                    for ob in st.objects.iter_mut().filter(|o| o.kind == ObjKind::Planar) {
+                        ob.sop_uid.apply_mode(mode);
+                        ob.series_uid.apply_mode(mode);
+                    }
                 }
             }
         }
@@ -430,7 +442,9 @@ impl ExportPlan {
     /// touched.
     pub fn sync_format_uids(&mut self) {
         for st in self.studies_mut() {
-            for ob in &mut st.objects {
+            // A planar image is copied as its series are, and follows the
+            // UID mode as they do ([`Self::set_uid_mode`]).
+            for ob in st.objects.iter_mut().filter(|o| o.kind != ObjKind::Planar) {
                 for f in [&mut ob.sop_uid, &mut ob.series_uid] {
                     let Some(fresh) = f.fresh.clone() else {
                         continue;
@@ -821,6 +835,76 @@ fn build_study(slot: usize, study: &LoadedStudy, study_uid: &str) -> StudyNode {
         });
     }
 
+    // Planar images (the projections; additional objects stay as they are)
+    // and the planar structure sets, of this study or of no study at all
+    // when it is the only one.
+    let lone = study
+        .series
+        .iter()
+        .map(|s| s.study_uid.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        <= 1;
+    let ours = |uid: &str| uid == study_uid || (uid.is_empty() && lone);
+    for (i, img) in study.planar_images.iter().enumerate() {
+        if img.kind != crate::extras::PlanarKind::Projection
+            || !ours(&img.study_uid)
+            || img.data.is_empty()
+        {
+            continue;
+        }
+        objects.push(ObjNode {
+            slot,
+            kind: ObjKind::Planar,
+            index: i,
+            selected: true,
+            label: img.label.clone(),
+            detail: format!(
+                "{} · {} × {} px{}",
+                img.modality,
+                img.cols,
+                img.rows,
+                if img.source_path.is_some() {
+                    ""
+                } else {
+                    " · made here"
+                }
+            ),
+            source_uid: img.sop_instance_uid.clone(),
+            sop_uid: Field::uid(img.sop_instance_uid.clone()),
+            series_uid: Field::uid(img.series_instance_uid.clone()),
+            description: Field::text(img.label.clone()),
+            number: Field::text((700 + i).to_string()),
+            format: StructFormat::RtStruct,
+            referenced_series_uid: String::new(),
+        });
+    }
+    for (i, set) in study.planar_structs.iter().enumerate() {
+        let on_ours = set.images.iter().any(|u| {
+            study
+                .planar_by_uid(u)
+                .is_some_and(|k| ours(&study.planar_images[k].study_uid))
+        });
+        if !(on_ours || (set.images.is_empty() && ours(&set.study_uid))) {
+            continue;
+        }
+        objects.push(ObjNode {
+            slot,
+            kind: ObjKind::PlanarStructures,
+            index: i,
+            selected: true,
+            label: set.label.clone(),
+            detail: format!("{} structure(s)", set.structures.len()),
+            source_uid: set.sop_instance_uid.clone(),
+            sop_uid: Field::new_uid(set.sop_instance_uid.clone()),
+            series_uid: Field::new_uid(set.series_instance_uid.clone()),
+            description: Field::text(set.label.clone()),
+            number: Field::text((800 + i).to_string()),
+            format: StructFormat::RtStruct,
+            referenced_series_uid: String::new(),
+        });
+    }
+
     StudyNode {
         slot,
         source_uid: study_uid.to_string(),
@@ -1153,6 +1237,27 @@ fn export_one_study(
         .filter(|o| !o.source_uid.is_empty())
         .map(|o| (o.source_uid.as_str(), o.sop_uid.trimmed()))
         .collect();
+    // The planar images as they go out (new UIDs, the study's identity):
+    // what a presentation state written with them references. An image not
+    // selected is referenced as it was.
+    let planar_out: HashMap<&str, crate::extras::PlanarImage> = st
+        .objects
+        .iter()
+        .filter(|o| o.kind == ObjKind::Planar && o.selected)
+        .filter_map(|o| {
+            let img = study.planar_images.get(o.index)?;
+            let mut out = img.clone();
+            out.sop_instance_uid = o.sop_uid.trimmed().to_string();
+            out.series_instance_uid = o.series_uid.trimmed().to_string();
+            out.study_uid = st.uid.trimmed().to_string();
+            out.label = o.description.trimmed().to_string();
+            out.frame_of_reference_uid = planar_frame(&img.frame_of_reference_uid, st);
+            if img.source_path.is_none() {
+                out.sop_class_uid = crate::sop::SOP_RTIMAGE.to_string();
+            }
+            Some((img.sop_instance_uid.as_str(), out))
+        })
+        .collect();
 
     for (n, node) in st.objects.iter().filter(|o| o.selected).enumerate() {
         progress.set(format!("Writing {} {}", node.kind.glyph(), node.label));
@@ -1241,9 +1346,142 @@ fn export_one_study(
                 dicom_export::write_object(o, dicom_export::plan_sop_class(p), &path)?;
                 *files += 1;
             }
+            ObjKind::Planar => {
+                let (Some(img), Some(out)) = (
+                    study.planar_images.get(node.index),
+                    planar_out.get(node.source_uid.as_str()),
+                ) else {
+                    continue;
+                };
+                let path = dir.join(format!("RI_{}.dcm", 700 + node.index));
+                match &img.source_path {
+                    // A file of its own: copied, only the identity patched.
+                    Some(src) if src.is_file() => {
+                        use dicom_core::VR;
+                        let mut set = ident.clone();
+                        set.extend([
+                            (tags::SOP_INSTANCE_UID, VR::UI, out.sop_instance_uid.clone()),
+                            (
+                                tags::SERIES_INSTANCE_UID,
+                                VR::UI,
+                                out.series_instance_uid.clone(),
+                            ),
+                            (
+                                tags::SERIES_NUMBER,
+                                VR::IS,
+                                node.number.trimmed().to_string(),
+                            ),
+                        ]);
+                        if !out.frame_of_reference_uid.is_empty() {
+                            set.push((
+                                tags::FRAME_OF_REFERENCE_UID,
+                                VR::UI,
+                                out.frame_of_reference_uid.clone(),
+                            ));
+                        }
+                        dicom_export::copy_patched(src, &path, &set)?;
+                    }
+                    _ => {
+                        let meta = dicom_export::ObjectMeta {
+                            patient_name: patient.name.trimmed().to_string(),
+                            patient_id: patient.id.trimmed().to_string(),
+                            study_uid: st.uid.trimmed().to_string(),
+                            label: "IMAGE".into(),
+                            description: out.label.clone(),
+                        };
+                        dicom_export::write_rt_image(&path, out, &meta)?;
+                    }
+                }
+                *files += 1;
+            }
+            ObjKind::PlanarStructures => {
+                let Some(set) = study.planar_structs.get(node.index) else {
+                    continue;
+                };
+                // The set as it goes out: its images under their new UIDs.
+                let mut out = set.clone();
+                out.label = node.description.trimmed().to_string();
+                out.series_instance_uid = node.series_uid.trimmed().to_string();
+                out.study_uid = st.uid.trimmed().to_string();
+                let new_uid = |u: &str| -> String {
+                    planar_out
+                        .get(u)
+                        .map(|i| i.sop_instance_uid.clone())
+                        .unwrap_or_else(|| u.to_string())
+                };
+                for s in &mut out.structures {
+                    for c in &mut s.contours {
+                        c.image_uid = new_uid(&c.image_uid);
+                    }
+                    for p in &mut s.points {
+                        p.0 = new_uid(&p.0);
+                    }
+                }
+                out.images = out.images.iter().map(|u| new_uid(u)).collect();
+                let images: Vec<(crate::extras::PlanarImage, (f32, f32))> = set
+                    .images
+                    .iter()
+                    .filter_map(|u| {
+                        let i = study.planar_by_uid(u)?;
+                        let img = planar_out
+                            .get(u.as_str())
+                            .cloned()
+                            .unwrap_or_else(|| study.planar_images[i].clone());
+                        let wl = img.window;
+                        Some((img, wl))
+                    })
+                    .collect();
+                let missing = set.missing_images(study).len();
+                if missing > 0 {
+                    warnings.push(format!(
+                        "planar structures “{}”: {missing} referenced image(s) not loaded; \
+                         their contours are not written",
+                        node.label
+                    ));
+                    for s in &mut out.structures {
+                        s.contours.retain(|c| {
+                            images
+                                .iter()
+                                .any(|(i, _)| i.sop_instance_uid == c.image_uid)
+                        });
+                        s.points
+                            .retain(|p| images.iter().any(|(i, _)| i.sop_instance_uid == p.0));
+                    }
+                }
+                let refs: Vec<(&crate::extras::PlanarImage, (f32, f32))> =
+                    images.iter().map(|(i, w)| (i, *w)).collect();
+                let meta = dicom_export::ObjectMeta {
+                    patient_name: patient.name.trimmed().to_string(),
+                    patient_id: patient.id.trimmed().to_string(),
+                    study_uid: st.uid.trimmed().to_string(),
+                    label: out.label.clone(),
+                    description: out.label.clone(),
+                };
+                let path = dir.join(format!("PR_{}.dcm", 800 + node.index));
+                match crate::gsps::write_as(&path, &out, &refs, &meta, node.sop_uid.trimmed()) {
+                    Ok(_) => *files += 1,
+                    Err(e) => warnings.push(format!(
+                        "planar structures “{}” were not written: {e:#}",
+                        node.label
+                    )),
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// The frame of reference a planar image goes out under: the one an
+/// exported series renamed its frame to, else its own.
+fn planar_frame(own: &str, st: &StudyNode) -> String {
+    if own.is_empty() {
+        return String::new();
+    }
+    st.series
+        .iter()
+        .find(|s| s.selected && s.for_uid.original == own)
+        .map(|s| s.for_uid.trimmed().to_string())
+        .unwrap_or_else(|| own.to_string())
 }
 
 /// Frame of Reference an RT object is written with: the one its image series
@@ -1860,6 +2098,7 @@ fn name_source(o: &mut dicom_object::InMemDicomObject, study: &LoadedStudy, node
             Some(p) => dicom_export::plan_sop_class(p),
             None => return,
         },
+        ObjKind::Planar | ObjKind::PlanarStructures => return,
     };
     dicom_export::put_source(o, class, uid);
 }

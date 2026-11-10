@@ -59,6 +59,15 @@ pub(super) struct Reg2dState {
     /// after it on the moving image ends it.
     pub(super) placing: bool,
     pub(super) pending: Option<[f64; 2]>,
+    /// The region of the fixed image the measure is taken over: polygons
+    /// in its pixels; the whole image when empty. Drawn with `region_tool`
+    /// on the fixed image, `drawing` the one under way.
+    pub(super) region: Vec<Vec<[f64; 2]>>,
+    pub(super) region_tool: RegionTool,
+    pub(super) drawing: Vec<[f64; 2]>,
+    /// Draw the current deformable registration's field over its fixed
+    /// image: arrows of the warp on a lattice and the lattice deformed.
+    pub(super) show_field: bool,
     /// The registration on display, within `study.planar_regs`.
     pub(super) current: Option<usize>,
     /// The registrations ticked for *As setup*.
@@ -66,16 +75,28 @@ pub(super) struct Reg2dState {
     pub(super) status: Option<String>,
 }
 
+/// The region tools of the fixed image.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum RegionTool {
+    #[default]
+    None,
+    /// A drag from corner to corner.
+    Rect,
+    /// Click by click, closed with the right button or a double click.
+    Polygon,
+}
+
 impl Reg2dState {
-    fn new(slot: usize) -> Self {
+    fn new(slot: usize, prefs: &settings::Reg2dPrefs) -> Self {
+        let deform_metric = DeformMetric::from_key(&prefs.deform_metric).unwrap_or_default();
         Reg2dState {
             slot,
             fixed: None,
             moving: None,
-            method: Method2d::Intensity,
-            metric: Metric2d::GradientCorrelation,
+            method: Method2d::from_key(&prefs.method).unwrap_or_default(),
+            metric: Metric2d::from_key(&prefs.metric).unwrap_or(Metric2d::GradientCorrelation),
             optimizer: Optimizer2d::Powell,
-            dof: Dof2d::ShiftRotation,
+            dof: Dof2d::from_key(&prefs.dof).unwrap_or_default(),
             levels: 3,
             pixels: 256,
             range_mm: 30.0,
@@ -84,16 +105,35 @@ impl Reg2dState {
             pairs: Vec::new(),
             find_markers: false,
             marker_mm: 2.0,
-            grid_mm: 32.0,
-            grid_min_mm: 8.0,
-            lambda: DeformMetric::Msd.default_lambda(),
-            deform_metric: DeformMetric::Msd,
+            grid_mm: (prefs.grid_mm as f64).clamp(4.0, 128.0),
+            grid_min_mm: (prefs.grid_min_mm as f64).clamp(2.0, 64.0),
+            lambda: prefs.lambda_milli as f64 / 1000.0,
+            deform_metric,
             file_copy: true,
             placing: false,
             pending: None,
+            region: Vec::new(),
+            region_tool: RegionTool::None,
+            drawing: Vec::new(),
+            show_field: true,
             current: None,
             for_setup: Vec::new(),
             status: None,
+        }
+    }
+}
+
+impl Reg2dState {
+    /// What is remembered of the section between runs.
+    fn prefs(&self) -> settings::Reg2dPrefs {
+        settings::Reg2dPrefs {
+            method: self.method.key().into(),
+            metric: self.metric.key().into(),
+            dof: self.dof.key().into(),
+            deform_metric: self.deform_metric.key().into(),
+            grid_mm: self.grid_mm.round() as u16,
+            grid_min_mm: self.grid_min_mm.round() as u16,
+            lambda_milli: (self.lambda * 1000.0).round().max(0.0) as u32,
         }
     }
 }
@@ -107,11 +147,18 @@ pub(super) struct Reg2dOut {
     pub(super) file_copy: bool,
 }
 
-/// One click of the *Place* tool, applied after the pane is drawn.
-pub(super) struct PlaceClick {
-    pub(super) slot: usize,
-    pub(super) image: usize,
-    pub(super) px: [f64; 2],
+/// What the pointer did on a pane with one of the section's tools in
+/// hand, applied after the pane is drawn.
+pub(super) enum PaneEdit2d {
+    /// A click of *Place*.
+    Place(usize, [f64; 2]),
+    /// The rectangle: its first corner, then the corner under the pointer.
+    RectFrom([f64; 2]),
+    RectTo([f64; 2]),
+    RectDone,
+    /// A corner of the polygon, and its closing.
+    Corner([f64; 2]),
+    Close,
 }
 
 impl ViewerApp {
@@ -159,7 +206,7 @@ impl ViewerApp {
             });
         let Some(slot) = slot else { return };
         if self.planar2d.reg.as_ref().is_none_or(|s| s.slot != slot) {
-            let mut st = Reg2dState::new(slot);
+            let mut st = Reg2dState::new(slot, &self.planar2d.prefs);
             // The image under the scrubber of the first planar pane is the
             // fixed one, the next of its stack the moving one.
             let layers: Vec<usize> = self.slots[slot].planar[0]
@@ -182,27 +229,103 @@ impl ViewerApp {
         }
     }
 
-    /// Is the *Place* tool waiting for a click on `image` of `slot`?
-    pub(super) fn reg2d_placing(&self, slot: usize, image: usize) -> bool {
+    /// Does one of the section's tools (*Place*, the region) take the left
+    /// button over `image` of `slot`?
+    pub(super) fn reg2d_pane_tool(&self, slot: usize, image: usize) -> bool {
         self.planar2d.reg.as_ref().is_some_and(|st| {
             st.slot == slot
-                && st.placing
-                && match st.pending {
-                    None => st.fixed == Some(image),
-                    Some(_) => st.moving == Some(image),
-                }
+                && ((st.placing
+                    && match st.pending {
+                        None => st.fixed == Some(image),
+                        Some(_) => st.moving == Some(image),
+                    })
+                    || (st.region_tool != RegionTool::None && st.fixed == Some(image)))
         })
     }
 
-    /// A click of the *Place* tool.
-    pub(super) fn reg2d_place(&mut self, c: PlaceClick) {
-        let Some(st) = self.planar2d.reg.as_mut().filter(|st| st.slot == c.slot) else {
+    /// The pointer over `image` (`dims`, drawn in `on`) with a tool of the
+    /// section in hand.
+    pub(super) fn reg2d_pane_input(
+        &self,
+        image: usize,
+        dims: [usize; 2],
+        on: Rect,
+        resp: &egui::Response,
+    ) -> Vec<PaneEdit2d> {
+        let Some(st) = &self.planar2d.reg else {
+            return Vec::new();
+        };
+        let at = |mp: Pos2| super::planar_contours::screen_to_px(mp, dims, on);
+        let pos = resp.interact_pointer_pos();
+        let mut out = Vec::new();
+        if st.placing {
+            if let (true, Some(mp)) = (resp.clicked(), pos) {
+                out.push(PaneEdit2d::Place(image, at(mp)));
+            }
+            return out;
+        }
+        match st.region_tool {
+            RegionTool::Rect => {
+                if resp.drag_started_by(egui::PointerButton::Primary) {
+                    if let Some(mp) = pos {
+                        out.push(PaneEdit2d::RectFrom(at(mp)));
+                    }
+                } else if resp.dragged_by(egui::PointerButton::Primary) {
+                    if let Some(mp) = pos {
+                        out.push(PaneEdit2d::RectTo(at(mp)));
+                    }
+                }
+                if resp.drag_stopped_by(egui::PointerButton::Primary) {
+                    out.push(PaneEdit2d::RectDone);
+                }
+            }
+            RegionTool::Polygon => {
+                if let (true, Some(mp)) = (resp.clicked(), pos) {
+                    out.push(PaneEdit2d::Corner(at(mp)));
+                }
+                if resp.clicked_by(egui::PointerButton::Secondary) || resp.double_clicked() {
+                    out.push(PaneEdit2d::Close);
+                }
+            }
+            RegionTool::None => {}
+        }
+        out
+    }
+
+    /// Apply what the pointer did with the section's tools.
+    pub(super) fn reg2d_pane_apply(&mut self, edits: Vec<PaneEdit2d>) {
+        let Some(st) = self.planar2d.reg.as_mut() else {
             return;
         };
-        match st.pending.take() {
-            None if st.fixed == Some(c.image) => st.pending = Some(c.px),
-            Some(f) if st.moving == Some(c.image) => st.pairs.push((f, c.px)),
-            p => st.pending = p,
+        for e in edits {
+            match e {
+                PaneEdit2d::Place(image, px) => match st.pending.take() {
+                    None if st.fixed == Some(image) => st.pending = Some(px),
+                    Some(f) if st.moving == Some(image) => st.pairs.push((f, px)),
+                    p => st.pending = p,
+                },
+                PaneEdit2d::RectFrom(p) => st.drawing = vec![p, p],
+                PaneEdit2d::RectTo(p) => {
+                    if st.drawing.len() == 2 {
+                        st.drawing[1] = p;
+                    }
+                }
+                PaneEdit2d::RectDone => {
+                    if let [a, b] = st.drawing[..] {
+                        if (a[0] - b[0]).abs() > 1.0 && (a[1] - b[1]).abs() > 1.0 {
+                            st.region.push(vec![a, [b[0], a[1]], b, [a[0], b[1]]]);
+                        }
+                    }
+                    st.drawing.clear();
+                }
+                PaneEdit2d::Corner(p) => st.drawing.push(p),
+                PaneEdit2d::Close => {
+                    if st.drawing.len() >= 3 {
+                        st.region.push(std::mem::take(&mut st.drawing));
+                    }
+                    st.drawing.clear();
+                }
+            }
         }
     }
 
@@ -228,6 +351,32 @@ impl ViewerApp {
             return;
         };
         let color = Color32::from_rgb(255, 160, 0);
+        if st.show_field {
+            self.reg2d_field(painter, slot, image, on);
+        }
+        // The region and the one being drawn, over the fixed image.
+        if side == 0 {
+            let to = |p: &[f64; 2]| super::planar_contours::px_to_screen(*p, dims, on);
+            let stroke = egui::Stroke::new(1.5, Color32::from_rgb(0, 200, 120));
+            for poly in &st.region {
+                painter.add(egui::Shape::closed_line(
+                    poly.iter().map(to).collect(),
+                    stroke,
+                ));
+            }
+            if st.drawing.len() >= 2 {
+                let pts: Vec<Pos2> = if st.region_tool == RegionTool::Rect {
+                    let (a, b) = (st.drawing[0], st.drawing[1]);
+                    [a, [b[0], a[1]], b, [a[0], b[1]], a]
+                        .iter()
+                        .map(to)
+                        .collect()
+                } else {
+                    st.drawing.iter().map(to).collect()
+                };
+                painter.add(egui::Shape::line(pts, stroke));
+            }
+        }
         let mut pts: Vec<(String, [f64; 2])> = st
             .pairs
             .iter()
@@ -250,6 +399,65 @@ impl ViewerApp {
                 FontId::proportional(11.0),
                 color,
             );
+        }
+    }
+
+    /// The warp of the section's current registration over its fixed image
+    /// `image` (drawn in `on`): an arrow per node of a lattice about 24
+    /// screen pixels apart, from where a point is to where the warp sends
+    /// it (the rigid part left out, at the fixed image's scale), and the
+    /// lattice itself deformed.
+    fn reg2d_field(&self, painter: &egui::Painter, slot: usize, image: usize, on: Rect) {
+        let Some(st) = self.planar2d.reg.as_ref() else {
+            return;
+        };
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let Some(reg) = st.current.and_then(|k| study.planar_regs.get(k)) else {
+            return;
+        };
+        let Some(img) = study.planar_images.get(image) else {
+            return;
+        };
+        if reg.fixed_uid != img.sop_instance_uid {
+            return;
+        }
+        let Some(w) = &reg.result.transform.warp else {
+            return;
+        };
+        let dims = [img.cols, img.rows];
+        let screen_px = on.width() / dims[0].max(1) as f32;
+        let step = ((24.0 / screen_px.max(1e-3)).round() as usize).max(4);
+        let to = |p: [f64; 2]| super::planar_contours::px_to_screen(p, dims, on);
+        let moved = |i: usize, j: usize| -> [f64; 2] {
+            let p = [i as f64, j as f64];
+            let d = w.displacement(p2::px_to_mm(dims, img.spacing, p));
+            [
+                p[0] + d[0] / img.spacing[0].max(1e-9),
+                p[1] + d[1] / img.spacing[1].max(1e-9),
+            ]
+        };
+        let grid = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(80, 200, 255, 110));
+        let arrow = egui::Stroke::new(1.5, Color32::from_rgb(255, 220, 60));
+        let xs: Vec<usize> = (step / 2..dims[0]).step_by(step).collect();
+        let ys: Vec<usize> = (step / 2..dims[1]).step_by(step).collect();
+        for &j in &ys {
+            let line: Vec<Pos2> = xs.iter().map(|&i| to(moved(i, j))).collect();
+            painter.add(egui::Shape::line(line, grid));
+        }
+        for &i in &xs {
+            let line: Vec<Pos2> = ys.iter().map(|&j| to(moved(i, j))).collect();
+            painter.add(egui::Shape::line(line, grid));
+        }
+        for &j in &ys {
+            for &i in &xs {
+                let (a, b) = (to([i as f64, j as f64]), to(moved(i, j)));
+                if (b - a).length() < 0.5 {
+                    continue;
+                }
+                painter.arrow(a, b - a, arrow);
+            }
         }
     }
 
@@ -280,6 +488,9 @@ impl ViewerApp {
         req.refine = st.refine;
         req.pairs = st.pairs.clone();
         req.detect_markers = st.find_markers.then_some(st.marker_mm);
+        if !st.region.is_empty() {
+            req.mask = Some(setup::region_mask([f.cols, f.rows], &st.region));
+        }
         req.grid_mm = st.grid_mm;
         req.grid_min_mm = st.grid_min_mm;
         req.lambda = st.lambda;
@@ -518,8 +729,14 @@ impl ViewerApp {
         match setup::from_planar(study, &regs, &opts, &crate::progress::Quiet) {
             Ok(s) => {
                 let line = s.result.correction_line();
+                let mut k = None;
                 if let Some(study) = self.slots[slot].study.as_mut() {
                     study.setups.push(s);
+                    k = Some(study.setups.len() - 1);
+                }
+                // *Refine in 3D*: the 2D/3D section starts from it.
+                if let Some(r) = self.r2d.as_mut().filter(|r| r.slot == slot) {
+                    r.start_setup = k;
                 }
                 self.settings_gen += 1;
                 if let Some(st) = &mut self.planar2d.reg {
@@ -700,6 +917,50 @@ impl ViewerApp {
                 });
             }
         });
+        let mut region_took = false;
+        if st.method != Method2d::Points {
+            let mut took = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Region");
+                for (t, glyph, tip) in [
+                    (
+                        RegionTool::Rect,
+                        "⬚",
+                        "A rectangle on the fixed image: drag corner to corner",
+                    ),
+                    (
+                        RegionTool::Polygon,
+                        "✏",
+                        "A polygon on the fixed image: click the corners, right click or \
+                         double click to close",
+                    ),
+                ] {
+                    if ui
+                        .selectable_label(st.region_tool == t, glyph)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        st.region_tool = if st.region_tool == t {
+                            RegionTool::None
+                        } else {
+                            t
+                        };
+                        st.drawing.clear();
+                        st.placing = false;
+                        took = st.region_tool != RegionTool::None;
+                    }
+                }
+                if !st.region.is_empty() {
+                    ui.weak(format!("{} polygon(s)", st.region.len()));
+                    if ui.small_button("Clear").clicked() {
+                        st.region.clear();
+                    }
+                } else {
+                    ui.weak("the whole image");
+                }
+            });
+            region_took = took;
+        }
         if matches!(st.method, Method2d::Points | Method2d::PointsThenIntensity) {
             ui.horizontal_wrapped(|ui| {
                 let on = st.placing;
@@ -712,6 +973,7 @@ impl ViewerApp {
                 {
                     st.placing = !on;
                     st.pending = None;
+                    st.region_tool = RegionTool::None;
                 }
                 ui.checkbox(&mut st.find_markers, "Find markers");
                 if st.find_markers {
@@ -823,6 +1085,11 @@ impl ViewerApp {
                         l.after
                     ));
                 }
+                if r.result.transform.warp.is_some() {
+                    ui.checkbox(&mut st.show_field, "Field").on_hover_text(
+                        "The warp over the fixed image: arrows and the deformed grid",
+                    );
+                }
                 if let Some(w) = &r.result.warp_stats {
                     ui.weak(format!(
                         "warp mean {:.2} mm, largest {:.2} mm, Jacobian {:.2} .. {:.2}",
@@ -867,7 +1134,17 @@ impl ViewerApp {
             }
         }
         let slot = st.slot;
+        let prefs = st.prefs();
+        let placing = st.placing;
         self.planar2d.reg = Some(st);
+        if placing || region_took {
+            // One section at a time holds the pane's left button.
+            self.reg2d3d_drop_pane_tool();
+        }
+        if prefs != self.planar2d.prefs {
+            self.planar2d.prefs = prefs;
+            self.persist_settings();
+        }
         if cancel {
             cancel_if(true, &self.planar2d.reg_job);
         }

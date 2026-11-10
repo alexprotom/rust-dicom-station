@@ -41,6 +41,10 @@ const MODULES_OPEN_KEY: &str = "modules_open";
 const PANE_BUTTONS_KEY: &str = "pane_buttons";
 /// Whether opening the PACS window walks its storage folders.
 const PACS_SCAN_ON_OPEN_KEY: &str = "pacs_scan_on_open";
+/// The PACS window's analytics: worked out on every click, and drawn as
+/// rings rather than bars.
+const PACS_STATS_AUTO_KEY: &str = "pacs_stats_auto";
+const PACS_STATS_RINGS_KEY: &str = "pacs_stats_rings";
 
 /// Settings keys of the last session's sources, one per workspace. The paths
 /// are separated by `|`, which no path on any supported system contains.
@@ -70,6 +74,8 @@ const REG2D3D_METRIC_KEY: &str = "reg2d3d_metric";
 const REG2D3D_OPTIMIZER_KEY: &str = "reg2d3d_optimizer";
 const REG2D3D_TOLERANCE_KEY: &str = "reg2d3d_tolerance";
 const REG2D3D_ROOM_KEY: &str = "reg2d3d_room";
+/// The 2D/2D registration's remembered choices ([`Reg2dPrefs`]).
+const REG2D_KEY: &str = "reg2d";
 
 /// Settings keys of what each row of the central area shows, one per row.
 const VIEW_ROW_KEYS: [&str; MAX_WORKSPACES] =
@@ -305,6 +311,71 @@ impl Default for Reg2d3dPrefs {
     }
 }
 
+/// What the 2D/2D registration section remembers between runs: the
+/// method, the measure, the freedom and the deformable measure by their
+/// keys, the grid's first and last spacing in mm, and the bending energy's
+/// weight in thousandths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reg2dPrefs {
+    pub method: String,
+    pub metric: String,
+    pub dof: String,
+    pub deform_metric: String,
+    pub grid_mm: u16,
+    pub grid_min_mm: u16,
+    pub lambda_milli: u32,
+}
+
+impl Default for Reg2dPrefs {
+    fn default() -> Self {
+        Reg2dPrefs {
+            method: "intensity".into(),
+            metric: "gc".into(),
+            dof: "shift_rotation".into(),
+            deform_metric: "msd".into(),
+            grid_mm: 32,
+            grid_min_mm: 8,
+            lambda_milli: 10,
+        }
+    }
+}
+
+impl Reg2dPrefs {
+    /// `method, metric, dof, deform metric, grid, last grid, lambda`.
+    fn render(&self) -> String {
+        format!(
+            "{}, {}, {}, {}, {}, {}, {:.3}",
+            self.method,
+            self.metric,
+            self.dof,
+            self.deform_metric,
+            self.grid_mm,
+            self.grid_min_mm,
+            self.lambda_milli as f64 / 1000.0
+        )
+    }
+
+    /// The line [`Self::render`] wrote; `None` when it is not seven values
+    /// of the right kinds.
+    fn parse(v: &str) -> Option<Reg2dPrefs> {
+        let p: Vec<&str> = v.split(',').map(str::trim).collect();
+        let [method, metric, dof, deform, grid, last, lambda] = p[..] else {
+            return None;
+        };
+        let word = |s: &str| (!s.is_empty()).then(|| s.to_ascii_lowercase());
+        let lambda: f64 = lambda.parse().ok()?;
+        Some(Reg2dPrefs {
+            method: word(method)?,
+            metric: word(metric)?,
+            dof: word(dof)?,
+            deform_metric: word(deform)?,
+            grid_mm: grid.parse().ok()?,
+            grid_min_mm: last.parse().ok()?,
+            lambda_milli: (lambda * 1000.0).round().clamp(0.0, 1e7) as u32,
+        })
+    }
+}
+
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -333,6 +404,14 @@ pub struct Settings {
     /// when there is no catalog yet). On for a fresh installation, as the
     /// window always did.
     pub pacs_scan_on_open: bool,
+
+    /// The PACS window's analytics panel works its figures out again on
+    /// every click in the tree. Off: only on its button. On for a fresh
+    /// installation.
+    pub pacs_stats_auto: bool,
+
+    /// The analytics are drawn as rings; off (a fresh installation): bars.
+    pub pacs_stats_pie: bool,
 
     /// The modules switched on in the *Modules* menu, each a section of the
     /// right panel.
@@ -384,6 +463,8 @@ pub struct Settings {
 
     /// The 2D/3D registration's measure, search, tolerances and room.
     pub reg2d3d: Reg2d3dPrefs,
+    /// The 2D/2D registration's method, measures, freedom and grid.
+    pub reg2d: Reg2dPrefs,
 }
 
 impl Default for Settings {
@@ -396,6 +477,8 @@ impl Default for Settings {
             archive_dir: None,
             archive_more: Vec::new(),
             pacs_scan_on_open: true,
+            pacs_stats_auto: true,
+            pacs_stats_pie: false,
             // Every module off on a fresh installation: the right panel is
             // not there at all until one is asked for, so a first run opens
             // on the images and nothing else. The Modules menu says what
@@ -410,6 +493,7 @@ impl Default for Settings {
             nnunet_folders: Vec::new(),
             synth_folders: Vec::new(),
             reg2d3d: Reg2d3dPrefs::default(),
+            reg2d: Reg2dPrefs::default(),
             // Let wgpu choose. The installer writes an explicit value when
             // the person installing picks one.
             graphics_backend: Backend::Auto,
@@ -1130,6 +1214,14 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
                 .collect();
+        } else if key.eq_ignore_ascii_case(PACS_STATS_AUTO_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.pacs_stats_auto = b;
+            }
+        } else if key.eq_ignore_ascii_case(PACS_STATS_RINGS_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.pacs_stats_pie = b;
+            }
         } else if key.eq_ignore_ascii_case(PACS_SCAN_ON_OPEN_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.pacs_scan_on_open = b;
@@ -1168,6 +1260,10 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             }
         } else if key.eq_ignore_ascii_case(REG2D3D_ROOM_KEY) {
             s.reg2d3d.room = value.trim().to_string();
+        } else if key.eq_ignore_ascii_case(REG2D_KEY) {
+            if let Some(p) = Reg2dPrefs::parse(value) {
+                s.reg2d = p;
+            }
         } else if key.eq_ignore_ascii_case(GRAPHICS_BACKEND_KEY) {
             // An unreadable value leaves the default rather than failing to
             // start: this file is edited by hand and by an installer, and a
@@ -1198,8 +1294,14 @@ fn render(s: &Settings) -> String {
     }
     out.push_str(&format!(
         "# walk the PACS folders when its window opens = on | off\n\
-         {PACS_SCAN_ON_OPEN_KEY} = {}\n",
-        bool_to_str(s.pacs_scan_on_open)
+         {PACS_SCAN_ON_OPEN_KEY} = {}\n\
+         # the PACS analytics follow every click in its tree = on | off\n\
+         {PACS_STATS_AUTO_KEY} = {}\n\
+         # the PACS analytics as rings instead of bars = on | off\n\
+         {PACS_STATS_RINGS_KEY} = {}\n",
+        bool_to_str(s.pacs_scan_on_open),
+        bool_to_str(s.pacs_stats_auto),
+        bool_to_str(s.pacs_stats_pie)
     ));
     out.push_str("# optional modules-panel sections (Modules menu) = on | off\n");
     for m in Module::ALL {
@@ -1243,6 +1345,11 @@ fn render(s: &Settings) -> String {
             r.room
         ));
     }
+    out.push_str(&format!(
+        "# 2D/2D registration: method, measure, freedom, deformable measure, grid (mm), \
+         last grid (mm), smoothness\n{REG2D_KEY} = {}\n",
+        s.reg2d.render()
+    ));
     if !s.nnunet_folders.is_empty() {
         out.push_str("# nnU-Net model folders added in the model manager, one per line\n");
         for f in &s.nnunet_folders {
@@ -1536,6 +1643,27 @@ mod tests {
         assert_eq!(
             parse(&format!("{REG2D3D_TOLERANCE_KEY} = three")).reg2d3d,
             Reg2d3dPrefs::default()
+        );
+    }
+
+    #[test]
+    fn round_trips_the_2d2d_choices() {
+        let s = Settings {
+            reg2d: Reg2dPrefs {
+                method: "deformable".into(),
+                metric: "ncc".into(),
+                dof: "similarity".into(),
+                deform_metric: "mi".into(),
+                grid_mm: 40,
+                grid_min_mm: 10,
+                lambda_milli: 300,
+            },
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s);
+        assert_eq!(
+            parse(&format!("{REG2D_KEY} = a, b")).reg2d,
+            Reg2dPrefs::default()
         );
     }
 
@@ -1852,6 +1980,17 @@ mod tests {
     #[test]
     fn the_pacs_is_scanned_on_opening_unless_told_not_to() {
         assert!(Settings::default().pacs_scan_on_open);
+        let d = Settings::default();
+        assert!(
+            d.pacs_stats_auto && !d.pacs_stats_pie,
+            "on every click, as bars"
+        );
+        let back = parse(&render(&Settings {
+            pacs_stats_auto: false,
+            pacs_stats_pie: true,
+            ..Settings::default()
+        }));
+        assert!(!back.pacs_stats_auto && back.pacs_stats_pie);
         assert!(!parse(&format!("{PACS_SCAN_ON_OPEN_KEY} = off")).pacs_scan_on_open);
         assert!(
             !parse(&render(&Settings {

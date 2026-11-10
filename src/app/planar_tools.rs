@@ -19,24 +19,13 @@
 use super::*;
 
 use crate::contours::{self, Poly};
-use crate::planar_structs::{ContourSource, PlanarContour};
-
-/// How deep the planar undo goes.
-const PLANAR_UNDO: usize = 32;
+use crate::planar_structs::ContourSource;
 
 /// A contour being drawn on one planar image, in its pixels.
 pub(super) struct PlanarDraw {
     pub(super) slot: usize,
     pub(super) uid: String,
     pub(super) pts: Vec<[f64; 2]>,
-}
-
-/// One planar structure's contours before an edit.
-pub(super) struct PlanarSnapshot {
-    slot: usize,
-    set: usize,
-    structure: String,
-    contours: Vec<PlanarContour>,
 }
 
 /// The live wire's costs over one planar image under one window.
@@ -258,43 +247,19 @@ impl ViewerApp {
     }
 
     fn push_planar_undo(&mut self, slot: usize, k: usize, j: usize) {
-        let Some(s) = self.slots[slot]
-            .study
-            .as_ref()
-            .and_then(|st| st.planar_structs.get(k))
-            .and_then(|set| set.structures.get(j))
-        else {
-            return;
-        };
-        self.planar2d.undo.push(PlanarSnapshot {
-            slot,
-            set: k,
-            structure: s.name.clone(),
-            contours: s.contours.clone(),
-        });
-        if self.planar2d.undo.len() > PLANAR_UNDO {
-            self.planar2d.undo.remove(0);
+        if let Some(study) = self.slots[slot].study.as_ref() {
+            self.planar2d.undo.push(slot, study, k, j);
         }
     }
 
     /// Ctrl+Z on a planar target: the last edit of a planar structure of
     /// `slot` taken back.
     pub(super) fn undo_planar_edit(&mut self, slot: usize) {
-        let Some(pos) = self.planar2d.undo.iter().rposition(|u| u.slot == slot) else {
-            return;
-        };
-        let u = self.planar2d.undo.remove(pos);
-        if let Some(set) = self.slots[slot]
-            .study
-            .as_mut()
-            .and_then(|st| st.planar_structs.get_mut(u.set))
-        {
-            if let Some(s) = set.structures.iter_mut().find(|s| s.name == u.structure) {
-                s.contours = u.contours;
+        if let Some(study) = self.slots[slot].study.as_mut() {
+            if self.planar2d.undo.undo(slot, study) {
+                self.settings_gen += 1;
             }
-            set.refresh_images();
         }
-        self.settings_gen += 1;
     }
 
     /// The SOP UID, pixel spacing and raster of planar image `image`.
@@ -353,7 +318,9 @@ impl ViewerApp {
                     }
                 }
                 PlanarEdit::Close => self.commit_planar_draw(),
-                PlanarEdit::Brush { image, at, erase } => self.planar_brush(slot, image, at, erase),
+                PlanarEdit::Brush { image, at, erase } => {
+                    self.planar_brush(slot, image, at, erase, wl)
+                }
                 PlanarEdit::Nudge { image, at } => self.planar_nudge(slot, image, at),
                 PlanarEdit::StrokeEnd => {
                     self.planar2d.last_sample = None;
@@ -444,7 +411,14 @@ impl ViewerApp {
         self.settings_gen += 1;
     }
 
-    fn planar_brush(&mut self, slot: usize, image: usize, at: [f64; 2], erase: bool) {
+    fn planar_brush(
+        &mut self,
+        slot: usize,
+        image: usize,
+        at: [f64; 2],
+        erase: bool,
+        wl: (f32, f32),
+    ) {
         let Some((uid, spacing, _)) = self.planar_image_of(slot, image) else {
             return;
         };
@@ -459,6 +433,10 @@ impl ViewerApp {
         }
         let mode = self.draw_mode;
         let r = self.brush_radius_mm as f64;
+        // The smart brush cuts the stamp back to what looks bright or dark
+        // in the pane's window; with it off, the capsule itself.
+        let stamp = Poly::capsule_mm(from, at, r, spacing, 32);
+        let smart = self.planar_smart_stamp(slot, image, &stamp, at, wl);
         let Some(set) = self.slots[slot]
             .study
             .as_mut()
@@ -479,7 +457,14 @@ impl ViewerApp {
                 DrawMode::Extend => false,
                 DrawMode::Auto => self.planar2d.brush_cut,
             };
-        crate::planar_structs::brush(&mut c.region, from, at, r, spacing, cut);
+        match smart {
+            Some(rings) => {
+                for ring in &rings {
+                    crate::planar_structs::apply_ring(&mut c.region, ring, cut);
+                }
+            }
+            None => crate::planar_structs::brush(&mut c.region, from, at, r, spacing, cut),
+        }
         c.source = ContourSource::Drawn;
         s.prune();
         set.refresh_images();
@@ -525,6 +510,80 @@ impl ViewerApp {
                 self.settings_gen += 1;
             }
         }
+    }
+
+    /// The smart brush's stamp on a planar image: of the pixels `ring`
+    /// covers, those the band allows under the window `wl`, the piece the
+    /// pointer stands on (as the volume brush does it). Only *Bright* and
+    /// *Dark* mean anything on a radiograph; with the brush plain, or a
+    /// band of CT numbers (*Bone*, *Air*), `None`: the capsule as it is.
+    fn planar_smart_stamp(
+        &self,
+        slot: usize,
+        image: usize,
+        ring: &Poly,
+        at: [f64; 2],
+        wl: (f32, f32),
+    ) -> Option<Vec<Poly>> {
+        use super::contour_edit::EdgeBand;
+        let band = self.brush_band;
+        if !matches!(band, EdgeBand::Bright | EdgeBand::Dark) {
+            return None;
+        }
+        let img = self.slots[slot].study.as_ref()?.planar_images.get(image)?;
+        let (w, h) = (img.cols, img.rows);
+        if img.data.len() < w * h || w < 2 || h < 2 {
+            return None;
+        }
+        let b = ring.bbox();
+        let u0 = (b[0].floor() as isize - 1).max(0) as usize;
+        let v0 = (b[1].floor() as isize - 1).max(0) as usize;
+        let u1 = ((b[2].ceil() as isize + 1).max(0) as usize).min(w - 1);
+        let v1 = ((b[3].ceil() as isize + 1).max(0) as usize).min(h - 1);
+        if u0 >= u1 || v0 >= v1 {
+            return None;
+        }
+        let (bw, bh) = (u1 - u0 + 1, v1 - v0 + 1);
+        let (lo, hi) = band.limits(wl.0, wl.1, self.brush_sensitivity);
+        let mut mask = vec![0u8; bw * bh];
+        for v in v0..=v1 {
+            for u in u0..=u1 {
+                if !ring.contains([u as f64, v as f64]) {
+                    continue;
+                }
+                let g = img.data[v * w + u];
+                if g >= lo && g <= hi {
+                    mask[(v - v0) * bw + (u - u0)] = 1;
+                }
+            }
+        }
+        let (su, sv) = (
+            at[0].round() as isize - u0 as isize,
+            at[1].round() as isize - v0 as isize,
+        );
+        let seed = (su >= 0 && sv >= 0 && (su as usize) < bw && (sv as usize) < bh)
+            .then_some((su as usize, sv as usize))
+            .filter(|&(u, v)| mask[v * bw + u] != 0);
+        super::contour_edit::keep_one_piece(&mut mask, bw, bh, seed);
+        if mask.iter().all(|&m| m == 0) {
+            return Some(Vec::new());
+        }
+        let st = contours::Stack::from_mask(&mask, [bw, bh, 1], 2);
+        Some(
+            st.slices
+                .into_iter()
+                .flat_map(|s| s.region.rings)
+                .map(|r| {
+                    Poly::new(
+                        r.pts
+                            .into_iter()
+                            .map(|p| [p[0] + u0 as f64, p[1] + v0 as f64])
+                            .collect(),
+                    )
+                })
+                .filter(|r| !r.is_empty())
+                .collect(),
+        )
     }
 
     /// One click of the live wire on a planar image: the path from the last
