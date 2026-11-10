@@ -554,6 +554,11 @@ src/
     pacs_remote.rs    the PACS window on a paired server: its tree, pull
                       (patients, studies, single series), load, send, sync,
                       upload, the Tasks tab, Add server / pairing
+    pacs_stats.rs     the PACS window's analytics panel (an edge_panel): the
+                      patients' words (a chart per WordKind: age group,
+                      sex, site, subject) and the modalities of the
+                      selection (or the whole tree shown), as bars or
+                      rings, a click ticking the filter
     pacs_tree.rs      the tree both draw: rows drawn only where visible,
                       selection with Ctrl / Shift and the keyboard, filter;
                       a course's series by treatment day (study_rows; series_ids

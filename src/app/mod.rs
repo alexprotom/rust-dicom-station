@@ -77,6 +77,7 @@ mod motion_results;
 mod object_view;
 mod pacs_remote;
 mod pacs_server_win;
+mod pacs_stats;
 mod pacs_tree;
 mod pacs_win;
 mod pane_windows;
@@ -634,6 +635,10 @@ pub struct ViewerApp {
     /// Opening the PACS window walks its folders
     /// ([`Settings::pacs_scan_on_open`]).
     pacs_scan_on_open: bool,
+    /// The PACS analytics follow every click in its tree
+    /// ([`Settings::pacs_stats_auto`]), drawn as rings rather than bars.
+    pacs_stats_auto: bool,
+    pacs_stats_pie: bool,
     /// The *Save image* dialog, and the picture it has asked for.
     save_img: Option<snapshot::SaveImgDialog>,
     snap: Option<snapshot::PendingShot>,
@@ -1496,6 +1501,8 @@ impl ViewerApp {
             reveal_section: None,
             pane_buttons_hidden: prefs.pane_buttons_hidden,
             pacs_scan_on_open: prefs.pacs_scan_on_open,
+            pacs_stats_auto: prefs.pacs_stats_auto,
+            pacs_stats_pie: prefs.pacs_stats_pie,
             reg_matrix: matrix_edit::ManualMatrix::default(),
             reg_matrix_pick: 0,
             propagate_finish: crate::propagate::Finish::default(),
@@ -1563,6 +1570,8 @@ impl ViewerApp {
             archive_dir,
             archive_more: self.archive_more.clone(),
             pacs_scan_on_open: self.pacs_scan_on_open,
+            pacs_stats_auto: self.pacs_stats_auto,
+            pacs_stats_pie: self.pacs_stats_pie,
             modules: self.modules.clone(),
             pane_buttons_hidden: self.pane_buttons_hidden,
             modules_open: self.modules_open.clone(),

@@ -16,17 +16,17 @@
 use super::*;
 
 /// What tells one edge panel from the other.
-struct EdgePanel {
+pub(super) struct EdgePanel {
     /// Keys the panel, its strip and its remembered width.
-    id: &'static str,
+    pub id: &'static str,
     /// Which edge it lives on.
-    left: bool,
+    pub left: bool,
     /// Width it opens at the first time.
-    width: f32,
+    pub width: f32,
     /// What the hover text calls it.
-    name: &'static str,
-    /// The shortcut the hover text names.
-    key: &'static str,
+    pub name: &'static str,
+    /// The shortcut the hover text names; empty: none.
+    pub key: &'static str,
 }
 
 impl ViewerApp {
@@ -39,7 +39,7 @@ impl ViewerApp {
     /// `open` is the flag the caller keeps: `show_collapsible` wants it by
     /// reference, which the body's `&mut self` cannot share, so it travels
     /// in and out through the return value.
-    fn edge_panel(
+    pub(super) fn edge_panel(
         ui: &mut egui::Ui,
         p: EdgePanel,
         open: bool,
@@ -61,10 +61,15 @@ impl ViewerApp {
             (true, true) | (false, false) => "◀",
             _ => "▶",
         };
-        let hint = if open {
-            format!("Hide the {name} panel ({key})")
+        let key = if key.is_empty() {
+            String::new()
         } else {
-            format!("Show the {name} panel ({key})")
+            format!(" ({key})")
+        };
+        let hint = if open {
+            format!("Hide the {name} panel{key}")
+        } else {
+            format!("Show the {name} panel{key}")
         };
         let toggle = egui::Id::new((id, "toggle"));
         let strip_panel = if left {
