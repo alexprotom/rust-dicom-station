@@ -217,10 +217,20 @@ The section's rows give the **correction** in patient coordinates and as
 (2 mm and 1° unless changed; the measure, the search, the tolerances and the
 last room chosen are remembered between runs), the similarity of each view
 before and after (amber when it ends below 0.3), the marker residuals, any
-warning and where the renderings ran. The **nudge**
-buttons move the pose by hand, a millimetre or half a degree at a time,
-and draw the DRRs again: the manual registration every system has. The
-apply row:
+warning and where the renderings ran. The **nudge** rows move the pose by
+hand and draw the DRRs again - the manual registration every system has:
+each of the six numbers (x, y, z in mm, rx, ry, rz in degrees) can be typed
+(Enter or a click elsewhere applies it) or dragged (applied when let go),
+and the buttons either side step it by the step below (1 mm and 0.5° unless
+changed).
+
+A run starts from the plan (or from the setup the *Start* row names), so
+registering the same images again lands where the first run did, whatever
+was adjusted by hand in between. **▶ From here** registers again starting
+from the pose on display - the answer with the hand adjustments - and sets
+the *Start* row to that setup (*from n (label)*), so a pose put close by
+hand is refined by intensity instead of being thrown away; *at the plan* in
+that row goes back. The apply row:
 
 * **⇥ Positioned copy** - the study as the patient was found (the CT moved
   by the displacement, its structures, doses and isocentres with it) in a

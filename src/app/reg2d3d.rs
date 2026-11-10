@@ -98,6 +98,10 @@ pub(super) struct Reg2d3dState {
     /// Start from the pose of this setup of the study (*Refine in 3D*: a
     /// setup read from 2D matches, or an earlier run) rather than the plan.
     pub start_setup: Option<usize>,
+    /// The correction as typed or dragged in the result rows, and the pose
+    /// it was taken from (its parameters' bits): applied when the edit is
+    /// committed, taken afresh when the pose changes.
+    pub pose_edit: Option<([u64; 6], [f64; 6])>,
     pub clip_on: bool,
     pub clip_half: f64,
     /// The isocentre typed or taken from the crosshair; the images' or the
@@ -153,6 +157,7 @@ impl Reg2d3dState {
                 ..SetupOptions::default()
             },
             start_setup: None,
+            pose_edit: None,
             clip_on: false,
             clip_half: 100.0,
             iso: None,
@@ -1255,6 +1260,7 @@ impl ViewerApp {
 
         let mut new_slot = None;
         let act_run = false;
+        let act_run_here = false;
         let act_preview = false;
         let act_cancel = false;
         let nudge: Option<[f64; 6]> = None;
@@ -1285,6 +1291,7 @@ impl ViewerApp {
             chosen_room,
             act_clip,
             act_run,
+            act_run_here,
             act_preview,
             act_cancel,
             act_copy,
@@ -1302,6 +1309,7 @@ impl ViewerApp {
             chosen_room,
             act_clip,
             act_run,
+            act_run_here,
             act_preview,
             act_cancel,
             act_copy,
@@ -1337,6 +1345,14 @@ impl ViewerApp {
             cancel_if(true, &self.r2d_job);
         }
         if act_run {
+            self.start_reg2d3d("run");
+        }
+        if act_run_here {
+            // The pose on display - the last answer, moved by hand or not -
+            // is the start; the Start row says so from now on.
+            if let Some(st) = &mut self.r2d {
+                st.start_setup = st.current;
+            }
             self.start_reg2d3d("run");
         }
         if act_preview {
@@ -1852,7 +1868,7 @@ impl ViewerApp {
                                 None => "at the plan".to_string(),
                                 Some(k) => setup_labels
                                     .get(k)
-                                    .map(|l| format!("from {l}"))
+                                    .map(|l| format!("from {} ({l})", k + 1))
                                     .unwrap_or_else(|| "at the plan".into()),
                             };
                             if !setup_labels.is_empty() {
@@ -2007,8 +2023,10 @@ impl ViewerApp {
         let job_line = std::mem::take(&mut sf.job_line);
         let busy = sf.busy;
         let mut act_run = sf.act_run;
+        let mut act_run_here = sf.act_run_here;
         let mut act_preview = sf.act_preview;
         let mut act_cancel = sf.act_cancel;
+        let has_current = sf.current.is_some();
         ui.horizontal(|ui| {
             if busy {
                 ui.spinner();
@@ -2019,9 +2037,21 @@ impl ViewerApp {
                 let any = st.views.iter().any(|v| v.on);
                 if ui
                     .add_enabled(any, egui::Button::new("▶ Register"))
+                    .on_hover_text("Register from the start the Start row names")
                     .clicked()
                 {
                     act_run = true;
+                }
+                if has_current
+                    && ui
+                        .add_enabled(any, egui::Button::new("▶ From here"))
+                        .on_hover_text(
+                            "Register again, starting from the pose on display - the answer, \
+                             with what was adjusted by hand - instead of the plan",
+                        )
+                        .clicked()
+                {
+                    act_run_here = true;
                 }
                 if ui
                     .add_enabled(any, egui::Button::new("👁 DRR at the plan"))
@@ -2040,6 +2070,7 @@ impl ViewerApp {
             ui.label(s.as_str());
         }
         sf.act_run = act_run;
+        sf.act_run_here = act_run_here;
         sf.act_preview = act_preview;
         sf.act_cancel = act_cancel;
     }
@@ -2141,64 +2172,91 @@ impl ViewerApp {
             }
             ui.weak(done);
 
-            // The nudge: the pose moved by hand, the DRRs drawn again.
-            egui::Grid::new((id, "nudge"))
-                .num_columns(4)
-                .show(ui, |ui| {
-                    let axes = ["x", "y", "z"];
-                    for (k, a) in axes.iter().enumerate() {
-                        ui.label(*a);
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("➖").small())
-                            .clicked()
-                        {
-                            let mut d = [0.0; 6];
-                            d[k + 3] = -st.step_mm;
-                            nudge = Some(d);
+            // The nudge: the pose moved by hand, the DRRs drawn again. Each
+            // number is typed (Enter or a click elsewhere applies it) or
+            // dragged (applied when let go), or stepped with the buttons.
+            let key = c.map(f64::to_bits);
+            if st.pose_edit.as_ref().is_none_or(|(k, _)| *k != key) {
+                st.pose_edit = Some((key, c));
+            }
+            let step_mm = st.step_mm;
+            let step_deg = st.step_deg;
+            let mut typed: Option<(usize, f64)> = None;
+            if let Some((_, edit)) = st.pose_edit.as_mut() {
+                egui::Grid::new((id, "nudge"))
+                    .num_columns(8)
+                    .spacing([4.0, 3.0])
+                    .show(ui, |ui| {
+                        let axes = ["x", "y", "z"];
+                        for (k, a) in axes.iter().enumerate() {
+                            // Translation k is parameter k + 3, rotation k is k.
+                            for (i, name, unit, step) in [
+                                (k + 3, a.to_string(), " mm", step_mm),
+                                (k, format!("r{a}"), "°", step_deg),
+                            ] {
+                                ui.label(name);
+                                if ui
+                                    .add_enabled(!busy, egui::Button::new("➖").small())
+                                    .clicked()
+                                {
+                                    let mut d = [0.0; 6];
+                                    d[i] = -step;
+                                    nudge = Some(d);
+                                }
+                                let r = ui
+                                    .add_enabled(
+                                        !busy,
+                                        egui::DragValue::new(&mut edit[i])
+                                            .speed(if unit == "°" { 0.05 } else { 0.1 })
+                                            .fixed_decimals(2)
+                                            .suffix(unit)
+                                            .update_while_editing(false),
+                                    )
+                                    .on_hover_text(
+                                        "Type the value, or drag it; the DRRs follow when it \
+                                         is applied",
+                                    );
+                                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                    typed = Some((i, edit[i]));
+                                }
+                                if ui
+                                    .add_enabled(!busy, egui::Button::new("➕").small())
+                                    .clicked()
+                                {
+                                    let mut d = [0.0; 6];
+                                    d[i] = step;
+                                    nudge = Some(d);
+                                }
+                            }
+                            ui.end_row();
                         }
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("➕").small())
-                            .clicked()
-                        {
-                            let mut d = [0.0; 6];
-                            d[k + 3] = st.step_mm;
-                            nudge = Some(d);
-                        }
-                        ui.label(format!("r{a}"));
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("➖").small())
-                            .clicked()
-                        {
-                            let mut d = [0.0; 6];
-                            d[k] = -st.step_deg;
-                            nudge = Some(d);
-                        }
-                        if ui
-                            .add_enabled(!busy, egui::Button::new("➕").small())
-                            .clicked()
-                        {
-                            let mut d = [0.0; 6];
-                            d[k] = st.step_deg;
-                            nudge = Some(d);
-                        }
-                        ui.end_row();
-                    }
-                    ui.label("step");
-                    ui.add(
-                        egui::DragValue::new(&mut st.step_mm)
-                            .speed(0.1)
-                            .range(0.1..=10.0)
-                            .suffix(" mm"),
-                    );
-                    ui.label("");
-                    ui.add(
-                        egui::DragValue::new(&mut st.step_deg)
-                            .speed(0.1)
-                            .range(0.1..=5.0)
-                            .suffix("°"),
-                    );
-                    ui.end_row();
-                });
+                    });
+            }
+            if let Some((i, v)) = typed {
+                let mut d = [0.0; 6];
+                d[i] = v - c[i];
+                if d[i].abs() > 1e-9 {
+                    nudge = Some(d);
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.label("step");
+                ui.add(
+                    egui::DragValue::new(&mut st.step_mm)
+                        .speed(0.1)
+                        .range(0.1..=10.0)
+                        .suffix(" mm"),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut st.step_deg)
+                        .speed(0.1)
+                        .range(0.1..=5.0)
+                        .suffix("°"),
+                );
+                if s.adjusted {
+                    ui.weak("▶ From here registers from this pose");
+                }
+            });
 
             ui.horizontal(|ui| {
                 ui.checkbox(&mut st.show_iso, "Isocentre");
@@ -2299,6 +2357,8 @@ struct R2dForm {
     chosen_room: Option<String>,
     act_clip: bool,
     act_run: bool,
+    /// Register again from the pose on display (*▶ From here*).
+    act_run_here: bool,
     act_preview: bool,
     act_cancel: bool,
     act_copy: bool,
