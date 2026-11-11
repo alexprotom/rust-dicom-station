@@ -1718,7 +1718,7 @@ impl ViewerApp {
                         st.opts.patient = Some(frame);
                     });
                     f.row_tip("Box", "The region that matters: its shadow on each radiograph is what is compared", |ui| {
-                        ui.checkbox(&mut st.clip_on, "");
+                        ui.checkbox(&mut st.clip_on, "").named("Box");
                         ui.add_enabled_ui(st.clip_on, |ui| {
                             egui::ComboBox::from_id_salt((id, "clipof"))
                                 .selected_text(st.clip_structure.as_deref().unwrap_or("Cube"))
@@ -1762,7 +1762,7 @@ impl ViewerApp {
                         if st.clip_on
                             && ui
                                 .add(egui::Button::selectable(st.show_clip, "👁").small())
-                                .on_hover_text("Show the box in the views")
+                                .tip("Show the box in the views")
                                 .clicked()
                         {
                             st.show_clip = !st.show_clip;
@@ -2194,9 +2194,10 @@ impl ViewerApp {
                                 (k + 3, a.to_string(), " mm", step_mm),
                                 (k, format!("r{a}"), "°", step_deg),
                             ] {
-                                ui.label(name);
+                                ui.label(name.as_str());
                                 if ui
                                     .add_enabled(!busy, egui::Button::new("➖").small())
+                                    .named_with(|| format!("Decrease {name}"))
                                     .clicked()
                                 {
                                     let mut d = [0.0; 6];
@@ -2221,6 +2222,7 @@ impl ViewerApp {
                                 }
                                 if ui
                                     .add_enabled(!busy, egui::Button::new("➕").small())
+                                    .named_with(|| format!("Increase {name}"))
                                     .clicked()
                                 {
                                     let mut d = [0.0; 6];

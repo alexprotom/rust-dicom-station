@@ -50,7 +50,7 @@ impl ViewerApp {
     ) -> bool {
         let out = self.is_detached(slot, kind);
         ui.put(rect, egui::Button::new(if out { "⤵" } else { "⤴" }).small())
-            .on_hover_text(if out {
+            .tip(if out {
                 "Put this view back into its row. Closing the window does the same."
             } else {
                 "Take this view out of the row into a window of its own, to put on \
@@ -63,7 +63,7 @@ impl ViewerApp {
     /// its own closes with it). The last pane of a row stays; *Settings ▸
     /// View layout* puts a pane back, the toolbar's *3D* the 3D scene.
     pub(super) fn close_button(ui: &mut egui::Ui, rect: Rect) -> egui::Response {
-        ui.put(rect, egui::Button::new("✖").small()).on_hover_text(
+        ui.put(rect, egui::Button::new("✖").small()).tip(
             "Take this view out of the row. Settings ▸ View layout puts it back (the 3D \
              scene: the toolbar's 3D button; a planar or additional pane: a click in the \
              data tree).",

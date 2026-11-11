@@ -32,6 +32,7 @@ impl ViewerApp {
         self.export_result = None;
         self.export_warnings.clear();
         self.export_open = true;
+        self.raise_window("export");
     }
 
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
@@ -215,10 +216,11 @@ fn tri_checkbox(ui: &mut egui::Ui, state: Option<bool>) -> Option<bool> {
             ui.checkbox(&mut on, "")
         })
         .inner
-        .on_hover_text("Part of this is selected")
+        .tip("Part of this is selected")
     } else {
         ui.checkbox(&mut on, "")
-    };
+    }
+    .named("Select all of this");
     if resp.changed() {
         // From partly selected, the first click selects the rest.
         return Some(if state.is_none() { true } else { on });
@@ -401,7 +403,8 @@ fn series_node(ui: &mut egui::Ui, s: &mut SeriesNode) {
     };
     state
         .show_header(ui, |ui| {
-            ui.checkbox(&mut s.selected, "");
+            ui.checkbox(&mut s.selected, "")
+                .named_with(|| format!("Export {title}"));
             ui.label(title);
             ui.weak(detail);
         })
@@ -427,7 +430,8 @@ fn object_node(ui: &mut egui::Ui, o: &mut ObjNode, formats: &mut bool) {
     let structures = o.kind.is_structures();
     state
         .show_header(ui, |ui| {
-            ui.checkbox(&mut o.selected, "");
+            ui.checkbox(&mut o.selected, "")
+                .named_with(|| format!("Export {title}"));
             ui.label(title);
             ui.weak(detail);
             if structures {
@@ -512,7 +516,12 @@ fn common_tags(ui: &mut egui::Ui, plan: &mut ExportPlan) {
                                     .desired_width(NAME_W)
                                     .hint_text("(empty)"),
                             );
-                            if f.value != f.suggested && ui.small_button("↺").clicked() {
+                            if f.value != f.suggested
+                                && ui
+                                    .small_button("↺")
+                                    .named("Back to the suggested value")
+                                    .clicked()
+                            {
                                 f.value = f.suggested.clone();
                             }
                         });
@@ -586,7 +595,7 @@ fn revert_button(ui: &mut egui::Ui, f: &mut Field) {
     if f.value != f.original
         && ui
             .add(egui::Button::new("↺").small())
-            .on_hover_text(format!(
+            .tip(format!(
                 "Back to what the data says: “{}”",
                 if f.original.is_empty() {
                     "(empty)"

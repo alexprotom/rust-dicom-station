@@ -1408,7 +1408,7 @@ impl ViewerApp {
                         .custom_parser(percent_parser)
                         .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.5 }),
                 )
-                .on_hover_text("How solid the surfaces are");
+                .tip("How solid the surfaces are");
             });
             let busy = w.job.is_some() || w.prep_job.is_some();
             row(bar.left.top() + 24.0, &mut |ui: &mut egui::Ui| {
@@ -1464,13 +1464,13 @@ impl ViewerApp {
         if !folded {
             let resp = ui
                 .put(bar.zoom_in, egui::Button::new("➕").small())
-                .on_hover_text("Zoom in");
+                .tip("Zoom in");
             if hit(bar.zoom_in, &resp) {
                 w.zoom = (w.zoom * 1.25).clamp(0.1, 40.0);
             }
             let resp = ui
                 .put(bar.zoom_out, egui::Button::new("➖").small())
-                .on_hover_text("Zoom out");
+                .tip("Zoom out");
             if hit(bar.zoom_out, &resp) {
                 w.zoom = (w.zoom / 1.25).clamp(0.1, 40.0);
             }
@@ -1481,7 +1481,7 @@ impl ViewerApp {
                         .frame_when_inactive(true)
                         .small(),
                 )
-                .on_hover_text(
+                .tip(
                     "Move the scene: while this is on, dragging with the left button \
                      slides the scene instead of turning it. Off, a left drag turns it \
                      and a middle drag moves it.",
@@ -1491,7 +1491,7 @@ impl ViewerApp {
             }
             let resp = ui
                 .put(bar.reset, egui::Button::new("⟲").small())
-                .on_hover_text(RESET_TIP);
+                .tip(RESET_TIP);
             if hit(bar.reset, &resp) {
                 reset_camera(w, (w.center, w.radius));
             }
@@ -1503,7 +1503,7 @@ impl ViewerApp {
                 bar.fold,
                 egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
-            .on_hover_text(if folded {
+            .tip(if folded {
                 "Show the buttons of this bar. One switch for every pane, and it is \
                  remembered between runs."
             } else {
@@ -1519,7 +1519,7 @@ impl ViewerApp {
                 bar.maximize,
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
-            .on_hover_text(if is_max {
+            .tip(if is_max {
                 "Restore the multi-view layout"
             } else {
                 "Maximize this view to the whole window"

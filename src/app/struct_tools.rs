@@ -720,7 +720,7 @@ impl ViewerApp {
                     .text("reach")
                     .fixed_decimals(2),
             )
-            .on_hover_text(
+            .tip(
                 "How far past the threshold the brush may still paint, as a fraction of \
                  the display window. Turn it up when the brush stops short of the boundary.",
             );
@@ -1143,7 +1143,7 @@ impl ViewerApp {
                 .on_hover_text("Millimetres and degrees along the image's own axes");
             if ui
                 .toggle_value(&mut t.hand_struct, "✋")
-                .on_hover_text(
+                .tip(
                     "Drag the selected structure with the left button in any view of \
                      this workspace, in the plane of that view. One undo step per drag.",
                 )
@@ -1251,7 +1251,7 @@ impl ViewerApp {
                 let ready = ready_axis(t, slot);
                 if ui
                     .add_enabled(ready, egui::Button::new("✋").selected(t.hand_axis))
-                    .on_hover_text(
+                    .tip(
                         "Move the axis by hand: drag near an end to move that end, \
                          anywhere else on it to move the whole line",
                     )

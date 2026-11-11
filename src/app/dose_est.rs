@@ -684,6 +684,7 @@ impl ViewerApp {
                         .show_value(false)
                         .custom_formatter(|v, _| format!("{}", v as usize)),
                 )
+                .named("Step")
                 .changed()
             {
                 goto = Some(sel);
@@ -850,7 +851,7 @@ impl ViewerApp {
             for (i, m) in self.dose_est.columns.iter().enumerate() {
                 if ui
                     .small_button(format!("{} ✖", m.label()))
-                    .on_hover_text("Remove this column")
+                    .tip("Remove this column")
                     .clicked()
                 {
                     drop = Some(i);
@@ -983,7 +984,7 @@ impl ViewerApp {
                                     if entry.is_none()
                                         && ui
                                             .small_button("✖")
-                                            .on_hover_text(
+                                            .tip(
                                                 "Leave this structure out of the table (it \
                                                  stays ticked in the views); the Excluded \
                                                  line below brings it back",

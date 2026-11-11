@@ -503,13 +503,14 @@ impl ViewerApp {
                     {
                         row.per_direction = !row.per_direction;
                     }
-                    if ui.small_button("↑").clicked() && i > 0 {
+                    if ui.small_button("↑").named("Move this row up").clicked() && i > 0 {
                         move_row = Some((i, -1));
                     }
-                    if ui.small_button("↓").clicked() && i + 1 < n_rows {
+                    if ui.small_button("↓").named("Move this row down").clicked() && i + 1 < n_rows
+                    {
                         move_row = Some((i, 1));
                     }
-                    if ui.small_button("✖").clicked() {
+                    if ui.small_button("✖").named("Remove this row").clicked() {
                         drop_row = Some(i);
                     }
                 });
@@ -574,7 +575,7 @@ impl ViewerApp {
                         .suffix(" mm")
                         .fixed_decimals(1),
                 )
-                .on_hover_text("A closing, to take the staircase off the surface.");
+                .tip("A closing, to take the staircase off the surface.");
             });
             ui.checkbox(&mut d.cleanup.keep_largest, "Keep only the largest piece")
                 .on_hover_text(

@@ -1040,11 +1040,13 @@ impl ViewerApp {
             let cur = self.slots[slot].views.get(view).map_or(0, |v| v.slice);
             if n > 1 {
                 let mut at = cur.min(n - 1);
-                let resp = ui.add(
-                    egui::Slider::new(&mut at, 0..=n - 1)
-                        .show_value(false)
-                        .custom_formatter(|v, _| format!("{}", v as usize + 1)),
-                );
+                let resp = ui
+                    .add(
+                        egui::Slider::new(&mut at, 0..=n - 1)
+                            .show_value(false)
+                            .custom_formatter(|v, _| format!("{}", v as usize + 1)),
+                    )
+                    .named("Slice");
                 if resp.changed() {
                     self.slots[slot].views[view].slice = at;
                 }
@@ -1114,11 +1116,13 @@ impl ViewerApp {
             match at {
                 Some(a) => {
                     let mut sel = a;
-                    let resp = ui.add(
-                        egui::Slider::new(&mut sel, 0..=n - 1)
-                            .show_value(false)
-                            .custom_formatter(|v, _| format!("{}", v as usize + 1)),
-                    );
+                    let resp = ui
+                        .add(
+                            egui::Slider::new(&mut sel, 0..=n - 1)
+                                .show_value(false)
+                                .custom_formatter(|v, _| format!("{}", v as usize + 1)),
+                        )
+                        .named("Phase");
                     if resp.changed() {
                         goto = Some(sel);
                     }

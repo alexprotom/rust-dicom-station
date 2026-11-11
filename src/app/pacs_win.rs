@@ -625,6 +625,7 @@ enum Act {
 
 impl ViewerApp {
     pub(super) fn open_pacs_window(&mut self) {
+        self.raise_window("pacs");
         if self.pacs.is_none() {
             let servers = self.reload_servers();
             self.pacs = Some(PacsWindow::new(servers));

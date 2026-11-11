@@ -105,11 +105,15 @@ impl ViewerApp {
                                 for (j, s) in set.structures.iter().enumerate() {
                                     ui.horizontal(|ui| {
                                         let mut color = s.color;
-                                        if color_swatch(ui, &mut color) {
+                                        if color_swatch(ui, &mut color, &s.name) {
                                             act = Some(Act::Color(k, j, color));
                                         }
                                         let mut on = self.planar_visible(slot, set, &s.name);
-                                        if ui.checkbox(&mut on, "").changed() {
+                                        if ui
+                                            .checkbox(&mut on, "")
+                                            .named_with(|| format!("Show {}", s.name))
+                                            .changed()
+                                        {
                                             act = Some(Act::Visible(k, j, on));
                                         }
                                         let mut tip = String::new();

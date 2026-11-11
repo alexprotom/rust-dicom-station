@@ -279,6 +279,7 @@ impl ViewerApp {
                          a new folder) with consistently regenerated UIDs",
                     ) {
                         self.anon_open = true;
+                        self.raise_window("anonymize");
                         ui.close();
                     }
                     ui.separator();
@@ -516,14 +517,19 @@ impl ViewerApp {
                 self.clear_workspace(slot);
             }
         }
-        if open_save_img && self.save_img.is_none() {
-            self.save_img = Some(snapshot::SaveImgDialog::default());
+        if open_save_img {
+            if self.save_img.is_none() {
+                self.save_img = Some(snapshot::SaveImgDialog::default());
+            }
+            self.raise_window("save_image");
         }
         if open_testdata {
             self.testdata_open = true;
+            self.raise_window("testdata");
         }
         if open_gen {
             self.gen_open = true;
+            self.raise_window("generator");
         }
         if open_pacs {
             self.open_pacs_window();
@@ -541,6 +547,7 @@ impl ViewerApp {
             if let Some(e) = &mut self.wf_editor {
                 e.open = true;
             }
+            self.raise_window("workflow_editor");
         }
         if wf_show_run {
             self.reveal_module(Module::Workflows);
@@ -820,7 +827,7 @@ impl ViewerApp {
                     // crosshair hidden, left-click navigation is disabled.
                     if ui
                         .selectable_label(self.show_crosshair, "⌖")
-                        .on_hover_text(
+                        .tip(
                             "Show / hide the slice intersection (crosshair).\n\
                              Hidden: left click does not navigate - slices change \
                              only by scrolling each view",
@@ -995,7 +1002,7 @@ impl ViewerApp {
                     // `Sense::hover`: it looks like a button and answers the
                     // pointer, but there is nothing to click.
                     ui.add(egui::Button::new("?").small().sense(egui::Sense::hover()))
-                        .on_hover_text(hint);
+                        .tip(hint);
                 });
             });
         });

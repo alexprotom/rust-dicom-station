@@ -356,7 +356,9 @@ impl ViewerApp {
             ui.label(egui::RichText::new(m.title()).strong());
             extra(self, ui);
         });
-        header.body(|ui| body(self, ui));
+        let open = header.is_open();
+        let (arrow, _, _) = header.body(|ui| body(self, ui));
+        name_fold_arrow(&arrow, open, m.title());
         ui.separator();
     }
 }

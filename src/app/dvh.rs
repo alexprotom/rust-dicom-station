@@ -668,7 +668,7 @@ impl ViewerApp {
                 if (d.reference_dose - *dose).abs() > 1e-6
                     && ui
                         .small_button("↺")
-                        .on_hover_text(format!("Back to the prescription of '{from}'"))
+                        .tip(format!("Back to the prescription of '{from}'"))
                         .clicked()
                 {
                     d.reference_dose = *dose;
@@ -677,7 +677,8 @@ impl ViewerApp {
         });
         ui.horizontal_wrapped(|ui| {
             ui.label("Volume:");
-            ui.selectable_value(&mut d.volume_relative, true, "%");
+            ui.selectable_value(&mut d.volume_relative, true, "%")
+                .named("Volume in %");
             ui.selectable_value(&mut d.volume_relative, false, "cm³");
         });
         if let Some(p) = &progress {
@@ -710,6 +711,7 @@ impl ViewerApp {
             let named = !d.new_metric.trim().is_empty();
             let add = ui
                 .add_enabled(named, egui::Button::new("➕").small())
+                .named("Add the metric")
                 .on_disabled_hover_text("Type a metric first, for example D95%")
                 .clicked()
                 || (named && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));

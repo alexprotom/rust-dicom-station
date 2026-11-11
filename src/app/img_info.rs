@@ -48,7 +48,9 @@ impl ViewerApp {
         let header = state.show_header(ui, |ui| {
             ui.label(egui::RichText::new("Image information").strong());
         });
-        header.body(|ui| self.image_info_body(ui));
+        let open = header.is_open();
+        let (arrow, _, _) = header.body(|ui| self.image_info_body(ui));
+        name_fold_arrow(&arrow, open, "Image information");
         ui.separator();
     }
 

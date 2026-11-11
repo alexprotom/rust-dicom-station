@@ -65,7 +65,7 @@ impl ViewerApp {
                     }
                     if ui
                         .add_enabled(!running, egui::Button::new("↺"))
-                        .on_hover_text("Reset to the application's data folder")
+                        .tip("Reset to the application's data folder")
                         .clicked()
                     {
                         reset_dir = true;

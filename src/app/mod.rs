@@ -791,6 +791,10 @@ pub struct ViewerApp {
     /// Load the generated study into workspace A once it has been written.
     gen_load_after: bool,
 
+    /// Tool windows to bring to the front on the next pass (their
+    /// `tool_window` ids): `detach::raise_window`.
+    raise_windows: Vec<&'static str>,
+
     // Tools ▶ Download test data: the repository's data-test/ from GitHub.
     /// Dialog visibility.
     testdata_open: bool,
@@ -1354,6 +1358,7 @@ impl ViewerApp {
             gen_job: None,
             gen_result: None,
             gen_load_after: true,
+            raise_windows: Vec::new(),
             testdata_open: false,
             testdata_dir: testdata::default_output_dir().display().to_string(),
             testdata_job: None,

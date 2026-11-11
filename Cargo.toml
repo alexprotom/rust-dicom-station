@@ -12,7 +12,7 @@ repository = "https://github.com/alexprotom/rust-dicom-station"
 # write it with `sed` (first match) and the installer's packer (`rds-pack`)
 # reads the first `version` key above the dependency table.
 [workspace.package]
-version = "0.12.4"
+version = "0.12.5"
 
 [dependencies]
 anyhow = "1.0"
@@ -93,6 +93,13 @@ dicom-object = "0.10"
 dicom-transfer-syntax-registry = "0.10"
 # Walking the folders the curation suites build and compare.
 walkdir = "2.5"
+
+# The viewer without a window (`tests/ui.rs`, `examples/ui_cli.rs`): egui's
+# own harness runs `ViewerApp` frame by frame, hands back the AccessKit tree
+# of what was drawn and takes scripted input; `wgpu` renders a frame to an
+# image off screen. Desktop only, like the window stack it stands in for.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "wgpu"] }
 
 [[bin]]
 name = "rds-mcp"

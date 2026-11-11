@@ -138,14 +138,14 @@ impl ViewerApp {
                 max_rect,
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
-            .on_hover_text(if is_max {
+            .tip(if is_max {
                 "Restore the multi-view layout"
             } else {
                 "Maximize this pane to the whole window"
             });
         let close_resp = ui
             .put(close_rect, egui::Button::new("✖").small())
-            .on_hover_text("Take this pane out of the row");
+            .tip("Take this pane out of the row");
         let clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
 
         // ---- the title ----

@@ -710,7 +710,7 @@ impl WorkflowEditor {
                         let info = k.info();
                         if ui
                             .button(format!("{} {}", info.glyph, info.name))
-                            .on_hover_text(info.blurb)
+                            .tip(info.blurb)
                             .clicked()
                         {
                             let at = self.drop_at;
@@ -728,11 +728,12 @@ impl WorkflowEditor {
                     let mut gone = None;
                     for (k, f) in self.frames.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
-                            ui.color_edit_button_srgb(&mut f.color);
+                            ui.color_edit_button_srgb(&mut f.color)
+                                .named_with(|| format!("Colour of frame {}", k + 1));
                             ui.add(egui::TextEdit::singleline(&mut f.title).desired_width(90.0));
                             if ui
                                 .small_button("🗑")
-                                .on_hover_text("Remove the frame (the steps stay)")
+                                .tip("Remove the frame (the steps stay)")
                                 .clicked()
                             {
                                 gone = Some(k);
@@ -763,7 +764,7 @@ impl WorkflowEditor {
                             .hint_text("the program's folder")
                             .desired_width(130.0),
                     );
-                    if ui.small_button("📂").on_hover_text("Choose the folder").clicked() {
+                    if ui.small_button("📂").tip("Choose the folder").clicked() {
                         actions.push(EdAction::BrowseOutput);
                     }
                 });
@@ -1586,7 +1587,7 @@ impl SnarlViewer<EdNode> for Viewer<'_> {
                     let info = k.info();
                     if ui
                         .button(format!("{} {}", info.glyph, info.name))
-                        .on_hover_text(info.blurb)
+                        .tip(info.blurb)
                         .clicked()
                     {
                         let id = snarl.nodes().map(|n| n.id).max().unwrap_or(0) + 1;
@@ -1834,11 +1835,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                     "choose, or set it in the run dialog",
                     170.0,
                 );
-                if ui
-                    .small_button("📂")
-                    .on_hover_text("Choose the folder")
-                    .clicked()
-                {
+                if ui.small_button("📂").tip("Choose the folder").clicked() {
                     actions.push(EdAction::BrowseFolder(id));
                 }
             });
@@ -1985,11 +1982,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                         }
                         ui.label("as");
                         text(ui, &mut o.name, &o.organ.clone(), 100.0);
-                        if ui
-                            .small_button("🗑")
-                            .on_hover_text("Do not keep it")
-                            .clicked()
-                        {
+                        if ui.small_button("🗑").tip("Do not keep it").clicked() {
                             remove = Some(k);
                         }
                     });
@@ -2495,11 +2488,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         Op::LoadFolders(p) => {
             f.row("Folder", |ui| {
                 text(ui, &mut p.path, "the folder of the cases", 170.0);
-                if ui
-                    .small_button("📂")
-                    .on_hover_text("Choose the folder")
-                    .clicked()
-                {
+                if ui.small_button("📂").tip("Choose the folder").clicked() {
                     actions.push(EdAction::BrowseFolder(id));
                 }
             });
@@ -2575,11 +2564,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                         ui.label("as");
                         let hint = r.structure.clone();
                         text(ui, &mut r.name, &hint, 100.0);
-                        if ui
-                            .small_button("🗑")
-                            .on_hover_text("Remove this prompt")
-                            .clicked()
-                        {
+                        if ui.small_button("🗑").tip("Remove this prompt").clicked() {
                             remove = Some(k);
                         }
                     });
@@ -2595,7 +2580,8 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                 ui.checkbox(&mut p.refine, "Refinement pass (slower, sharper)");
             });
             f.row("Threshold", |ui| {
-                ui.add(egui::Slider::new(&mut p.threshold, 0.05..=0.95));
+                ui.add(egui::Slider::new(&mut p.threshold, 0.05..=0.95))
+                    .named("Threshold");
             });
             output_rows(f, id, &mut p.output, &mut p.set, &mut p.set_label);
             names_row(f, id, &mut p.names);
@@ -2655,11 +2641,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                             ui.label("to");
                             text(ui, &mut r.to, "GTV", 100.0);
                         }
-                        if ui
-                            .small_button("🗑")
-                            .on_hover_text("Remove this rule")
-                            .clicked()
-                        {
+                        if ui.small_button("🗑").tip("Remove this rule").clicked() {
                             remove = Some(k);
                         }
                     });
@@ -2986,6 +2968,7 @@ impl ViewerApp {
                     Workflow::new("Untitled workflow"),
                     None,
                 ));
+                self.raise_window("workflow_editor");
             }
             WfPending::Open => {
                 let dir = Some(store::user_dir());
@@ -3003,6 +2986,7 @@ impl ViewerApp {
                     ed.saved = Workflow::new("");
                     ed.status = Some(format!("Example: {}", e.blurb));
                     self.wf_editor = Some(ed);
+                    self.raise_window("workflow_editor");
                 }
             }
         }
@@ -3015,6 +2999,7 @@ impl ViewerApp {
                 let mut ed = WorkflowEditor::from_workflow(wf, Some(path.to_path_buf()));
                 ed.status = Some(format!("Opened {}", path.display()));
                 self.wf_editor = Some(ed);
+                self.raise_window("workflow_editor");
             }
             Err(e) => {
                 // A recent file that is gone leaves the list.
@@ -3115,6 +3100,7 @@ impl ViewerApp {
                 } else if let Some(e) = &mut self.wf_editor {
                     // Keep editing: the editor, back in view.
                     e.open = true;
+                    self.raise_window("workflow_editor");
                 }
             }
         }

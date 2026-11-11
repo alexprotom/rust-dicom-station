@@ -730,7 +730,7 @@ pub(super) fn server_body(
                                 .desired_width(300.0),
                         )
                         .changed();
-                    if ui.button("📂").on_hover_text("Choose a folder").clicked() {
+                    if ui.button("📂").tip("Choose a folder").clicked() {
                         k.browse_archive = true;
                     }
                 });

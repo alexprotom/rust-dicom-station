@@ -255,16 +255,19 @@ impl ViewerApp {
                         for (i, roi) in ss.rois.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 let mut color = roi.color;
-                                if color_swatch(ui, &mut color) {
+                                if color_swatch(ui, &mut color, &roi.name) {
                                     new_color = Some((i, color));
                                 }
                                 // Shown or not is the tick box; selected - the
                                 // one the editor and the contour tools work
                                 // on - is the name, as in the segmentation list.
-                                let tick = ui.checkbox(&mut vis[i], "").on_hover_text(
-                                    "Show / select this structure\nShift-click: tick or \
+                                let tick = ui
+                                    .checkbox(&mut vis[i], "")
+                                    .named_with(|| format!("Show {}", roi.name))
+                                    .tip(
+                                        "Show / select this structure\nShift-click: tick or \
                                      untick the whole range from the last one",
-                                );
+                                    );
                                 if tick.clicked() {
                                     new_anchor =
                                         Some((here, apply_tick(&mut vis, i, shift, anchor)));

@@ -1324,7 +1324,7 @@ impl ViewerApp {
                 max_rect,
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
-            .on_hover_text(if is_max {
+            .tip(if is_max {
                 "Restore the multi-view layout"
             } else {
                 "Maximize this pane to the whole window"
@@ -1334,7 +1334,7 @@ impl ViewerApp {
                 fold_rect,
                 egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
-            .on_hover_text(if folded {
+            .tip(if folded {
                 "Show the buttons of this bar. One switch for every pane, and it is \
                  remembered between runs."
             } else {
@@ -1351,7 +1351,7 @@ impl ViewerApp {
             clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
             fit_resp = Some(
                 ui.put(fit_rect, egui::Button::new("⟲").small())
-                    .on_hover_text("Fit zoom, clear pan, each image's own window"),
+                    .tip("Fit zoom, clear pan, each image's own window"),
             );
             hand_resp = Some(
                 ui.put(
@@ -1360,18 +1360,18 @@ impl ViewerApp {
                         .frame_when_inactive(true)
                         .small(),
                 )
-                .on_hover_text(
+                .tip(
                     "Move the image with the left button. Off, a middle drag still moves \
                      it. Shared by every view.",
                 ),
             );
             zout_resp = Some(
                 ui.put(zout_rect, egui::Button::new("➖").small())
-                    .on_hover_text("Zoom out"),
+                    .tip("Zoom out"),
             );
             zin_resp = Some(
                 ui.put(zin_rect, egui::Button::new("➕").small())
-                    .on_hover_text("Zoom in"),
+                    .tip("Zoom in"),
             );
             if nl >= 2 {
                 mode_resp = Some(
@@ -1398,10 +1398,12 @@ impl ViewerApp {
             let mut b = blend;
             let saved = ui.spacing().slider_width;
             ui.spacing_mut().slider_width = slider_rect.width();
-            let r = ui.put(
-                slider_rect,
-                egui::Slider::new(&mut b, 0.0..=(nl - 1) as f32).show_value(false),
-            );
+            let r = ui
+                .put(
+                    slider_rect,
+                    egui::Slider::new(&mut b, 0.0..=(nl - 1) as f32).show_value(false),
+                )
+                .named("Blend between the stacked images");
             ui.spacing_mut().slider_width = saved;
             if r.changed() {
                 new_blend = Some(b);

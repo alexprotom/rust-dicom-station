@@ -50,6 +50,7 @@ enum ModelAction {
 
 impl ViewerApp {
     pub(super) fn open_models_window(&mut self) {
+        self.raise_window("models");
         self.models_open = true;
         self.models_result = None;
         self.models_scan.clear();
@@ -552,7 +553,7 @@ fn model_row(
         if !s.ready
             && ui
                 .add_enabled(!running && !blocked, egui::Button::new("⬇").small())
-                .on_hover_text(if local {
+                .tip(if local {
                     "Convert this model folder's weights"
                 } else {
                     "Download and convert this model"
@@ -565,7 +566,7 @@ fn model_row(
         if s.ready
             && ui
                 .add_enabled(!running && !blocked, egui::Button::new("⟳").small())
-                .on_hover_text("Remove and fetch this model again")
+                .tip("Remove and fetch this model again")
                 .clicked()
         {
             *action = Some(ModelAction::Update(i));
@@ -573,7 +574,7 @@ fn model_row(
         if s.spare_bytes > 0
             && ui
                 .add_enabled(!running, egui::Button::new("♻").small())
-                .on_hover_text(format!(
+                .tip(format!(
                     "Delete the {} source checkpoint; the model keeps running",
                     models::human_bytes(s.spare_bytes)
                 ))
@@ -584,7 +585,7 @@ fn model_row(
         if (s.ready || s.partial)
             && ui
                 .add_enabled(!running, egui::Button::new("🗑").small())
-                .on_hover_text(if local {
+                .tip(if local {
                     "Delete the converted copy; your model folder is not touched"
                 } else {
                     "Delete every file of this model"
@@ -684,7 +685,7 @@ fn folders_rows(
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!running, egui::Button::new("🗑").small())
-                .on_hover_text("Forget this folder (its files are not touched)")
+                .tip("Forget this folder (its files are not touched)")
                 .clicked()
             {
                 *action = Some((kind.remove)(i));
