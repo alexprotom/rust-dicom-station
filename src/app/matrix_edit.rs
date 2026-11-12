@@ -97,9 +97,7 @@ pub(super) fn matrix_editor_multi(
             for (i, c) in choices.iter().enumerate() {
                 if ui
                     .selectable_label(*pick == i, &c.label)
-                    .on_hover_text(
-                        "Show this transform in the grid. With the switch below off the grid follows whichever is picked; with it on, *From the result* copies this one in.",
-                    )
+                    .on_hover_text("Show this transform in the grid")
                     .clicked()
                 {
                     *pick = i;
@@ -131,11 +129,7 @@ pub(super) fn matrix_editor(
     ui.horizontal_wrapped(|ui| {
         changed |= ui
             .checkbox(&mut state.use_it, "Use this matrix")
-            .on_hover_text(
-                "Apply the numbers below instead of the transform this tool would \
-                 compute. Off, the grid follows what the tool itself worked out, \
-                 so ticking this takes that transform over and edits it.",
-            )
+            .on_hover_text("Use this matrix instead of the computed one")
             .changed();
         // Say which of the two the grid is showing, and - when it is the
         // identity - whether that is a transform that moves nothing or
@@ -194,7 +188,7 @@ pub(super) fn matrix_editor(
         ui.weak("rows: x, y, z in patient millimetres; the right column is the shift");
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            if small_tip_button(ui, "Identity", "Back to a matrix that moves nothing") {
+            if small_tip_button(ui, "Identity", "Reset to identity") {
                 state.m = Mat4::IDENTITY;
                 changed = true;
             }
@@ -206,9 +200,9 @@ pub(super) fn matrix_editor(
                 inverse.is_some(),
                 egui::Button::new("Invert").small(),
                 if inverse.is_some() {
-                    "Replace it with the mapping the other way"
+                    "Invert the matrix"
                 } else {
-                    "This matrix flattens space, so it has no inverse"
+                    "This matrix has no inverse"
                 },
             ) {
                 if let Some(i) = inverse {
@@ -217,29 +211,15 @@ pub(super) fn matrix_editor(
                 }
             }
             if let Some(c) = computed {
-                if small_tip_button(
-                    ui,
-                    "From the result",
-                    "Fill it in from the transform this tool has computed, as a place to \
-                     start editing from",
-                ) {
+                if small_tip_button(ui, "From the result", "Copy in the computed transform") {
                     state.m = c;
                     changed = true;
                 }
             }
-            if small_tip_button(
-                ui,
-                "📋 Copy",
-                "The sixteen numbers to the clipboard, whitespace separated - the \
-                 common plain-text form of a 4 x 4 matrix",
-            ) {
+            if small_tip_button(ui, "📋 Copy", "Copy the 16 numbers") {
                 ui.ctx().copy_text(state.m.to_text());
             }
-            if small_tip_button(
-                ui,
-                "📥 Paste",
-                "Read sixteen numbers from the clipboard, whatever separates them",
-            ) {
+            if small_tip_button(ui, "📥 Paste", "Paste 16 numbers") {
                 changed |= paste_matrix(ui, &mut state.m);
             }
         });

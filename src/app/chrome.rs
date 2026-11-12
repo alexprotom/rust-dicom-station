@@ -71,9 +71,7 @@ impl ViewerApp {
                                 if ui
                                     .button(label)
                                     .on_hover_text(
-                                        "Empty this workspace: its patients, studies, \
-                                         series and everything drawn on them. Nothing is \
-                                         written to disk",
+                                        "Empty this workspace. Nothing is written to disk.",
                                     )
                                     .clicked()
                                 {
@@ -85,7 +83,7 @@ impl ViewerApp {
                                 ui.separator();
                                 if ui
                                     .button("All")
-                                    .on_hover_text("Empty every workspace at once")
+                                    .on_hover_text("Empty every workspace")
                                     .clicked()
                                 {
                                     clear_all = true;
@@ -133,11 +131,9 @@ impl ViewerApp {
                                 let resp = ui
                                     .add_enabled(slot > 0, egui::Checkbox::new(&mut on, label))
                                     .on_hover_text(if holds {
-                                        "Put this workspace aside or bring it back. What it \
-                                         holds stays loaded either way."
+                                        "Show or hide this workspace. It stays loaded."
                                     } else {
-                                        "Open an empty workspace to load into, or close it \
-                                         again."
+                                        "Show or hide this workspace"
                                     });
                                 if resp.changed() {
                                     self.shown[slot] = on;
@@ -152,33 +148,20 @@ impl ViewerApp {
                         // needs is a second workspace to carry them to.
                         if self.both_volumes() {
                             ui.checkbox(&mut self.link_studies, "Sync the workspaces")
-                                .on_hover_text(
-                                    "Move, scroll, zoom or play one workspace and every \
-                             other open one follows: the crosshair to the same patient point \
-                             (through the active registration when there is one), the slice \
-                             with it, a scrolled or played slice the same way, the zoom and \
-                             the pan of a view onto the other workspaces' views of the same \
-                             plane, and a 4D run through the groups at once. Off, each \
-                             workspace is navigated on its own.",
-                                );
+                                .on_hover_text("Navigate every workspace together");
                         }
                         ui.checkbox(&mut self.show_labels, "Orientation labels");
                         ui.checkbox(&mut self.show_isocenters, "Isocenters");
                         ui.separator();
                         ui.checkbox(&mut self.side_open, "Data tree (F9)")
-                            .on_hover_text(
-                                "The left panel. Hidden, its arrow stays on the window's left \
-                                 edge to bring it back, and so does F9.",
-                            );
+                            .on_hover_text("Show or hide the left panel (F9)");
                         let any_module = self.any_module();
                         ui.add_enabled_ui(any_module, |ui| {
                             ui.checkbox(&mut self.right_open, "Modules (F10)")
                                 .on_hover_text(if any_module {
-                                    "The right panel. Hidden, its arrow stays on the window's \
-                                     right edge to bring it back, and so does F10."
+                                    "Show or hide the right panel (F10)"
                                 } else {
-                                    "There is no modules panel until a module is turned on in \
-                                     the Modules menu"
+                                    "Turn on a module in the Modules menu first"
                                 });
                         });
                         ui.separator();
@@ -235,23 +218,14 @@ impl ViewerApp {
                     // The tools that are about files and folders rather than
                     // about the images on screen. Everything that reads the
                     // displayed study is a module of the right panel.
-                    if tip_button(
-                        ui,
-                        "🏥 PACS",
-                        "Picture Archiving and Communication System: this station's \
-                         cohorts, patients, studies and series, and the PACS servers it is \
-                         paired with; load into a workspace, organise, give back what was \
-                         drawn",
-                    ) {
+                    if tip_button(ui, "🏥 PACS", "Browse and organise the image archive") {
                         open_pacs = true;
                         ui.close();
                     }
                     if tip_button(
                         ui,
                         "📦 Downloaded models",
-                        "What every segmentation engine has downloaded, how much disk \
-                         it costs, and the buttons to download, update or remove it - \
-                         one model at a time or all of them",
+                        "Download, update or remove models",
                     ) {
                         open_models = true;
                         ui.close();
@@ -259,30 +233,21 @@ impl ViewerApp {
                     if tip_button(
                         ui,
                         "🔏 Anonymize DICOM folder",
-                        "Scan a folder, review every identifying tag with its current \
-                         and proposed values, then rewrite the files (in place or into \
-                         a new folder) with consistently regenerated UIDs",
+                        "Remove patient identifiers from a folder",
                     ) {
                         self.anon_open = true;
                         self.raise_window("anonymize");
                         ui.close();
                     }
                     ui.separator();
-                    if tip_button(
-                        ui,
-                        "📐 Generate test data",
-                        "Write a complete synthetic RT study (CT, RTSTRUCT, RTPLAN, \
-                         RTDOSE, DX, RTIMAGE, REG, RTRECORD) into the application folder",
-                    ) {
+                    if tip_button(ui, "📐 Generate test data", "Write a synthetic RT study") {
                         open_gen = true;
                         ui.close();
                     }
                     if tip_button(
                         ui,
                         "📥 Download test data",
-                        "Fetch the bundled patient data (a ten-phase 4DFBCT with \
-                         structure sets and the matching 4DCBCT, 980 MB) from the \
-                         project's GitHub repository into a folder of your choice",
+                        "Fetch the sample 4DCT data (980 MB)",
                     ) {
                         open_testdata = true;
                         ui.close();
@@ -291,21 +256,11 @@ impl ViewerApp {
                 // Workflows: the program's steps wired into a graph, saved as
                 // a file and run again on other data (see workflow_edit.rs).
                 ui.menu_button("Workflows", |ui| {
-                    if tip_button(
-                        ui,
-                        "🔀 New",
-                        "Open the workflow editor on an empty canvas: add steps from the \
-                         palette, wire what one makes into the next",
-                    ) {
+                    if tip_button(ui, "🔀 New", "New workflow") {
                         wf_menu = Some(workflow_edit::WfPending::New);
                         ui.close();
                     }
-                    if tip_button(
-                        ui,
-                        "📂 Load",
-                        "Open a workflow file (.rdsflow) in the editor, to run it again or \
-                         change it",
-                    ) {
+                    if tip_button(ui, "📂 Load", "Open a workflow file (.rdsflow)") {
                         wf_menu = Some(workflow_edit::WfPending::Open);
                         ui.close();
                     }
@@ -379,6 +334,26 @@ impl ViewerApp {
                                 save_settings = true;
                             }
                         });
+                    // What is drawn over the views besides the images;
+                    // switches, so the submenu stays open as the others do.
+                    egui::containers::menu::SubMenuButton::new("Viewer")
+                        .config(
+                            egui::containers::menu::MenuConfig::new()
+                                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                        )
+                        .ui(ui, |ui| {
+                            let before = self.overlays;
+                            let o = &mut self.overlays;
+                            ui.checkbox(&mut o.orientation_cube, "Orientation cube")
+                                .on_hover_text("In 3D, click a face to turn to it");
+                            ui.checkbox(&mut o.ruler, "Ruler")
+                                .on_hover_text("Scale bar on the image views");
+                            ui.checkbox(&mut o.beam_fields, "Beam fields")
+                                .on_hover_text("Show the plan's beams");
+                            if self.overlays != before {
+                                save_settings = true;
+                            }
+                        });
                     ui.menu_button("Graphics backend", |ui| {
                         ui.label("Which graphics API the program draws and computes with.");
                         ui.add_space(4.0);
@@ -428,8 +403,7 @@ impl ViewerApp {
                         if tip_button(
                             ui,
                             "Copy client configuration",
-                            "Copies the JSON entry for claude_desktop_config.json (or an \
-                             equivalent MCP client) to the clipboard.",
+                            "Copy the MCP client's JSON entry",
                         ) {
                             ui.ctx().copy_text(crate::settings::mcp_client_snippet());
                             ui.close();
@@ -572,12 +546,7 @@ impl ViewerApp {
         } else {
             format!("W/L {pane}:")
         })
-        .on_hover_text(
-            "The window of the image at this pane's scrubber - the planar or additional pane \
-             last pointed at. A preset picked here goes on every planar image of the \
-             workspaces, and on each one shown later. Right-drag in the pane changes the \
-             window too.",
-        );
+        .on_hover_text("Window / level of the planar image. Right-drag in the pane too.");
         let speed = (w * 0.005).max(1e-3) as f64;
         let mut changed = ui
             .add(egui::DragValue::new(&mut c).speed(speed).prefix("C "))
@@ -661,11 +630,7 @@ impl ViewerApp {
                     } else {
                         "W/L:".to_string()
                     })
-                    .on_hover_text(
-                        "The display window of the workspace last pointed at. Workspaces \
-                         showing the same modality share it; a CT and an MR each keep \
-                         their own. Right-drag in a view changes it too.",
-                    );
+                    .on_hover_text("Window / level. Right-drag in a view too.");
                     let mut changed = ui
                         .add(egui::DragValue::new(&mut c).speed(2.0).prefix("C "))
                         .changed();
@@ -795,14 +760,9 @@ impl ViewerApp {
                                 egui::Button::selectable(shown, format!("3D {slot_name}")),
                             )
                             .on_hover_text(if shown {
-                                format!(
-                                    "Take the 3D surface scene out of workspace {slot_name}'s row"
-                                )
+                                format!("Hide the 3D view of {slot_name}")
                             } else {
-                                format!(
-                                    "Put a 3D surface rendering of workspace {slot_name}'s \
-                                     structures and segmentations into its row, beside the views"
-                                )
+                                format!("Show the 3D view of {slot_name}")
                             })
                             .clicked()
                         {
@@ -818,11 +778,7 @@ impl ViewerApp {
                     // crosshair hidden, left-click navigation is disabled.
                     if ui
                         .selectable_label(self.show_crosshair, "⌖")
-                        .tip(
-                            "Show / hide the slice intersection (crosshair).\n\
-                             Hidden: left click does not navigate - slices change \
-                             only by scrolling each view",
-                        )
+                        .tip("Show / hide the crosshair.\nHidden: left click does not navigate")
                         .clicked()
                     {
                         self.show_crosshair = !self.show_crosshair;
@@ -835,27 +791,14 @@ impl ViewerApp {
                     if self.both_volumes()
                         && ui
                             .add(egui::Button::selectable(self.link_studies, "Sync"))
-                            .on_hover_text(
-                                "Keep workspaces A and B together: the crosshair, the slice, \
-                                 a scrolled or played slice, the zoom and the pan of a view \
-                                 carry over to the other workspace's view of the same plane, \
-                                 through the active registration when there is one, and a \
-                                 4D run walks both groups at once, so the two rows show the \
-                                 same thing at the same scale.\n\
-                                 Off: each workspace is navigated on its own",
-                            )
+                            .on_hover_text("Navigate the workspaces together")
                             .clicked()
                     {
                         self.link_studies = !self.link_studies;
                     }
 
                     // Reset every view of both workspaces.
-                    if tip_button(
-                        ui,
-                        "⟲",
-                        "Reset every view of both workspaces: fit zoom, clear pan \
-                         and put the crosshairs back at the volume centers",
-                    ) {
+                    if tip_button(ui, "⟲", "Reset every view") {
                         self.reset_all_views();
                     }
 
@@ -873,11 +816,7 @@ impl ViewerApp {
                             paintable,
                             egui::Button::selectable(self.draw_open, "✏ Draw structure"),
                         )
-                        .on_hover_text(
-                            "Unfold the drawing tools: paint, erase and grow a segmentation; \
-                             polygon, spline, freehand, live wire, brush and nudge for an RT \
-                             structure. Fold them away to put the tool down",
-                        )
+                        .on_hover_text("Show / hide the drawing tools")
                         .clicked()
                     {
                         self.draw_open = !self.draw_open;

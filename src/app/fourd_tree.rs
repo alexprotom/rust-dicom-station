@@ -220,7 +220,7 @@ impl ViewerApp {
             // two removals, the one that cannot lose images.
             if ui
                 .add(egui::Button::new("Dissolve group").shortcut_text("Delete"))
-                .on_hover_text("Take the group apart; its series stay in the study")
+                .on_hover_text("Ungroup; the series stay")
                 .clicked()
             {
                 fourd = Some(FourDAction::Dissolve { slot, group: gi });
@@ -229,8 +229,7 @@ impl ViewerApp {
             if tip_button(
                 ui,
                 format!("🗑 Remove group and its {} series", members.len()),
-                "Take the group's series - and the structure sets, plans and doses \
-                 drawn on them - out of the workspace",
+                "Remove the series and their RT objects",
             ) {
                 act = Some(TreeAction {
                     from: slot,
@@ -242,12 +241,10 @@ impl ViewerApp {
             }
         });
         resp.on_hover_text(format!(
-            "4D group · {} series: the phases in temporal order, then the reconstructions{}",
+            "4D group · {} series{}",
             members.len(),
             trace
-                .map(|t| format!(
-                    "\nRespiratory trace: {t} (the scanner's capture, not shown as an image)"
-                ))
+                .map(|t| format!("\nRespiratory trace: {t}"))
                 .unwrap_or_default()
         ));
         if fourd.is_some() {

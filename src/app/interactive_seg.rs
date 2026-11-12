@@ -730,15 +730,9 @@ impl ViewerApp {
                 (
                     NniEngine::NnInteractive,
                     "nnInteractive",
-                    "Points, boxes, scribbles and lassos, on CT, MR or PET; zooms out by \
-                     itself for large structures",
+                    "Points, boxes, scribbles, lassos; CT, MR, PET",
                 ),
-                (
-                    NniEngine::Vista3d,
-                    "VISTA-3D points",
-                    "Clicks only, on CT; NVIDIA's VISTA-3D, the same weights as its \
-                     automatic mode",
-                ),
+                (NniEngine::Vista3d, "VISTA-3D points", "Clicks only, CT"),
             ] {
                 if ui
                     .add_enabled(
@@ -782,9 +776,9 @@ impl ViewerApp {
         }
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.nni.include, true, "➕ Include")
-                .on_hover_text("The prompt marks the structure");
+                .on_hover_text("Mark the structure");
             ui.selectable_value(&mut self.nni.include, false, "➖ Exclude")
-                .on_hover_text("The prompt marks what must stay out");
+                .on_hover_text("Mark what must stay out");
         });
         let n_marks = self.nni.marks.len();
         let queued = self.nni.queue.len();
@@ -798,14 +792,14 @@ impl ViewerApp {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(!running && n_marks > 0, egui::Button::new("↺ Undo prompt"))
-                .on_hover_text("Take back the last prompt and its answer")
+                .on_hover_text("Undo the last prompt")
                 .clicked()
             {
                 undo = true;
             }
             if ui
                 .add_enabled(!running, egui::Button::new("➕ New object"))
-                .on_hover_text("Keep this segmentation as it is and start the next one")
+                .on_hover_text("Keep this one and start the next")
                 .clicked()
             {
                 new_object = true;
@@ -824,10 +818,7 @@ impl ViewerApp {
                         !running && self.nni.target_seg != Some(active),
                         egui::Button::new(format!("Refine \"{seg_name}\"")),
                     )
-                    .on_hover_text(
-                        "Start from the active segmentation - an auto-segmented organ, a drawn \
-                         outline - and correct it with prompts",
-                    )
+                    .on_hover_text("Correct the active segmentation with prompts")
                     .clicked()
                 {
                     start_from = Some(mask);
@@ -845,12 +836,7 @@ impl ViewerApp {
                     &mut self.nni.autozoom,
                     "Zoom out when the answer reaches the border",
                 )
-                .on_hover_text(
-                    "nnInteractive's AutoZoom: when the answer touches the edge of the \
-                         192-voxel window, look again at up to 4x the field of view, then \
-                         refine at full resolution. Off: one pass per prompt, limited to the \
-                         window.",
-                );
+                .on_hover_text("nnInteractive's AutoZoom, up to 4x");
             }
             device_row(ui, &mut self.nni.device);
             let models_engine = match engine {

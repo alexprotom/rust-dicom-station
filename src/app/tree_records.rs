@@ -163,11 +163,7 @@ impl ViewerApp {
                 );
                 if ui
                     .add(egui::Button::new("Acknowledge").small())
-                    .on_hover_text(
-                        "Clear these warnings. They describe a load or a transfer that \
-                         has already happened, so once they have been read they have \
-                         nothing left to say; the next one reports its own.",
-                    )
+                    .on_hover_text("Clear these warnings")
                     .clicked()
                 {
                     acknowledge = true;

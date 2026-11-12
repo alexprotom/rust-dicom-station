@@ -759,11 +759,11 @@ impl ViewerApp {
         ui.horizontal_wrapped(|ui| {
             ui.label("Draw:");
             ui.selectable_value(&mut self.medsam2.tool, BoxTool::Draw, "⬚ Box")
-                .on_hover_text("Drag a new box, or move and resize the one that is there");
+                .on_hover_text("Draw or adjust the box");
             ui.selectable_value(&mut self.medsam2.tool, BoxTool::Include, "➕ Include")
-                .on_hover_text("Click a spot the box got wrong - this is the structure");
+                .on_hover_text("Click a spot to include");
             ui.selectable_value(&mut self.medsam2.tool, BoxTool::Exclude, "➖ Exclude")
-                .on_hover_text("Click a spot that must stay out");
+                .on_hover_text("Click a spot to exclude");
             if ui.button("Clear").clicked() {
                 clear = true;
             }
@@ -790,16 +790,13 @@ impl ViewerApp {
                     !running && self.medsam2.prompt.is_some(),
                     egui::Button::new("👁 Preview this slice"),
                 )
-                .on_hover_text(
-                    "Segment only the slice the box is on. The slice is encoded \
-                     once and kept, so adjusting the box after that is quick.",
-                )
+                .on_hover_text("Segment this slice only")
                 .clicked()
             {
                 request = Some(Request::Preview);
             }
             ui.checkbox(&mut self.medsam2.auto_preview, "automatically")
-                .on_hover_text("Preview again whenever the box or the clicks change");
+                .on_hover_text("Preview on every change");
         });
 
         // ---- the range -------------------------------------------
@@ -848,11 +845,7 @@ impl ViewerApp {
 
         if self.medsam2.base_mask.is_some() {
             ui.checkbox(&mut self.medsam2.merge, "Add to what is already there")
-                .on_hover_text(
-                    "Correcting a slice that drifted: scroll to it, draw a fresh \
-                     box, and propagate again - the new run is added to the \
-                     segmentation instead of replacing it.",
-                );
+                .on_hover_text("Add the new run instead of replacing");
         }
         ui.horizontal_wrapped(|ui| {
             ui.label("Name:");
@@ -919,7 +912,7 @@ impl ViewerApp {
                             self.medsam2.prompt.is_some(),
                             egui::Button::new("▶ Propagate"),
                         )
-                        .on_hover_text("Follow the structure through the slice range")
+                        .on_hover_text("Propagate through the range")
                         .clicked()
                     {
                         request = Some(Request::Propagate);

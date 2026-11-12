@@ -311,11 +311,11 @@ impl ViewerApp {
         ui.label("Prompt:");
         ui.horizontal_wrapped(|ui| {
             ui.radio_value(&mut d.kind, PromptKind::Box, "Box")
-                .on_hover_text("A box centred on the crosshair - the most reliable prompt, and the only one that works well for lesions");
+                .on_hover_text("A box at the crosshair; best for lesions");
             ui.radio_value(&mut d.kind, PromptKind::Point, "Point")
-                .on_hover_text("A single click at the crosshair");
+                .on_hover_text("A click at the crosshair");
             ui.radio_value(&mut d.kind, PromptKind::Text, "Text")
-                .on_hover_text("A structure name, run through the model's trained prompt template");
+                .on_hover_text("A structure name");
         });
         match d.kind {
             PromptKind::Box => {
@@ -363,10 +363,7 @@ impl ViewerApp {
         ui.separator();
         ui.collapsing("Options", |ui| {
             ui.checkbox(&mut d.cfg.use_zoom_in, "Refinement pass")
-                .on_hover_text(
-                    "The second, sliding-window pass. Without it the result is a \
-                     single coarse pass - much faster, much blockier.",
-                );
+                .on_hover_text("Second, finer pass; off is faster and coarser");
             ui.add_enabled(
                 d.kind == PromptKind::Box,
                 egui::Checkbox::new(
@@ -374,12 +371,7 @@ impl ViewerApp {
                     "Skip the search pass (box only)",
                 ),
             )
-            .on_hover_text(
-                "The first pass only exists to locate the structure. With a box \
-                 drawn by hand it is redundant: skipping it roughly halves the \
-                 work and avoids losing small lesions to the downsample. This \
-                 departs from the reference implementation.",
-            );
+            .on_hover_text("About twice as fast with a box");
             ui.horizontal_wrapped(|ui| {
                 ui.label("Threshold:");
                 ui.add(egui::Slider::new(&mut d.cfg.threshold, 0.05..=0.95))
@@ -411,9 +403,9 @@ impl ViewerApp {
                         ready,
                         "▶ Segment",
                         if d.output.phases {
-                            "Run the network on the prompt on every phase of the group"
+                            "Segment on every phase"
                         } else {
-                            "Run the network on the prompt"
+                            "Segment the prompt"
                         },
                     ) {
                         run = true;

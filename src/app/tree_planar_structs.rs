@@ -158,10 +158,7 @@ impl ViewerApp {
                                             }
                                             if ui
                                                 .button("⇥ Carry to...")
-                                                .on_hover_text(
-                                                    "Through a 2D/2D registration of the \
-                                                     workspace, onto its fixed image",
-                                                )
+                                                .on_hover_text("Carry onto the fixed image")
                                                 .clicked()
                                             {
                                                 act = Some(Act::Carry(k, j));
@@ -203,10 +200,7 @@ impl ViewerApp {
                             }
                             if ui
                                 .button("💾 Save as presentation state")
-                                .on_hover_text(
-                                    "A Grayscale Softcopy Presentation State, with every \
-                                     image made here as an RT Image beside it",
-                                )
+                                .on_hover_text("Save as a presentation state (GSPS)")
                                 .clicked()
                             {
                                 act = Some(Act::Save(k));

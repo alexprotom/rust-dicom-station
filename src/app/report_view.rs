@@ -63,13 +63,13 @@ impl ViewerApp {
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
             .tip(if is_max {
-                "Restore the multi-view layout"
+                "Restore the layout"
             } else {
-                "Maximize this pane to the whole window"
+                "Maximize this pane"
             });
         let close_resp = ui
             .put(close_rect, egui::Button::new("✖").small())
-            .tip("Take this pane out of the row");
+            .tip("Close this pane");
         let clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
         let page_resp = has_page.then(|| {
             ui.put(
@@ -77,9 +77,9 @@ impl ViewerApp {
                 egui::Button::new(if show_page { "📋 Table" } else { "📄 Page" }).small(),
             )
             .on_hover_text(if show_page {
-                "The content as a table"
+                "Show as a table"
             } else {
-                "The page as the scanner drew it"
+                "Show the scanner's page"
             })
         });
 

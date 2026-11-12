@@ -13,6 +13,7 @@
 pub mod anonymize;
 pub mod archive;
 pub mod audit;
+pub mod beam_view;
 pub mod bodymask;
 pub mod burn_in;
 pub mod contours;

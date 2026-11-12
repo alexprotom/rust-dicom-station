@@ -92,19 +92,15 @@ impl ViewerApp {
         let mut refresh = false;
         let mut copy = false;
         ui.horizontal(|ui| {
-            if small_tip_button(
-                ui,
-                "Read again",
-                "Read the series' headers again, after replacing the files on disk",
-            ) {
+            if small_tip_button(ui, "Read again", "Read the headers again") {
                 refresh = true;
             }
-            if small_tip_button(ui, "Copy", "Put the whole report on the clipboard") {
+            if small_tip_button(ui, "Copy", "Copy the report") {
                 copy = true;
             }
             if both {
                 ui.checkbox(&mut self.info.compare, "Compare")
-                    .on_hover_text("Show what this workspace and another disagree about");
+                    .on_hover_text("Show differences with another workspace");
                 // Which one to hold it against. With one other workspace
                 // there is nothing to choose and the row stays quiet.
                 if self.info.compare && others.len() > 1 {

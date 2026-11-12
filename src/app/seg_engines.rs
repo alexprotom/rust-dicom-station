@@ -97,12 +97,7 @@ pub(super) fn scope_row(ui: &mut egui::Ui, phases: &mut bool, group: Option<&(St
         ui.label("Run on:");
         ui.radio_value(phases, false, "the displayed series");
         ui.radio_value(phases, true, format!("every phase of {name} ({n})"))
-            .on_hover_text(
-                "Loads each phase in turn and runs the same tool on it. What it finds \
-                 is filed on that phase - a segmentation series or a structure set of \
-                 its own - under the same structure names on every phase, so the \
-                 phases can be compared, played and propagated as one.",
-            );
+            .on_hover_text("Run on each phase in turn");
     });
 }
 
@@ -124,16 +119,9 @@ pub(super) fn output_rows(
         ui.label("Output:");
         for k in OutputKind::ALL {
             let hint = match k {
-                OutputKind::Segments => {
-                    "Editable voxel masks in a segmentation series bound to the image \
-                     series - what the brush and the segment tools work on. Exports as \
-                     DICOM SEG."
-                }
-                OutputKind::Structures => {
-                    "Contours in an RT structure set, and no segments. What a planning \
-                     system reads; rides the RTSTRUCT export."
-                }
-                OutputKind::Both => "The segments, and contours made from them.",
+                OutputKind::Segments => "Voxel masks in a segmentation series",
+                OutputKind::Structures => "Contours in an RT structure set",
+                OutputKind::Both => "Segments and contours",
             };
             ui.radio_value(&mut out.kind, k, k.label())
                 .on_hover_text(hint);
@@ -971,9 +959,9 @@ pub(super) fn device_row(ui: &mut egui::Ui, pref: &mut DevicePref) {
         ui.label("Compute:");
         for p in DevicePref::ALL {
             let hint = match p {
-                DevicePref::Auto => "Use the GPU when one is available, else the CPU",
-                DevicePref::Gpu => "Any GPU via wgpu (Vulkan / DX12 / Metal) - no CUDA needed",
-                DevicePref::Cpu => "Every core, no GPU",
+                DevicePref::Auto => "GPU if available, else CPU",
+                DevicePref::Gpu => "Any GPU, no CUDA needed",
+                DevicePref::Cpu => "CPU only",
             };
             ui.radio_value(pref, p, p.label()).on_hover_text(hint);
         }
@@ -988,7 +976,7 @@ pub(super) fn models_root_row(ui: &mut egui::Ui, models_dir: &mut String) -> boo
         ui.label("Model folder:");
         ui.add(egui::TextEdit::singleline(models_dir).desired_width(160.0))
             .on_hover_text(format!(
-                "Root folder of all downloaded weights; blank means the default, {}",
+                "Blank: the default, {}",
                 models::default_root().display()
             ));
         if tip_button(ui, "📁", "Choose the model folder") {

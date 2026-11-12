@@ -394,13 +394,8 @@ impl RunReport {
     /// [`RunReport::contour_volumes_tsv`]. Two heading rows: which side
     /// over each pair of columns, then how each column measures.
     fn contour_volumes_ui(&self, ui: &mut egui::Ui, id: &str, phased: bool) {
-        const SURFACE: &str = "Surface-based: the volume enclosed by a closed triangle \
-             surface reconstructed from the contours - neighbouring slices joined by \
-             strips of triangles, the ends closed by caps half a slice beyond the \
-             last contours. See docs/volumes.md for the formulas.";
-        const VOXELS: &str = "Voxels-based: the contours rasterized on the image's lattice, \
-             counted and multiplied by the voxel volume - the figure every tool \
-             that works on a mask uses.";
+        const SURFACE: &str = "Volume inside the surface built from the contours";
+        const VOXELS: &str = "Volume of the rasterized contours";
         table_scroll(ui, (id, "vols"), |ui| {
             egui::Grid::new((id, "vols_contours"))
                 .striped(true)
@@ -503,9 +498,7 @@ fn name_cell(ui: &mut egui::Ui, it: &RunItem) {
             })
             .response
             .on_hover_text(format!(
-                "{}\n\nCarried as a rigid body: shape and volume kept. The \
-                 deformation departs from that rigid body by {res:.1} mm RMS over \
-                 the structure.",
+                "{}\nCarried rigidly; deformation differs by {res:.1} mm RMS",
                 it.name
             ));
         }

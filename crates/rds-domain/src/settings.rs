@@ -39,6 +39,10 @@ const MODULE_SYNTH_KEY: &str = "module_image_synthesis";
 const MODULES_OPEN_KEY: &str = "modules_open";
 /// Whether the row of buttons on each pane is folded away.
 const PANE_BUTTONS_KEY: &str = "pane_buttons";
+/// *Settings ▶ Viewer*: what is drawn over every view besides the images.
+const OVERLAY_CUBE_KEY: &str = "orientation_cube";
+const OVERLAY_RULER_KEY: &str = "ruler";
+const OVERLAY_BEAMS_KEY: &str = "beam_fields";
 /// Whether opening the PACS window walks its storage folders.
 const PACS_SCAN_ON_OPEN_KEY: &str = "pacs_scan_on_open";
 /// The PACS window's analytics: worked out on every click, and drawn as
@@ -376,9 +380,35 @@ impl Reg2dPrefs {
     }
 }
 
+/// What *Settings ▶ Viewer* draws over the views besides the images, each
+/// on for a fresh installation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewerOverlays {
+    /// The orientation cube in the lower left corner of every view; in a
+    /// 3D pane a click on one of its faces turns the scene to that side.
+    pub orientation_cube: bool,
+    /// The scale bar along the bottom of every image view.
+    pub ruler: bool,
+    /// The active plan's beams: their fields cut by every view's plane,
+    /// and drawn in the 3D scene.
+    pub beam_fields: bool,
+}
+
+impl Default for ViewerOverlays {
+    fn default() -> Self {
+        ViewerOverlays {
+            orientation_cube: true,
+            ruler: true,
+            beam_fields: true,
+        }
+    }
+}
+
 /// User preferences that survive a restart.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
+    /// What is drawn over the views besides the images.
+    pub overlays: ViewerOverlays,
     /// Light / dark / follow-the-system appearance.
     pub theme: ThemePreference,
 
@@ -472,6 +502,7 @@ impl Default for Settings {
         // The viewer has always started dark; keep that as the default rather
         // than following the system, which would surprise existing users.
         Settings {
+            overlays: ViewerOverlays::default(),
             theme: ThemePreference::Dark,
             models_dir: None,
             archive_dir: None,
@@ -1226,6 +1257,18 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.pacs_scan_on_open = b;
             }
+        } else if key.eq_ignore_ascii_case(OVERLAY_CUBE_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.overlays.orientation_cube = b;
+            }
+        } else if key.eq_ignore_ascii_case(OVERLAY_RULER_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.overlays.ruler = b;
+            }
+        } else if key.eq_ignore_ascii_case(OVERLAY_BEAMS_KEY) {
+            if let Some(b) = bool_from_str(value) {
+                s.overlays.beam_fields = b;
+            }
         } else if key.eq_ignore_ascii_case(PANE_BUTTONS_KEY) {
             // The file says what is *shown*, which reads better by hand than
             // a double negative; the field holds the other way round.
@@ -1322,6 +1365,15 @@ fn render(s: &Settings) -> String {
         bool_to_str(!s.pane_buttons_hidden),
         s.modules_open.join(","),
         s.graphics_backend.key()
+    ));
+    out.push_str(&format!(
+        "# drawn over the views (Settings > Viewer) = on | off\n\
+         {OVERLAY_CUBE_KEY} = {}\n\
+         {OVERLAY_RULER_KEY} = {}\n\
+         {OVERLAY_BEAMS_KEY} = {}\n",
+        bool_to_str(s.overlays.orientation_cube),
+        bool_to_str(s.overlays.ruler),
+        bool_to_str(s.overlays.beam_fields)
     ));
     out.push_str("# what each row of the central area shows, left to right:\n");
     out.push_str("# any of axial, sagittal, coronal, 3d, planar1, planar2, additional, chart\n");
@@ -1575,6 +1627,20 @@ mod tests {
             .expect("a command");
         assert!(cmd.contains("rds-mcp"), "{cmd}");
         assert!(v["mcpServers"]["rust-dicom-station"]["args"].is_array());
+    }
+
+    #[test]
+    fn the_viewer_overlays_round_trip() {
+        let s = Settings {
+            overlays: ViewerOverlays {
+                orientation_cube: false,
+                ruler: true,
+                beam_fields: false,
+            },
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s);
+        assert!(parse("").overlays.ruler, "on for a fresh installation");
     }
 
     #[test]

@@ -342,10 +342,7 @@ impl ViewerApp {
                 .corner_radius(2.0)
                 .sense(egui::Sense::hover()),
         )
-        .tip(
-            "The keyboard is on this row: ↑ and ↓ step to the row above and below at this \
-             level, F2 renames it, Delete removes it",
-        );
+        .tip("Keyboard on this row: ↑ ↓ step, F2 renames, Delete removes");
     }
 
     /// The *Rename* entry of a data-tree menu, with the key that does the
@@ -510,10 +507,10 @@ impl ViewerApp {
     /// What a badge on a series row stands for.
     fn badge_hint(tag: &str) -> &'static str {
         match tag {
-            "RTS" => "The selected RT structure set was drawn on this series",
-            "SEG" => "The selected segmentation series belongs to this series",
-            "RTD" => "The selected dose was computed on this series",
-            _ => "The selected plan was made on this series",
+            "RTS" => "Selected structure set drawn here",
+            "SEG" => "Selected segmentation belongs here",
+            "RTD" => "Selected dose computed here",
+            _ => "Selected plan made here",
         }
     }
 
@@ -577,14 +574,14 @@ impl ViewerApp {
                 }
             })
             .response
-            .on_hover_text(format!("Copy the {what} into another series"));
+            .on_hover_text(format!("Copy the {what} to another series"));
             ui.menu_button("Move to", |ui| {
                 if let Some(to) = self.destination_menu(ui, here) {
                     *item_act = Some(to.transfer(here, selection.to_vec(), false));
                 }
             })
             .response
-            .on_hover_text(format!("Move the {what} into another series"));
+            .on_hover_text(format!("Move the {what} to another series"));
             if small_tip_button(ui, "🗑", format!("Remove the {what}")) {
                 *item_act = Some(ItemAction::Remove {
                     from: here,
@@ -594,7 +591,7 @@ impl ViewerApp {
             if here.kind == SetKind::Segmentations
                 && ui
                     .small_button("💾")
-                    .tip(format!("Write the {what} as a DICOM SEG file of their own"))
+                    .tip(format!("Export the {what} as DICOM SEG"))
                     .clicked()
             {
                 *item_act = Some(ItemAction::ExportSeg {

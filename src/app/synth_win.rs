@@ -711,7 +711,7 @@ impl ViewerApp {
             ui.label("Checkpoints:");
             ui.radio_value(&mut s.members, Members::Quick, "CV_0 (quick look)");
             ui.radio_value(&mut s.members, Members::All, format!("all {n}"))
-                .on_hover_text("The published recipe: the mean of every cross-validation model");
+                .on_hover_text("Mean of every model (published recipe)");
             ui.radio_value(&mut s.members, Members::Chosen, "chosen");
         });
         if s.members == Members::Chosen {
@@ -727,10 +727,8 @@ impl ViewerApp {
                 ui.radio_value(&mut s.tta, t, t.to_string())
                     .on_hover_text(match t {
                         0 => "No test-time augmentation",
-                        1 => "Also the slice flipped top to bottom",
-                        _ => {
-                            "Also flipped top to bottom, then left to right (the published recipe)"
-                        }
+                        1 => "Also flipped top to bottom",
+                        _ => "Also flipped both ways (published recipe)",
                     });
             }
         });
@@ -744,10 +742,7 @@ impl ViewerApp {
             &mut s.uncertainty,
             "Spread of the members as a second series",
         )
-        .on_hover_text(
-            "The voxel-wise standard deviation (HU) of the averaged predictions, written \
-                 as its own series to fuse as an overlay. Needs two members or more.",
-        );
+        .on_hover_text("Standard deviation (HU). Needs two members or more");
         // ---- body ----------------------------------------------------------
         ui.horizontal_wrapped(|ui| {
             ui.label("Air outside:");
@@ -761,16 +756,13 @@ impl ViewerApp {
                 .selected_text(label)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut s.body, BodyChoice::Network, "body network (6 mm)")
-                        .on_hover_text(
-                            "The body contour guided by TotalSegmentator's body network (body \
-                             on CT and CBCT, body_mr on MR, both at 6 mm), as upstream masks",
-                        );
+                        .on_hover_text("Body from TotalSegmentator's network");
                     ui.selectable_value(
                         &mut s.body,
                         BodyChoice::Classical,
                         "body contour (threshold)",
                     )
-                    .on_hover_text("Threshold and morphology: nothing to download");
+                    .on_hover_text("Threshold, nothing to download");
                     for r in &rois {
                         ui.selectable_value(
                             &mut s.body,
@@ -798,9 +790,7 @@ impl ViewerApp {
                     Some(*t),
                     format!("workspace {}", SLOT_NAMES[*t]),
                 )
-                .on_hover_text(
-                    "Beside its source, on the same frame of reference: fused with no registration",
-                );
+                .on_hover_text("Same frame of reference, no registration");
             }
             ui.radio_value(&mut s.show_in, None, "this workspace");
         });
@@ -839,11 +829,7 @@ impl ViewerApp {
             Some(job) => actions.cancel |= progress_row(ui, &job.progress),
             None => {
                 ui.add_enabled_ui(self.synth_eval_job.is_none(), |ui| {
-                    if tip_button(
-                        ui,
-                        "▶ Synthesize",
-                        "Make the synthetic CT of the displayed series",
-                    ) {
+                    if tip_button(ui, "▶ Synthesize", "Make a synthetic CT") {
                         actions.run = true;
                     }
                 });
@@ -979,29 +965,19 @@ impl ViewerApp {
             }
         }
         ui.checkbox(&mut s.eval_wet, "Water-equivalent thickness (protons)")
-            .on_hover_text(
-                "Ray by ray through the mask along the three axes of the grid, through an HU \
-                 to relative stopping power table: the range a proton beam would see on each.",
-            );
+            .on_hover_text("Proton range along the grid axes");
         if s.eval_wet {
             ui.horizontal_wrapped(|ui| {
                 ui.label("HU:RSP");
                 ui.add(egui::TextEdit::singleline(&mut s.hlut).desired_width(260.0))
-                    .on_hover_text(
-                        "Pairs HU:RSP separated by commas. The default is a generic curve, not \
-                         a scanner's calibration: paste your department's.",
-                    );
-                if small_tip_button(ui, "↺", "Back to the generic curve") {
+                    .on_hover_text("HU:RSP pairs, comma separated");
+                if small_tip_button(ui, "↺", "Reset to the generic curve") {
                     s.hlut = eval::Hlut::default().text();
                 }
             });
         }
         ui.checkbox(&mut s.eval_dice, "Dice of TotalSegmentator's structures")
-            .on_hover_text(
-                "Runs TotalSegmentator (total, 3 mm) on both images and compares what it \
-                 finds: the model card's third metric. Minutes on a CPU, 140 MB to download \
-                 once.",
-            );
+            .on_hover_text("Runs TotalSegmentator on both (140 MB download)");
         ui.checkbox(
             &mut s.eval_diff,
             "Add the difference (sCT minus CT) as a series",
@@ -1016,13 +992,13 @@ impl ViewerApp {
                             self.synth_job.is_none() && matches!(align_note, Some(Ok(_))),
                             egui::Button::new("▶ Evaluate"),
                         )
-                        .on_hover_text("Compare the displayed series with the reference")
+                        .on_hover_text("Compare with the reference")
                         .clicked()
                     {
                         actions.evaluate = true;
                     }
                     if s.eval_result.is_some()
-                        && small_tip_button(ui, "💾 Export CSV", "Save the numbers as a table")
+                        && small_tip_button(ui, "💾 Export CSV", "Save as CSV")
                     {
                         actions.save_csv = true;
                     }
@@ -1090,7 +1066,7 @@ fn eval_table(ui: &mut egui::Ui, v: &EvalView) {
                     ("ΔWET", "along the axis of the grid"),
                     ("mean", "mean of sCT minus CT"),
                     ("mean |Δ|", "and relative to the CT's WET"),
-                    ("95% |Δ|", "95th percentile of the absolute difference"),
+                    ("95% |Δ|", "95th percentile of |sCT - CT|"),
                 ] {
                     ui.label(egui::RichText::new(h).strong()).on_hover_text(tip);
                 }

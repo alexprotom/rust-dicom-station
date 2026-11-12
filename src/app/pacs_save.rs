@@ -90,26 +90,13 @@ impl RowState {
     fn tip(self) -> &'static str {
         match self {
             RowState::New => "Made here and not saved yet",
-            RowState::Outside => "Read from a file the PACS does not hold",
-            RowState::Changed => {
-                "The PACS holds it, and it was changed here since it was loaded or saved. \
-                 Ticked, it is saved as a new object beside the old one, the old version \
-                 staying"
-            }
-            RowState::InPacs => {
-                "The PACS holds it as it is here. Ticked, it is saved again as a new object \
-                 beside the old one"
-            }
-            RowState::Empty => "Nothing drawn in it: nothing to save",
-            RowState::NoStudy => {
-                "The PACS does not hold the study it belongs to; import the study first \
-                 (PACS window, Import folder)"
-            }
-            RowState::Reading => "Looking up what the PACS holds",
-            RowState::NotRead => {
-                "This station's PACS has not been scanned yet: Rescan in the PACS window, \
-                 then open Save to the PACS again"
-            }
+            RowState::Outside => "Not in the PACS",
+            RowState::Changed => "Changed here; saved as a new object beside the old one",
+            RowState::InPacs => "Already in the PACS; saved again as a new object",
+            RowState::Empty => "Empty: nothing to save",
+            RowState::NoStudy => "Import its study into the PACS first",
+            RowState::Reading => "Looking up the PACS",
+            RowState::NotRead => "Rescan the PACS in the PACS window first",
         }
     }
 
@@ -572,7 +559,7 @@ impl ViewerApp {
                     let label = format!("📤 Save {}", plural(n, "object", "objects"));
                     if ui
                         .add_enabled(n > 0 && !busy && !reading, egui::Button::new(label))
-                        .on_hover_text("Write the ticked objects into the PACS")
+                        .on_hover_text("Save the ticked objects")
                         .clicked()
                     {
                         save = true;

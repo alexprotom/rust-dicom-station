@@ -359,8 +359,7 @@ fn cache_meshes(
     }
 }
 
-const RESET_TIP: &str =
-    "Reset the camera: default angle, centred on the structures, fit zoom and no offset";
+const RESET_TIP: &str = "Reset the camera";
 
 /// What a scene reads from the workspaces besides its own state, gathered
 /// once per frame by [`ViewerApp::d3_inputs`].
@@ -416,7 +415,7 @@ fn structure_list(
         ui.strong("Opacity per structure");
         if ui
             .small_button("All 100 %")
-            .on_hover_text("Every structure back to the scene's opacity")
+            .on_hover_text("Reset every structure's opacity")
             .clicked()
         {
             w.roi_alpha.clear();
@@ -1266,7 +1265,13 @@ impl ViewerApp {
             widths.extend([38.0, 58.0]);
         }
         let cells = super::pane_windows::bar_cells(rect, by, &widths);
-        let (maximize, close, fold, detach) = (cells[0], cells[1], cells[2], cells[3]);
+        // Folded: maximize and the arrow only, as a plane's bar.
+        let (maximize, close, fold) = if folded {
+            (cells[0], egui::Rect::NOTHING, cells[1])
+        } else {
+            (cells[0], cells[1], cells[2])
+        };
+        let detach = cells[3];
         let (reset, hand, zoom_out, zoom_in) = (cells[4], cells[5], cells[6], cells[7]);
         let (play, prepare) = if phases {
             (cells[8], cells[9])
@@ -1408,21 +1413,20 @@ impl ViewerApp {
                         .custom_parser(percent_parser)
                         .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.5 }),
                 )
-                .tip("How solid the surfaces are");
+                .tip("Surface opacity");
             });
             let busy = w.job.is_some() || w.prep_job.is_some();
             row(bar.left.top() + 24.0, &mut |ui: &mut egui::Ui| {
                 ui.toggle_value(&mut w.show_list, "Structures")
-                    .on_hover_text("A panel with the opacity of every structure");
+                    .on_hover_text("Opacity per structure");
                 if has_dose {
                     ui.toggle_value(&mut w.show_dose, "Dose")
-                        .on_hover_text("Colour every surface by the dose that lands on it");
-                    ui.toggle_value(&mut w.show_iso, "Isodose").on_hover_text(
-                        "The active dose as translucent shells at the isodose lines",
-                    );
+                        .on_hover_text("Colour the surfaces by dose");
+                    ui.toggle_value(&mut w.show_iso, "Isodose")
+                        .on_hover_text("Show isodose surfaces");
                 }
                 ui.add_visible(busy, egui::Spinner::new().size(12.0))
-                    .on_hover_text("Meshing the structures that changed");
+                    .on_hover_text("Meshing");
             });
         }
 
@@ -1440,11 +1444,9 @@ impl ViewerApp {
                     egui::Button::new(if playing { "⏸4D" } else { "▶4D" }).small(),
                 )
                 .on_hover_text(if playing {
-                    "Stop running through the phases"
+                    "Stop"
                 } else {
-                    "Play 4D: run this workspace through the phases of its 4D group. The \
-                     structures and the isodose shells follow, because each phase brings \
-                     its own."
+                    "Play the 4D phases"
                 });
             if hit(bar.play, &resp) {
                 acts.play = true;
@@ -1456,7 +1458,7 @@ impl ViewerApp {
                     ui.put(bar.prepare, egui::Button::new("Prepare").small().truncate())
                 })
                 .inner
-                .on_hover_text("Mesh the structures of every phase now, so playing them is smooth");
+                .on_hover_text("Mesh every phase ahead of playing");
             if todo && hit(bar.prepare, &resp) {
                 acts.prepare = true;
             }
@@ -1481,11 +1483,7 @@ impl ViewerApp {
                         .frame_when_inactive(true)
                         .small(),
                 )
-                .tip(
-                    "Move the scene: while this is on, dragging with the left button \
-                     slides the scene instead of turning it. Off, a left drag turns it \
-                     and a middle drag moves it.",
-                );
+                .tip("Pan: drag to move the scene");
             if hit(bar.hand, &resp) {
                 w.pan_mode = !w.pan_mode;
             }
@@ -1504,11 +1502,9 @@ impl ViewerApp {
                 egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
             .tip(if folded {
-                "Show the buttons of this bar. One switch for every pane, and it is \
-                 remembered between runs."
+                "Show the pane buttons"
             } else {
-                "Fold these buttons away, leaving the scene. One switch for every pane, \
-                 and it is remembered between runs."
+                "Hide the pane buttons"
             });
         if hit(bar.fold, &resp) {
             acts.fold = true;
@@ -1520,16 +1516,18 @@ impl ViewerApp {
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
             .tip(if is_max {
-                "Restore the multi-view layout"
+                "Restore the row"
             } else {
-                "Maximize this view to the whole window"
+                "Maximize this view"
             });
         if hit(bar.maximize, &resp) {
             acts.maximize = true;
         }
-        let resp = Self::close_button(ui, bar.close);
-        if hit(bar.close, &resp) {
-            acts.close = true;
+        if !folded {
+            let resp = Self::close_button(ui, bar.close);
+            if hit(bar.close, &resp) {
+                acts.close = true;
+            }
         }
 
         // The structure list, over the scene's right-hand edge. Its own
@@ -1963,6 +1961,67 @@ impl ViewerApp {
                     FontId::proportional(11.0),
                     Color32::GRAY,
                 );
+            }
+        }
+
+        // Settings > Viewer: the shown plan's beams, and the orientation
+        // cube, which turns the scene to the side clicked on it.
+        {
+            let (sy, cy) = w.yaw.sin_cos();
+            let (sp, cp) = w.pitch.sin_cos();
+            let c = w.center;
+            let beams = super::overlays::shown_beams(self, w.slot);
+            if !beams.is_empty() {
+                let project = |p: Vec3| -> Pos2 {
+                    let (x, y, z) = (p.x as f32 - c[0], p.y as f32 - c[1], p.z as f32 - c[2]);
+                    let x1 = cy * x - sy * y;
+                    let y1 = sy * x + cy * y;
+                    let z2 = sp * y1 + cp * z;
+                    Pos2::new(cx + x1 * scale, cyc - z2 * scale)
+                };
+                super::overlays::draw_beams_3d(&painter, &beams, &project);
+            }
+            if self.overlays.orientation_cube {
+                let map = |v: Vec3| -> (Vec2, f32) {
+                    let (x, y, z) = (v.x as f32, v.y as f32, v.z as f32);
+                    let x1 = cy * x - sy * y;
+                    let y1 = sy * x + cy * y;
+                    let y2 = cp * y1 - sp * z;
+                    let z2 = sp * y1 + cp * z;
+                    (Vec2::new(x1, -z2), -y2)
+                };
+                let faces = super::overlays::draw_cube(
+                    &painter,
+                    Pos2::new(rect.left() + 34.0, rect.bottom() - 48.0),
+                    14.0,
+                    &map,
+                );
+                if resp.clicked() {
+                    if let Some(p) = resp.interact_pointer_pos() {
+                        // The nearest face is the last one drawn.
+                        if let Some(f) = faces
+                            .iter()
+                            .rev()
+                            .find(|f| super::overlays::in_quad(&f.corners, p))
+                        {
+                            (w.yaw, w.pitch) = super::overlays::look_at_side(f.normal);
+                        }
+                    }
+                }
+            }
+            if self.dose_legend.shows(None) && dose_here.is_some() {
+                let below = super::pane_windows::bar_cells(rect, rect.top() + 22.0, &[24.0; 8])
+                    .iter()
+                    .map(|c| c.bottom())
+                    .fold(rect.top() + 42.0, f32::max);
+                let right = if w.show_list {
+                    rect.right() - 220.0f32.min(rect.width() * 0.8) - 6.0
+                } else {
+                    rect.right() - 6.0
+                };
+                // Below the opacity controls on the left as well, which
+                // reach about this far down.
+                self.draw_dose_legend(&painter, w.slot, Pos2::new(right, below + 56.0));
             }
         }
 

@@ -58,11 +58,11 @@ impl EdgeBand {
 
     pub(super) fn hint(self) -> &'static str {
         match self {
-            EdgeBand::None => "The brush paints everything it covers",
-            EdgeBand::Bone => "Stop at soft tissue: only values above about 200 HU",
-            EdgeBand::Air => "Stay in air: only values below about -400 HU",
-            EdgeBand::Bright => "Stay in what looks bright in the current window",
-            EdgeBand::Dark => "Stay in what looks dark in the current window",
+            EdgeBand::None => "Paint everything",
+            EdgeBand::Bone => "Bone only (above 200 HU)",
+            EdgeBand::Air => "Air only (below -400 HU)",
+            EdgeBand::Bright => "Bright values only",
+            EdgeBand::Dark => "Dark values only",
         }
     }
 

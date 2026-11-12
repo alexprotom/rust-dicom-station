@@ -281,17 +281,11 @@ pub(super) fn panel_body(
     ui.horizontal(|ui| {
         ui.strong("📊 Analytics");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .small_button("⟳")
-                .tip("Recalculate for the rows selected now")
-                .clicked()
-            {
+            if ui.small_button("⟳").tip("Recalculate").clicked() {
                 recalc = true;
             }
-            ui.selectable_value(pie, true, "◐")
-                .tip("Show the figures as rings");
-            ui.selectable_value(pie, false, "📊")
-                .tip("Show the figures as bars");
+            ui.selectable_value(pie, true, "◐").tip("Show as rings");
+            ui.selectable_value(pie, false, "📊").tip("Show as bars");
         });
     });
     if w.stats.is_none() || recalc || (auto && w.stats_for.as_ref() != Some(&key)) {
@@ -311,7 +305,7 @@ pub(super) fn panel_body(
     if filtering
         && ui
             .small_button("✖ Reset filters")
-            .on_hover_text("Show every study again: clear the search text and untick every kind")
+            .on_hover_text("Show every study")
             .clicked()
     {
         clicked = Some(PanelClick::Reset);
@@ -380,8 +374,8 @@ fn chart(
             t.push_str(&it.more);
         }
         match &it.facet {
-            Some(f) if picked.contains(f) => t.push_str("\nClick: untick it in the filter"),
-            Some(_) => t.push_str("\nClick: show only the studies with it (the filter beside 🔍)"),
+            Some(f) if picked.contains(f) => t.push_str("\nClick: remove from the filter"),
+            Some(_) => t.push_str("\nClick: filter by it"),
             None => {}
         }
         t

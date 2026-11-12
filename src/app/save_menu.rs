@@ -54,10 +54,7 @@ impl ViewerApp {
     /// DICOM* with only that one ticked.
     pub(super) fn save_dicom_entry(ui: &mut egui::Ui, what: &str) -> bool {
         ui.button("💾 Save as DICOM...")
-            .on_hover_text(format!(
-                "Export DICOM with only this {what} ticked: its names and UIDs shown and \
-                 editable, then one click on Export"
-            ))
+            .on_hover_text(format!("Export this {what} as DICOM"))
             .clicked()
     }
 
@@ -77,12 +74,9 @@ impl ViewerApp {
                 projection,
                 "💾 As DICOM...",
                 if projection {
-                    "Export DICOM with this image ticked, and the planar structure sets drawn \
-                     on it with it: the image, its contours as a presentation state, and a \
-                     copy with the contours burned in"
+                    "Export the image and its 2D contours"
                 } else {
-                    "An additional object is not written by Export DICOM; its own file is \
-                     the one to keep"
+                    "Not exported; keep its own file"
                 },
             ) {
                 *out = Some(SaveRequest::Dicom(Pick::Object {
@@ -92,15 +86,13 @@ impl ViewerApp {
                 }));
                 ui.close();
             }
-            let none = "no 2D contours on this image (hidden ones are not drawn)";
+            let none = "No 2D contours on this image";
             if enabled_tip_button(
                 ui,
                 lines,
                 "🖊 With contours burned in (DICOM)...",
                 if lines {
-                    "One file: the image as the pane shows it, with its 2D contours drawn into \
-                     the pixels in their colours - a Secondary Capture any viewer shows, \
-                     including those that draw no presentation state"
+                    "One image with the contours drawn in (Secondary Capture)"
                 } else {
                     none
                 },
@@ -111,8 +103,7 @@ impl ViewerApp {
             if tip_button(
                 ui,
                 "🎨 As PNG...",
-                "The image at its own resolution, as the pane shows it, with its 2D contours \
-                 drawn in",
+                "Save the image with its contours as PNG",
             ) {
                 *out = Some(SaveRequest::PlanarPng { slot, idx });
                 ui.close();
@@ -138,10 +129,7 @@ impl ViewerApp {
             ui,
             anything,
             "💾 Export DICOM",
-            "Write any patients, studies, series and RT objects of the workspaces as DICOM - \
-             with every name and UID shown and editable, structures as RTSTRUCT or SEG, 2D \
-             contours as presentation states and burned into copies of their images, and \
-             the references between the objects kept intact",
+            "Export the workspaces as DICOM",
         ) {
             *open_export = true;
             ui.close();
@@ -153,11 +141,7 @@ impl ViewerApp {
                         format!("{} · {}", SLOT_NAMES[*slot], self.workspace_summary(*slot));
                     if ui
                         .button(label)
-                        .on_hover_text(
-                            "Write this workspace's new structure sets and segmentations into \
-                             this station's PACS, beside the study they belong to, in the \
-                             PACS's own folders",
-                        )
+                        .on_hover_text("Save new structures to this station's PACS")
                         .clicked()
                     {
                         *save_to_pacs = Some(*slot);
@@ -167,12 +151,7 @@ impl ViewerApp {
             });
         });
         ui.separator();
-        if tip_button(
-            ui,
-            "💾 Save image",
-            "A picture of the views as they are on screen - one workspace's row, all of \
-             them, or one pane - as a PNG or a JPEG, at a chosen resolution",
-        ) {
+        if tip_button(ui, "💾 Save image", "Save the views as PNG or JPEG") {
             *open_save_img = true;
             ui.close();
         }
@@ -182,7 +161,7 @@ impl ViewerApp {
                 for (slot, kind, _) in &panes {
                     if ui
                         .button(self.pane_caption(*slot, *kind))
-                        .on_hover_text("This pane on its own, in the Save image dialog")
+                        .on_hover_text("Save this pane as an image")
                         .clicked()
                     {
                         req = Some(SaveRequest::Pane {
@@ -231,10 +210,7 @@ impl ViewerApp {
                 for (slot, k, label) in &sets {
                     if ui
                         .button(name(*slot, label))
-                        .on_hover_text(
-                            "A Grayscale Softcopy Presentation State, with every image made \
-                             here as an RT Image beside it",
-                        )
+                        .on_hover_text("Save as a presentation state (GSPS)")
                         .clicked()
                     {
                         req = Some(SaveRequest::PlanarSet {
@@ -251,10 +227,7 @@ impl ViewerApp {
                 for (slot, i, label) in &drawn {
                     if ui
                         .button(name(*slot, label))
-                        .on_hover_text(
-                            "The image as its pane shows it, with its 2D contours drawn into \
-                             the pixels: a DICOM Secondary Capture any viewer shows",
-                        )
+                        .on_hover_text("Save with the contours drawn in (Secondary Capture)")
                         .clicked()
                     {
                         req = Some(SaveRequest::PlanarBurned {

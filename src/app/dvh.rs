@@ -539,7 +539,7 @@ impl ViewerApp {
                 // back when it was closed.
                 if app.dvh.as_ref().is_some_and(|d| !d.curves.is_empty())
                     && !app.chart_shown(super::chart_pane::ChartSource::Dvh)
-                    && small_tip_button(ui, "📈", "Show the plot in the row's chart pane")
+                    && small_tip_button(ui, "📈", "Show the plot")
                 {
                     let row = app.dvh.as_ref().map_or(0, |d| d.row);
                     app.show_chart(row, super::chart_pane::ChartSource::Dvh);
@@ -639,9 +639,9 @@ impl ViewerApp {
         // ---- axes ---------------------------------------------------------
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut d.cumulative, true, "Cumulative")
-                .on_hover_text("Volume receiving at least each dose - the usual view");
+                .on_hover_text("Volume receiving at least each dose");
             ui.selectable_value(&mut d.cumulative, false, "Differential")
-                .on_hover_text("Volume in each dose bin - where the cold spots are");
+                .on_hover_text("Volume in each dose bin");
         });
         ui.horizontal_wrapped(|ui| {
             ui.label("Dose:");
@@ -651,9 +651,9 @@ impl ViewerApp {
                 .add_enabled_ui(has_ref, |ui| ui.selectable_label(d.dose_relative, "% of"))
                 .inner;
             rel.clone().on_hover_text(if has_ref {
-                "Per cent of the reference dose"
+                "Percent of the reference dose"
             } else {
-                "No plan in this study declares a prescription - type one"
+                "No prescription found; type one"
             });
             if rel.clicked() {
                 d.dose_relative = true;
@@ -668,7 +668,7 @@ impl ViewerApp {
                 if (d.reference_dose - *dose).abs() > 1e-6
                     && ui
                         .small_button("↺")
-                        .tip(format!("Back to the prescription of '{from}'"))
+                        .tip(format!("Reset to the prescription of '{from}'"))
                         .clicked()
                 {
                     d.reference_dose = *dose;
@@ -712,7 +712,7 @@ impl ViewerApp {
             let add = ui
                 .add_enabled(named, egui::Button::new("➕").small())
                 .named("Add the metric")
-                .on_disabled_hover_text("Type a metric first, for example D95%")
+                .on_disabled_hover_text("Type a metric first (D95%)")
                 .clicked()
                 || (named && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             if add {

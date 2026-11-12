@@ -396,7 +396,13 @@ src/
                       categories of a study
     dose_display.rs   the Dose display module: how the displayed dose is
                       drawn (colorwash / isodose, opacity, threshold, the
-                      isodose ladder), one setting for every workspace
+                      isodose ladder), one setting for every workspace;
+                      each workspace's reference dose; the dose legend on
+                      the views it is ticked for
+    overlays.rs       Settings > Viewer over the views: the shown plan's
+                      beam fields (cut by each plane, and in 3D), the ruler,
+                      the orientation cube (a click on a face turns the 3D
+                      scene to it)
     reg_panel.rs      the Image registration module: method, region, parameters,
                       landmarks, the run (against another workspace or every
                       phase of a 4D group), the analytics, the vector field
@@ -632,6 +638,8 @@ src/
                     reading, resampling between lattices, the SEG writer         DICOM
   rtdose.rs         RT Dose parsing + trilinear patient-space sampling           DICOM
   rtplan.rs         RT Plan / RT Ion Plan parsing                                DICOM
+  beam_view.rs      a plan's beams in patient space: source, axis, field
+                    outline, and the field cut by a view's plane
   extras.rs         DX / CR / RTIMAGE planar images (an RT Image's geometry
                     read into a camera), additional objects (PlanarKind:
                     secondary captures), overlay planes, REG, RTRECORD          DICOM

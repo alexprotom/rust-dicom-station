@@ -224,7 +224,7 @@ fn every_widget_on_the_main_screens_has_a_name() {
     for name in [
         "Axial slice",
         "Maximize Sagittal",
-        "Close Coronal",
+        "Maximize Coronal",
         "Show TARGET",
         "Colour of CORD",
     ] {

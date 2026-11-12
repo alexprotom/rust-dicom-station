@@ -167,7 +167,7 @@ impl ViewerApp {
                                         egui::Button::new("📂  Add DICOM folder"),
                                     )
                                     .on_hover_text(
-                                        "Scan a folder of DICOM files into workspace A",
+                                        "Open a DICOM folder in workspace A",
                                     )
                                     .clicked()
                                 {
@@ -188,10 +188,9 @@ impl ViewerApp {
                                             )),
                                     )
                                     .on_hover_text(if has_session {
-                                        "Load again what was open when RDS was last closed"
+                                        "Reopen the last session"
                                     } else {
-                                        "Nothing to restore: no folder was open when RDS \
-                                         was last closed"
+                                        "No last session to restore"
                                     })
                                     .clicked()
                                 {
@@ -203,11 +202,7 @@ impl ViewerApp {
                                         [BUTTON_WIDTH, BUTTON_HEIGHT],
                                         egui::Button::new("🏥  PACS"),
                                     )
-                                    .on_hover_text(
-                                        "The local patient archive and the paired PACS \
-                                         servers: take a study out, import one, or set the \
-                                         storage folders and the pairing up",
-                                    )
+                                    .on_hover_text("Open the local archive and PACS servers")
                                     .clicked()
                                 {
                                     open_pacs = true;
@@ -245,7 +240,7 @@ impl ViewerApp {
                                         ),
                                     )
                                     .on_hover_text(
-                                        "Remove or replace identifying DICOM information",
+                                        "Remove identifying DICOM information",
                                     )
                                     .clicked()
                                 {
@@ -266,7 +261,7 @@ impl ViewerApp {
                                         ),
                                     )
                                     .on_hover_text(
-                                        "Fetch the bundled real 4DCT study from GitHub",
+                                        "Download a real 4DCT study",
                                     )
                                     .clicked()
                                 {
@@ -281,7 +276,7 @@ impl ViewerApp {
                                         ),
                                     )
                                     .on_hover_text(
-                                        "Manage downloaded AI model weights",
+                                        "Manage AI model weights",
                                     )
                                     .clicked()
                                 {

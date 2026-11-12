@@ -386,20 +386,14 @@ impl ViewerApp {
                 });
             });
             ui.horizontal_wrapped(|ui| {
-                if tip_button(
-                    ui,
-                    "💾 Export CSV",
-                    "The selected run as a CSV: phases as columns, one row per method \
-                     under every quantity",
-                ) {
+                if tip_button(ui, "💾 Export CSV", "Save the selected run as CSV") {
                     export = Some((sel, None));
                 }
                 if let Some(ci) = cmp {
                     if tip_button(
                         ui,
                         "💾 Export comparison CSV",
-                        "Both runs, one after the other, and the matched peak-to-peak \
-                         amplitudes and ITVs side by side",
+                        "Save both runs side by side as CSV",
                     ) {
                         export = Some((sel, Some(ci)));
                     }
@@ -429,10 +423,7 @@ impl ViewerApp {
                         on,
                         format!("{name}  ·  {} mm", pp.join(" · ")),
                     ))
-                    .on_hover_text(
-                        "Select this target in its workspace, show it and its ITV, and centre \
-                         the views on it. Peak-to-peak amplitude per model.",
-                    )
+                    .on_hover_text("Show this target and its ITV")
                     .clicked()
                 {
                     if on {
@@ -738,10 +729,7 @@ impl ViewerApp {
                                             .color(theme::dice_color(ui.visuals(), after))
                                             .strong(),
                                     )
-                                    .on_hover_text(
-                                        "Overlap of the tissue of the two images after this \
-                                         registration, against what it was before it",
-                                    );
+                                    .on_hover_text("Tissue overlap after this registration");
                                     ui.weak(format!("was {before:.3}"));
                                 }
                                 None => {
@@ -770,10 +758,7 @@ impl ViewerApp {
                                 );
                             })
                             .response
-                            .on_hover_text(
-                                "Dice of the structure this model put on the phase \
-                                 against the contour drawn on that phase",
-                            );
+                            .on_hover_text("Dice against the phase's own contour");
                         }
                     }
                 });

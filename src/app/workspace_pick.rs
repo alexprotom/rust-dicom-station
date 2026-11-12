@@ -33,15 +33,8 @@ impl WsAsk {
     /// What the submenu's line says on hover, before a workspace is picked.
     pub(super) fn blurb(self) -> &'static str {
         match self {
-            WsAsk::AddFolder => {
-                "Scan a folder and add its patients, studies and series to a workspace. \
-                 What is already there stays loaded, and duplicates are skipped."
-            }
-            WsAsk::AddFiles => {
-                "Open DICOM files directly - RT images, a structure set, a plan, single \
-                 slices. They do not have to form an image volume, and they merge into \
-                 the workspace exactly as a folder does."
-            }
+            WsAsk::AddFolder => "Add a DICOM folder to a workspace",
+            WsAsk::AddFiles => "Add DICOM files to a workspace",
         }
     }
 
@@ -186,7 +179,7 @@ mod tests {
         for a in [WsAsk::AddFolder, WsAsk::AddFiles] {
             assert!(!a.menu_entry().is_empty(), "a submenu needs a line");
             assert!(
-                a.blurb().len() > 40,
+                a.blurb().len() > 20,
                 "the line says what the action does, not just its name"
             );
             // Every destination the menu can offer names itself in the file

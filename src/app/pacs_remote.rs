@@ -450,10 +450,7 @@ pub(super) fn source_row(ui: &mut egui::Ui, w: &PacsWindow, c: &Ctx, actions: &m
         }
         if ui
             .add_enabled(!c.busy, egui::Button::new("➕ Add server"))
-            .on_hover_text(
-                "Pair this station with a PACS server: paste the connection line its \
-                 operator copied, check its certificate, type the pairing code",
-            )
+            .on_hover_text("Pair with a PACS server")
             .clicked()
         {
             actions.push(Action::AddServer);
@@ -524,7 +521,7 @@ pub(super) fn pairing_ui(
                 !c.busy && !d.line.trim().is_empty(),
                 egui::Button::new("🔍 Look at the server"),
             )
-            .on_hover_text("Connect without sending anything and show who answers")
+            .on_hover_text("Check who answers, sending nothing")
             .clicked()
         {
             actions.push(Action::Probe);
@@ -625,7 +622,7 @@ pub(super) fn pairing_ui(
             !c.busy && trusted && !d.code.trim().is_empty(),
             egui::Button::new("🔒 Pair"),
         )
-        .on_hover_text("Trade the code for this station's own key to the server")
+        .on_hover_text("Pair using the code")
         .clicked()
     {
         actions.push(Action::Pair);
@@ -660,15 +657,14 @@ pub(super) fn remote_ui(
         ui.weak(format!("· this device holds {}", size_text(v.mirror_bytes)));
     });
     ui.horizontal_wrapped(|ui| {
-        if enabled_tip_button(ui, !c.busy, "⟲ Refresh", "Read the server's PACS again") {
+        if enabled_tip_button(ui, !c.busy, "⟲ Refresh", "Read the server again") {
             actions.push(Action::Refresh);
         }
         if enabled_tip_button(
             ui,
             !c.busy && role.allows(Role::Edit),
             "⟲ Sync",
-            "Both directions for every study held here: send what waits in the outbox, \
-             fetch what others filed meanwhile, send what the server lacks",
+            "Send and fetch changes for studies held here",
         ) {
             actions.push(Action::Sync);
         }
@@ -676,17 +672,11 @@ pub(super) fn remote_ui(
             ui,
             !c.busy && role.allows(Role::Edit),
             "📤 Upload folder",
-            "Send every DICOM file of a folder of this computer into the server's PACS",
+            "Upload a DICOM folder to the server",
         ) {
             actions.push(Action::UploadFolder);
         }
-        if enabled_tip_button(
-            ui,
-            !c.busy,
-            "🔒 Pair again",
-            "A new pairing code and, if the server's certificate was renewed, its new \
-             fingerprint",
-        ) {
+        if enabled_tip_button(ui, !c.busy, "🔒 Pair again", "Pair again with a new code") {
             actions.push(Action::PairAgain);
         }
         let forget = if v.confirm_forget {
@@ -698,8 +688,7 @@ pub(super) fn remote_ui(
             ui,
             !c.busy,
             forget,
-            "Remove the server from this station. What was pulled stays in the mirror \
-             folder until removed by hand.",
+            "Remove the server. Pulled files stay on disk",
         ) {
             actions.push(Action::Forget);
         }
@@ -726,8 +715,8 @@ pub(super) fn remote_ui(
             egui::Button::selectable(v.tab == Tab::Tasks, "Tasks"),
         );
         if tasks
-            .on_hover_text("Workflows run on the server, on its studies")
-            .on_disabled_hover_text("This station is paired without the run role")
+            .on_hover_text("Workflows run on the server")
+            .on_disabled_hover_text("Needs the run role")
             .clicked()
         {
             actions.push(Action::Tab(Tab::Tasks));
@@ -762,7 +751,7 @@ fn studies_ui(
             .hint_text("🔍 find a patient, study or series")
             .desired_width(240.0),
     );
-    let height = (ui.available_height() - 70.0).max(140.0);
+    let height = (detach::room_height(ui) - 70.0).max(140.0);
     let offline = v.offline;
     let RemoteView { nodes, view, .. } = v;
     let nodes_ref: &[TNode] = nodes;
@@ -774,7 +763,7 @@ fn studies_ui(
         };
         if ui
             .add_enabled(!c.busy, egui::Button::new("📥 Pull"))
-            .on_hover_text("Copy into this device's mirror what it does not hold yet")
+            .on_hover_text("Copy what is missing to this device")
             .clicked()
         {
             actions.push(Action::Pull(targets.clone()));
@@ -782,7 +771,7 @@ fn studies_ui(
         }
         if ui
             .add_enabled(!c.busy, egui::Button::new("🗑 Remove the local copy"))
-            .on_hover_text("Delete what this device holds of it; the server keeps it")
+            .on_hover_text("Delete the local copy only")
             .clicked()
         {
             actions.push(Action::RemoveLocal(targets.clone()));
@@ -792,7 +781,7 @@ fn studies_ui(
             && targets.iter().all(|t| t.len() == 2 || t.len() == 3)
             && ui
                 .add_enabled(!c.busy, egui::Button::new("🗑 Remove from the server"))
-                .on_hover_text("Delete it from the server's PACS, for every station")
+                .on_hover_text("Delete from the server, for everyone")
                 .clicked()
         {
             actions.push(Action::RemoveRemote(targets));
@@ -819,7 +808,7 @@ fn studies_ui(
             ui,
             !c.busy && any && !offline,
             "📥 Pull",
-            "Copy the selection into this device's mirror (only what it does not hold yet)",
+            "Copy the selection to this device",
         ) {
             actions.push(Action::Pull(picked.clone()));
         }
@@ -829,10 +818,7 @@ fn studies_ui(
                     !c.busy && any,
                     egui::Button::new(format!("📩 Load into workspace {}", SLOT_NAMES[slot])),
                 )
-                .on_hover_text(
-                    "Pull what is missing, then read the selection into this workspace \
-                     from the mirror, like any files",
-                )
+                .on_hover_text("Pull and open the selection")
                 .clicked()
             {
                 actions.push(Action::Load(slot, picked.clone()));
@@ -853,13 +839,8 @@ fn studies_ui(
                     !c.busy && role.allows(Role::Edit),
                     egui::Button::new(format!("📤 Send workspace {}", SLOT_NAMES[slot])),
                 )
-                .on_hover_text(
-                    "Give the server this workspace's structure sets and segmentation \
-                     series, filed under the study they were drawn on (new SOP Instance \
-                     UIDs; images are never re-sent). Kept in the outbox while the server \
-                     cannot be reached.",
-                )
-                .on_disabled_hover_text("This station is paired with the view role only")
+                .on_hover_text("Send structures and segmentations to the server")
+                .on_disabled_hover_text("Needs the edit role")
                 .clicked()
             {
                 actions.push(Action::Send(slot));
@@ -956,7 +937,7 @@ fn tasks_ui(ui: &mut egui::Ui, v: &mut RemoteView, c: &Ctx, actions: &mut Vec<Ac
                 for f in &t.files {
                     if ui
                         .small_button(format!("💾 {f}"))
-                        .on_hover_text("Save this file of the task's on this computer")
+                        .on_hover_text("Save this file")
                         .clicked()
                     {
                         actions.push(Action::SaveTaskFile(t.id.clone(), f.clone()));
@@ -1066,7 +1047,7 @@ fn tasks_ui(ui: &mut egui::Ui, v: &mut RemoteView, c: &Ctx, actions: &mut Vec<Ac
             !c.busy && complete && wf.problems.is_empty(),
             egui::Button::new("▶ Run on the server"),
         )
-        .on_hover_text("Hand the task in; the server runs one task at a time, in order")
+        .on_hover_text("Submit the task")
         .on_disabled_hover_text("Choose a study for every input")
         .clicked()
     {

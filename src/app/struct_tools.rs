@@ -644,15 +644,12 @@ impl ViewerApp {
                     .range(0.5..=80.0)
                     .suffix(" mm"),
             )
-            .on_hover_text("Brush radius: Shift+wheel, or [ and ]");
+            .on_hover_text("Brush radius (Shift+wheel, [ ])");
         }
         if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase)
             && ui
                 .selectable_label(self.brush_3d, "3D")
-                .on_hover_text(
-                    "Spherical 3D brush: paints through neighbouring slices.\n\
-                     Off: flat 2D circle on the displayed slice only",
-                )
+                .on_hover_text("Paint through neighbouring slices")
                 .clicked()
         {
             self.brush_3d = !self.brush_3d;
@@ -695,10 +692,7 @@ impl ViewerApp {
             "no limit",
             160.0,
         )
-        .on_hover_text(
-            "Keep the region inside this structure, whatever the grey levels do. A box \
-             made with Insert structure is the limiting box.",
-        );
+        .on_hover_text("Keep the region inside this structure");
     }
 
     /// The smart brush: which tissue the stamp may cover, and how far past
@@ -720,10 +714,7 @@ impl ViewerApp {
                     .text("reach")
                     .fixed_decimals(2),
             )
-            .tip(
-                "How far past the threshold the brush may still paint, as a fraction of \
-                 the display window. Turn it up when the brush stops short of the boundary.",
-            );
+            .tip("How far past the threshold to paint");
         }
     }
 
@@ -732,24 +723,14 @@ impl ViewerApp {
     fn livewire_options(&mut self, ui: &mut egui::Ui) {
         if ui
             .checkbox(&mut self.wire_learn, "learn")
-            .on_hover_text(
-                "Learn from every accepted segment: an edge that looks like the ones \
-                 already taken becomes cheaper than an equally strong edge that does not",
-            )
+            .on_hover_text("Learn from accepted segments")
             .changed()
         {
             if let Some(w) = &mut self.wire {
                 w.training = self.wire_learn;
             }
         }
-        if self.livewire_trained()
-            && small_tip_button(
-                ui,
-                "forget",
-                "Start again from the plain gradient cost - what to press when moving \
-                 from one organ to a different one",
-            )
-        {
+        if self.livewire_trained() && small_tip_button(ui, "forget", "Forget what was learned") {
             self.livewire_untrain();
         }
     }
@@ -765,16 +746,14 @@ impl ViewerApp {
                     ui.label(
                         egui::RichText::new(format!("▸ 2D · {set} · {name}")).color(theme::rgb(c)),
                     )
-                    .on_hover_text(
-                        "The planar structure being edited. Select another under Planar                          structures in the data tree, or Ctrl-click a contour in a pane",
-                    );
+                    .on_hover_text("Planar structure being edited");
                 }
                 None => {
                     ui.label(egui::RichText::new("▸ 2D · new structure").weak())
-                        .on_hover_text("The first stroke on a planar pane creates one");
+                        .on_hover_text("The first stroke creates one");
                 }
             }
-            if small_tip_button(ui, "+", "New planar structure, and edit it") {
+            if small_tip_button(ui, "+", "New planar structure") {
                 self.new_planar_structure(ps);
             }
             for m in DrawMode::ALL {
@@ -791,19 +770,14 @@ impl ViewerApp {
         match self.edit_roi_name(slot) {
             Some((name, c)) => {
                 ui.label(egui::RichText::new(format!("▸ {name}")).color(theme::rgb(c)))
-                    .on_hover_text(
-                        "The structure being edited. Select another in the RT structures \
-                         list, or Ctrl-click a contour in a view",
-                    );
+                    .on_hover_text("Structure being edited");
             }
             None => {
                 ui.label(egui::RichText::new("▸ new structure").weak())
-                    .on_hover_text(
-                        "There is no structure to edit yet - the first stroke creates one",
-                    );
+                    .on_hover_text("The first stroke creates one");
             }
         }
-        if small_tip_button(ui, "+", "New RT structure, and edit it") {
+        if small_tip_button(ui, "+", "New RT structure") {
             self.new_roi(slot, None, "ORGAN");
         }
         for m in DrawMode::ALL {
@@ -825,17 +799,14 @@ impl ViewerApp {
                 ui.label(
                     egui::RichText::new(format!("▸ {}", seg.name)).color(theme::rgb(seg.color)),
                 )
-                .on_hover_text(
-                    "The segmentation being painted. Select another in the \
-                         Segmentations list",
-                );
+                .on_hover_text("Segmentation being painted");
             }
             None => {
                 ui.label(egui::RichText::new("▸ new segmentation").weak())
-                    .on_hover_text("There is no segmentation yet - the first stroke creates one");
+                    .on_hover_text("The first stroke creates one");
             }
         }
-        if small_tip_button(ui, "+", "New, empty segmentation, and paint into it") {
+        if small_tip_button(ui, "+", "New segmentation") {
             self.create_seg(slot);
         }
     }
@@ -895,13 +866,7 @@ impl ViewerApp {
             ))
             .weak(),
         )
-        .on_hover_text(
-            "The volume while you draw: each slice's contour area times the slice \
-             spacing, recomputed every frame. Structure details gives the \
-             surface-based volume, inside a closed surface reconstructed from the \
-             contours - the same on an organ, smaller on a small structure by its \
-             end caps.",
-        );
+        .on_hover_text("Volume from contour areas times slice spacing");
         ui.horizontal_wrapped(|ui| {
             ui.label("Type:");
             egui::ComboBox::from_id_salt("roi_type")
@@ -918,7 +883,7 @@ impl ViewerApp {
                     }
                 })
                 .response
-                .on_hover_text("The RT ROI Interpreted Type - what a planning system branches on");
+                .on_hover_text("RT ROI Interpreted Type");
         });
 
         // -- derived ---------------------------------------------------------
@@ -935,7 +900,7 @@ impl ViewerApp {
                     &[
                         (
                             "Update",
-                            "Run the recipe again on the current operands",
+                            "Run the recipe again",
                             !derived_busy,
                             Act::DerivedUpdate,
                         ),
@@ -947,8 +912,7 @@ impl ViewerApp {
                         ),
                         (
                             "Underive",
-                            "Forget the recipe and keep the geometry: an ordinary structure \
-                             from here on",
+                            "Forget the recipe, keep the shape",
                             true,
                             Act::Underive,
                         ),
@@ -960,29 +924,18 @@ impl ViewerApp {
 
         // -- interpolation ---------------------------------------------------
         ui.label(egui::RichText::new("Interpolation").strong())
-            .on_hover_text(
-                "Contours for the slices between the drawn ones, blended through their \
-                 distance fields. Shown dashed until accepted - nothing is stored before \
-                 that.",
-            );
+            .on_hover_text("Contours between drawn slices, dashed until accepted");
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut t.show_interp, "Show");
             if ui
                 .checkbox(&mut snap, "Snap to edges")
-                .on_hover_text(
-                    "Pull every interpolated contour onto the boundary the image shows \
-                     there. The preview is what gets stored, so what is dashed is what \
-                     you accept.",
-                )
+                .on_hover_text("Snap interpolated contours to image edges")
                 .changed()
             {
                 act = Some(Act::SnapInterp(snap));
             }
             ui.label(format!("{n_interp} slice(s)"));
-            let this = format!(
-                "Slice {level} of {slices} - the one the {} view shows",
-                axis_name(axis)
-            );
+            let this = format!("Accept slice {level} of {slices}");
             act_row(
                 ui,
                 &mut act,
@@ -1000,12 +953,9 @@ impl ViewerApp {
 
         // -- this slice ------------------------------------------------------
         ui.label(egui::RichText::new(format!("Slice {level} of {slices}")).strong())
-            .on_hover_text(
-                "The slice the view along the drawing plane is showing - the one a \
-                 stroke would land on; the wheel moves it",
-            );
+            .on_hover_text("Slice being drawn on (wheel to move)");
         ui.horizontal_wrapped(|ui| {
-            let paste = format!("Paste them here ({mode} mode)");
+            let paste = format!("Paste contours ({mode})");
             act_row(
                 ui,
                 &mut act,
@@ -1014,17 +964,11 @@ impl ViewerApp {
                     ("Paste", &paste, has_clip, Act::Paste),
                     (
                         "Delete one",
-                        "Delete the single contour the crosshair is inside - the rest of \
-                         the slice is left alone",
+                        "Delete the contour under the crosshair",
                         true,
                         Act::DeleteOne,
                     ),
-                    (
-                        "Clear",
-                        "Delete every contour on this slice",
-                        true,
-                        Act::Clear,
-                    ),
+                    ("Clear", "Clear this slice", true, Act::Clear),
                 ],
             );
         });
@@ -1035,13 +979,7 @@ impl ViewerApp {
             act_row(
                 ui,
                 &mut act,
-                &[(
-                    "Apply",
-                    "Drop the slices in between, over the whole structure. What \
-                     interpolation is for: thin out, correct two slices, interpolate again",
-                    true,
-                    Act::Thin,
-                )],
+                &[("Apply", "Drop the slices in between", true, Act::Thin)],
             );
         });
 
@@ -1054,20 +992,14 @@ impl ViewerApp {
                 &[
                     (
                         "Resolve overlaps",
-                        "Contours of this structure that cross each other become one clean \
-                         set of nested rings; the filled area does not change",
+                        "Merge crossing contours",
                         true,
                         Act::ResolveOverlaps,
                     ),
-                    (
-                        "Remove holes",
-                        "Fill every interior cavity, on every slice",
-                        true,
-                        Act::RemoveHoles,
-                    ),
+                    ("Remove holes", "Fill holes", true, Act::RemoveHoles),
                     (
                         "Keep largest",
-                        "Keep the largest contour of each slice, with its holes",
+                        "Keep the largest contour per slice",
                         true,
                         Act::KeepLargest,
                     ),
@@ -1091,8 +1023,7 @@ impl ViewerApp {
                 &mut act,
                 &[(
                     "Apply",
-                    "Simplified with the largest tolerance that still fits the cap, so the \
-                     shape is kept and the vertices are the original ones",
+                    "Simplify contours to this many points",
                     true,
                     Act::LimitPoints,
                 )],
@@ -1104,12 +1035,7 @@ impl ViewerApp {
             act_row(
                 ui,
                 &mut act,
-                &[(
-                    "Apply",
-                    "Area-preserving: the outline relaxes, the volume stays",
-                    true,
-                    Act::Smooth,
-                )],
+                &[("Apply", "Smooth, keeping the volume", true, Act::Smooth)],
             );
         });
         ui.horizontal_wrapped(|ui| {
@@ -1120,13 +1046,13 @@ impl ViewerApp {
                 &[
                     (
                         "Keep it alone",
-                        "Keep the connected piece the crosshair is in and drop every other one",
+                        "Keep only this piece",
                         true,
                         Act::Component(true),
                     ),
                     (
                         "Delete it",
-                        "Delete that piece and keep the rest",
+                        "Delete this piece",
                         true,
                         Act::Component(false),
                     ),
@@ -1140,13 +1066,10 @@ impl ViewerApp {
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
         let header = state.show_header(ui, |ui| {
             ui.label(egui::RichText::new("Move the structure").strong())
-                .on_hover_text("Millimetres and degrees along the image's own axes");
+                .on_hover_text("mm and degrees, image axes");
             if ui
                 .toggle_value(&mut t.hand_struct, "✋")
-                .tip(
-                    "Drag the selected structure with the left button in any view of \
-                     this workspace, in the plane of that view. One undo step per drag.",
-                )
+                .tip("Drag the structure in a view")
                 .changed()
                 && t.hand_struct
             {
@@ -1179,12 +1102,7 @@ impl ViewerApp {
                 act_row(
                     ui,
                     &mut act,
-                    &[(
-                        "Rotate",
-                        "About the structure's centroid",
-                        true,
-                        Act::Rotate,
-                    )],
+                    &[("Rotate", "Rotate about the centroid", true, Act::Rotate)],
                 );
             });
             ui.horizontal_wrapped(|ui| {
@@ -1193,8 +1111,7 @@ impl ViewerApp {
                     &mut act,
                     &[(
                         "Move to crosshair",
-                        "Put the structure's centroid under the crosshair - the \"move to \
-                         slice intersection\" of a planning system",
+                        "Centre the structure on the crosshair",
                         true,
                         Act::ToCrosshair,
                     )],
@@ -1210,24 +1127,13 @@ impl ViewerApp {
                 act_row(
                     ui,
                     &mut act,
-                    &[(
-                        "Scale",
-                        "About the structure's own centroid",
-                        true,
-                        Act::Scale,
-                    )],
+                    &[("Scale", "Scale about the centroid", true, Act::Scale)],
                 );
             });
             ui.horizontal_wrapped(|ui| {
                 let was = t.axis_draw;
                 ui.toggle_value(&mut t.axis_draw, "Draw axis")
-                    .on_hover_text(
-                        "Drag with the left button in any view of this workspace to draw an axis \
-                     (one slice thick, shown in every view and in 3D); the structure is then \
-                     moved along it and turned about it. While this is on the left button \
-                     draws instead of moving the crosshair - tick Keep when the axis is where \
-                     you want it.",
-                    );
+                    .on_hover_text("Drag in a view to draw an axis");
                 // Switching the mode off throws the axis away, unless it is
                 // being kept: that is the whole point of keeping it.
                 if was && !t.axis_draw && !t.axis_keep {
@@ -1236,12 +1142,7 @@ impl ViewerApp {
                 }
                 if ui
                     .toggle_value(&mut t.axis_keep, "Keep")
-                    .on_hover_text(
-                        "Leave the axis where it is. The left button goes back to the \
-                         crosshair, so the image can be looked through without a drag \
-                         redrawing the axis, and the line stays on screen and usable \
-                         whether Draw axis is on or off. The ✋ hand still moves it.",
-                    )
+                    .on_hover_text("Keep the axis, free the left button")
                     .changed()
                     && t.axis_keep
                 {
@@ -1251,10 +1152,7 @@ impl ViewerApp {
                 let ready = ready_axis(t, slot);
                 if ui
                     .add_enabled(ready, egui::Button::new("✋").selected(t.hand_axis))
-                    .tip(
-                        "Move the axis by hand: drag near an end to move that end, \
-                         anywhere else on it to move the whole line",
-                    )
+                    .tip("Move the axis by hand")
                     .clicked()
                 {
                     t.hand_axis = !t.hand_axis;
@@ -1272,12 +1170,7 @@ impl ViewerApp {
                 act_row(
                     ui,
                     &mut act,
-                    &[(
-                        "Move",
-                        "Along the axis, from its first point towards its second",
-                        ready,
-                        Act::AxisMove,
-                    )],
+                    &[("Move", "Move along the axis", ready, Act::AxisMove)],
                 );
                 ui.add_enabled(
                     axis_live(t),
@@ -1289,7 +1182,7 @@ impl ViewerApp {
                 act_row(
                     ui,
                     &mut act,
-                    &[("Rotate", "About the axis", ready, Act::AxisRotate)],
+                    &[("Rotate", "Rotate about the axis", ready, Act::AxisRotate)],
                 );
             });
             if t.axis_draw && !t.axis_keep && !ready_axis(t, slot) {
@@ -1315,25 +1208,20 @@ impl ViewerApp {
                     &[
                         (
                             "Load",
-                            "Load an axis from the user_axes folder (patient millimetres)",
+                            "Load an axis from user_axes",
                             t.axis_draw,
                             Act::AxisLoad,
                         ),
                         (
                             "Load last",
-                            "Put back the axis kept with Save last",
+                            "Restore the axis kept in memory",
                             t.axis_draw && have_last,
                             Act::AxisLoadLast,
                         ),
-                        (
-                            "Save",
-                            "Save the axis to the user_axes folder",
-                            ready,
-                            Act::AxisSave,
-                        ),
+                        ("Save", "Save the axis to user_axes", ready, Act::AxisSave),
                         (
                             "Save last",
-                            "Keep the axis in memory until the program closes",
+                            "Keep the axis in memory",
                             ready,
                             Act::AxisSaveLast,
                         ),
@@ -1349,18 +1237,8 @@ impl ViewerApp {
                     ui,
                     &mut act,
                     &[
-                        (
-                            "Back",
-                            "One step back: the last edit of this workspace is undone",
-                            true,
-                            Act::Back,
-                        ),
-                        (
-                            "Reset",
-                            "Back to where the structure was before the first move",
-                            has_origin,
-                            Act::Reset,
-                        ),
+                        ("Back", "Undo the last edit", true, Act::Back),
+                        ("Reset", "Undo all moves", has_origin, Act::Reset),
                     ],
                 );
             });
@@ -1815,18 +1693,8 @@ impl ViewerApp {
         }
         let (mut add_roi, mut add_poi) = (false, false);
         ui.horizontal_wrapped(|ui| {
-            add_roi = small_tip_button(
-                ui,
-                "+ Empty structure",
-                "New, empty structure in the active set - and the one the contour tools \
-                 draw into",
-            );
-            add_poi = small_tip_button(
-                ui,
-                "✱ Point of interest",
-                "A marker, a reference point or the point the patient is lined up on, at \
-                 the crosshair. It exports as a POINT contour like any other",
-            );
+            add_roi = small_tip_button(ui, "+ Empty structure", "New empty structure");
+            add_poi = small_tip_button(ui, "✱ Point of interest", "Add a point at the crosshair");
         });
         if add_roi {
             self.new_roi(slot, None, "ORGAN");
@@ -1865,12 +1733,7 @@ impl ViewerApp {
                     ui.horizontal_wrapped(|ui| {
                         if ui
                             .checkbox(&mut d.suv, "SUV (body weight)")
-                            .on_hover_text(
-                                "Read the two bounds as standardized uptake values instead \
-                                 of stored counts. The factor comes from this series' own \
-                                 header: patient weight, injected activity and the decay to \
-                                 the acquisition time.",
-                            )
+                            .on_hover_text("Bounds in SUV instead of stored values")
                             .changed()
                         {
                             // Carry the window across the change of units
@@ -1911,7 +1774,7 @@ impl ViewerApp {
                     if !d.suv {
                         ui.label("bone:");
                         for (label, lo) in generate::BONE_PRESETS {
-                            if small_tip_button(ui, label, format!("Everything above {lo:.0} HU")) {
+                            if small_tip_button(ui, label, format!("Above {lo:.0} HU")) {
                                 d.lo = lo;
                                 d.hi = 6000.0;
                             }
@@ -1976,7 +1839,7 @@ impl ViewerApp {
                     for v in &mut d.centre {
                         ui.add(egui::DragValue::new(v).speed(1.0).suffix(" mm"));
                     }
-                    if small_tip_button(ui, "⌖", "Take the centre from the crosshair") {
+                    if small_tip_button(ui, "⌖", "Centre on the crosshair") {
                         seed = true;
                     }
                 })
@@ -2008,10 +1871,8 @@ impl ViewerApp {
                             .weak(),
                         );
                     }
-                    ui.checkbox(&mut d.dose_absolute, "absolute").on_hover_text(
-                        "The displayed dose, sampled the way the isodose lines are, so the \
-                         structure agrees with what is on screen",
-                    );
+                    ui.checkbox(&mut d.dose_absolute, "absolute")
+                        .on_hover_text("Dose in Gy instead of percent");
                 });
             }
             Source::Fov => {
@@ -2041,14 +1902,12 @@ impl ViewerApp {
                 (
                     false,
                     "RT structure",
-                    "Closed planar contours in the active structure set, editable with \
-                     the contour tools",
+                    "Contours in the active structure set",
                 ),
                 (
                     true,
                     "Segmentation",
-                    "A mask in the active segmentation series, editable with the voxel \
-                     tools and by Grow, Shrink and Tidy",
+                    "A mask in the active segmentation series",
                 ),
             ] {
                 if ui
@@ -2073,12 +1932,9 @@ impl ViewerApp {
                         }
                     })
                     .response
-                    .on_hover_text(
-                        "The RT ROI Interpreted Type. A segmentation carries no such \
-                         tag, so it is greyed out for one",
-                    );
+                    .on_hover_text("RT ROI Interpreted Type");
             });
-            if tip_button(ui, "▶ Create", "On the displayed image series") {
+            if tip_button(ui, "▶ Create", "Create on the displayed series") {
                 create = true;
             }
         });
@@ -2238,77 +2094,63 @@ const TOOLS: &[(SegTool, &str, &str, &str, &str)] = &[
         SegTool::Brush,
         "🎨",
         "Paint",
-        "Paint the active segmentation (LMB drag).\n\
-         Hold Alt to erase · Shift+wheel or [ ] resize the brush · Ctrl+Z undo",
+        "Paint the segmentation (Alt erases)",
         "LMB paint · Alt erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
     ),
     (
         SegTool::Erase,
         "⊖",
         "Erase",
-        "Erase from the active segmentation (LMB drag)",
+        "Erase from the segmentation",
         "LMB erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
     ),
     (
         SegTool::Grow,
         "✨",
         "Grow",
-        "Interactive organ segmentation (geodesic fast marching): press to place a seed, \
-         drag up/down to grow/shrink the region with a live preview. Intensity changes \
-         and edges act as barriers, so the organ under the seed is suggested before \
-         anything leaks. Release commits (enclosed holes are filled), Esc cancels",
+        "Grow a region from a seed (drag up/down)",
         "LMB press seed · drag up/down = grow/shrink · release commit · Esc cancel · Ctrl+Z undo"
     ),
     (
         SegTool::Polygon,
         "📐",
         "Polygon",
-        "Draw a contour into the active RT structure, click by click (right-click, \
-         double-click or Enter closes it, Esc cancels).\n\
-         Ctrl-click picks the structure under the pointer · Ctrl+Z undo",
+        "Draw a contour point by point",
         "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
     ),
     (
         SegTool::Spline,
         "✒",
         "Spline",
-        "The same, but the clicked points are joined by a closed spline - four clicks \
-         for a smooth organ outline",
+        "Draw a smooth contour through points",
         "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
     ),
     (
         SegTool::Freehand,
         "✏",
         "Free",
-        "Draw a contour freehand: press, drag round the structure, release. The stroke \
-         is closed and thinned on release",
+        "Draw a contour freehand",
         "LMB drag draws · release closes · Ctrl-click pick structure · Ctrl+Z undo"
     ),
     (
         SegTool::LiveWire,
         "🔗",
         "Live wire",
-        "Draw along the edge under the pointer: click once on the boundary, move along \
-         it, and the curve between the two follows the image gradient instead of the \
-         straight line. Click to anchor what is on screen; right-click, double-click or \
-         Enter closes, Esc cancels",
+        "Draw a contour that follows image edges",
         "LMB anchors the path along the edge · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
     ),
     (
         SegTool::ContourBrush,
         "🖊",
         "Brush",
-        "Paint into the active RT structure: a round brush on the patient that pushes \
-         the contour lines (LMB drag).\n\
-         Hold Alt to erase · Shift+wheel or [ ] resize · Ctrl+Z undo",
+        "Paint the RT structure (Alt erases)",
         "LMB paints the structure · Alt erases · Shift+wheel / [ ] radius · Ctrl+Z undo"
     ),
     (
         SegTool::Nudge,
         "⌖",
         "Nudge",
-        "Push the outline of the edited structure around: vertices within the tool \
-         radius follow the drag, with a smooth falloff. Shift+wheel or [ ] set the radius",
+        "Push the outline around",
         "LMB drag pushes the outline · Shift+wheel / [ ] radius · Ctrl+Z undo"
     ),
 ];

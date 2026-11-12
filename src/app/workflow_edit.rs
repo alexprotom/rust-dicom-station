@@ -542,34 +542,26 @@ impl WorkflowEditor {
                 if tip_button(ui, "📂 Load", "Open a workflow file") {
                     actions.push(EdAction::Open);
                 }
-                if tip_button(
-                    ui,
-                    "💾 Save",
-                    "Save to the file it came from, or ask for one (your workflow folder)",
-                ) {
+                if tip_button(ui, "💾 Save", "Save the workflow") {
                     actions.push(EdAction::Save);
                 }
                 if tip_button(ui, "💾 Save as", "Save under another name") {
                     actions.push(EdAction::SaveAs);
                 }
-                if tip_button(
-                    ui,
-                    "⛶ Fit",
-                    "Show every step (double-click on empty canvas does the same)",
-                ) {
+                if tip_button(ui, "⛶ Fit", "Show every step (double-click the canvas)") {
                     self.fit = 2;
                 }
                 ui.separator();
                 if ui
                     .add_enabled(!self.undo.is_empty(), egui::Button::new("⟲ Undo"))
-                    .on_hover_text("Take back the last change (Ctrl+Z)")
+                    .on_hover_text("Undo (Ctrl+Z)")
                     .clicked()
                 {
                     self.undo();
                 }
                 if ui
                     .add_enabled(!self.redo.is_empty(), egui::Button::new("⟳ Redo"))
-                    .on_hover_text("Make the change taken back again (Ctrl+Shift+Z, Ctrl+Y)")
+                    .on_hover_text("Redo (Ctrl+Shift+Z, Ctrl+Y)")
                     .clicked()
                 {
                     self.redo();
@@ -579,11 +571,7 @@ impl WorkflowEditor {
                 let targets = self.targets(&selected);
                 if ui
                     .add_enabled(!targets.is_empty(), egui::Button::new("⬚ Frame"))
-                    .on_hover_text(
-                        "Draw a titled frame around the selected steps (Shift-click or \
-                         Shift-drag to select several). Its title is set under Frames on the \
-                         left; dragging the title moves every step inside",
-                    )
+                    .on_hover_text("Frame the selected steps (Shift-click to select several)")
                     .clicked()
                 {
                     let nodes = self.ids_of(&targets).into_iter().collect();
@@ -594,19 +582,17 @@ impl WorkflowEditor {
                     });
                 }
                 ui.checkbox(&mut self.minimap, "Map")
-                    .on_hover_text("A map of the whole canvas in its corner");
+                    .on_hover_text("Show a map of the canvas");
                 ui.separator();
                 let ok = self.findings.ok();
                 if ui
                     .add_enabled(!running, egui::Button::new("▶ Run"))
                     .on_hover_text(if running {
-                        "A workflow is running; wait for it or cancel it in its window".to_string()
+                        "A workflow is already running".to_string()
                     } else if ok {
-                        "Choose the input folders and how to run, then run".to_string()
+                        "Choose the inputs and run".to_string()
                     } else {
-                        "Open the run dialog. Its folders may fill what is missing; anything \
-                         else listed at the bottom has to be fixed first"
-                            .to_string()
+                        "Open the run dialog. Fix what is listed at the bottom first".to_string()
                     })
                     .clicked()
                 {
@@ -757,7 +743,7 @@ impl WorkflowEditor {
                 );
                 ui.add_space(4.0);
                 ui.label("Results go to")
-                    .on_hover_text("The folder each run makes its own folder in. Empty is the program's workflow_runs folder.");
+                    .on_hover_text("Where runs are written; empty is workflow_runs");
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.output.root)
@@ -768,9 +754,8 @@ impl WorkflowEditor {
                         actions.push(EdAction::BrowseOutput);
                     }
                 });
-                ui.label("Run folder name").on_hover_text(
-                    "{workflow}, {date} and {time} are filled in when a run starts",
-                );
+                ui.label("Run folder name")
+                    .on_hover_text("{workflow}, {date} and {time} are filled in");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.output.folder)
                         .desired_width(f32::INFINITY),
@@ -1069,7 +1054,7 @@ impl WorkflowEditor {
             let r = over
                 .interact(bar, id.with(("frame", k)), egui::Sense::drag())
                 .on_hover_cursor(egui::CursorIcon::Grab)
-                .on_hover_text("Drag to move the steps in this frame");
+                .on_hover_text("Drag to move the frame");
             if r.drag_started() {
                 let from = over
                     .input(|i| i.pointer.press_origin())
@@ -1164,9 +1149,7 @@ impl WorkflowEditor {
         );
         let r = over
             .interact(mini, id.with("minimap"), egui::Sense::click_and_drag())
-            .on_hover_text(
-                "The whole canvas; the outline is the part in view. Click or drag to move the view",
-            );
+            .on_hover_text("Click or drag to move the view");
         if r.clicked() || r.dragged() {
             if let Some(p) = r.interact_pointer_pos() {
                 let at = world.center() + (p - inner.center()) / scale;
@@ -1795,7 +1778,7 @@ fn effort_ui(f: &mut form::Form, id: u32, e: &mut cat::Effort) {
     });
     f.row_tip(
         "Threshold",
-        "Sample only fixed-image voxels above this value (a crude body mask)",
+        "Sample only fixed voxels above this value",
         |ui| {
             ui.add(egui::DragValue::new(&mut e.fixed_threshold).suffix(" HU"));
         },
@@ -1806,7 +1789,7 @@ fn effort_ui(f: &mut form::Form, id: u32, e: &mut cat::Effort) {
 fn finish_ui(f: &mut form::Form, fin: &mut cat::FinishParams) {
     f.row_tip(
         "Close gaps",
-        "Morphological closing of each landed structure; 0 leaves it as it landed",
+        "Close each landed structure; 0 for none",
         |ui| {
             ui.add(
                 egui::DragValue::new(&mut fin.close_mm)
@@ -1820,7 +1803,7 @@ fn finish_ui(f: &mut form::Form, fin: &mut cat::FinishParams) {
     });
     f.row("", |ui| {
         ui.checkbox(&mut fin.keep_shape, "Keep each structure's shape")
-            .on_hover_text("Carry each structure as a rigid body: shape and volume kept");
+            .on_hover_text("Move each structure rigidly");
     });
 }
 
@@ -1841,7 +1824,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Workspace",
-                "Where the study is shown when a run shows its steps in the viewer",
+                "Where the study is shown during a step-by-step run",
                 |ui| {
                     choice(
                         ui,
@@ -1865,7 +1848,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Description has",
-                "Words the series description must contain; case does not matter",
+                "Words in the series description, any case",
                 |ui| text(ui, &mut p.description, "anything", 150.0),
             );
             f.row("Take", |ui| {
@@ -2004,10 +1987,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             names_row(f, id, &mut p.names);
             f.row("", |ui| {
                 ui.checkbox(&mut p.tg263, "Name structures by AAPM TG-263")
-                    .on_hover_text(
-                        "Structures without a name of their own land under their TG-263 name \
-                         (Kidney_L, Lung_RUL) where the class has one",
-                    );
+                    .on_hover_text("Kidney_L, Lung_RUL, ...");
             });
             f.row("Compute", |ui| {
                 choice(ui, ("dev", id), &mut p.device, &cat::Device::ALL, |v| {
@@ -2052,8 +2032,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         Op::Register2d(p) => {
             f.row_tip(
                 "Pairs",
-                "fixed:moving per match, planar images by number or label, separated by \
-                 commas (1:3, 2:4)",
+                "fixed:moving pairs by number or label (1:3, 2:4)",
                 |ui| text(ui, &mut p.pairs, "1:2", 150.0),
             );
             f.row("Method", |ui| {
@@ -2098,7 +2077,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Markers",
-                "Find markers of this size for the points methods; 0 for none",
+                "Marker size for the points methods; 0 for none",
                 |ui| {
                     ui.add(
                         egui::DragValue::new(&mut p.markers_mm)
@@ -2117,8 +2096,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Images",
-                "Planar images by number or label, separated by commas; empty: every one \
-                 that states its geometry",
+                "Numbers or labels, separated by commas; empty is all",
                 |ui| text(ui, &mut p.images, "every placed image", 150.0),
             );
             f.row("", |ui| {
@@ -2131,8 +2109,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         Op::Register2d3d(p) => {
             f.row_tip(
                 "Images",
-                "Planar images by number or label, separated by commas; empty: every one \
-                 that states its geometry",
+                "Numbers or labels, separated by commas; empty is all",
                 |ui| text(ui, &mut p.images, "every placed image", 150.0),
             );
             f.row("Method", |ui| {
@@ -2177,7 +2154,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             );
             f.row_tip(
                 "Clip about",
-                "A structure the box is put around instead, with a margin",
+                "Put the box around a structure instead",
                 |ui| {
                     text(ui, &mut p.clip_structure, "no structure", 110.0);
                     ui.add_enabled(
@@ -2191,7 +2168,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             );
             f.row("", |ui| {
                 ui.checkbox(&mut p.clip_rays, "Rays inside the box only")
-                    .on_hover_text("Otherwise the box chooses the pixels compared");
+                    .on_hover_text("Cast only the rays inside the clip box");
             });
             f.row("Threshold", |ui| {
                 ui.add(
@@ -2222,15 +2199,14 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             }
             f.row_tip(
                 "Folder",
-                "Inside the run folder, or an absolute path; {input} is the study's title; \
-                 empty writes nothing",
+                "{input} is the study's title; empty writes nothing",
                 |ui| text(ui, &mut p.folder, "setup/{input}", 150.0),
             );
         }
         Op::PositionedCopy(p) => {
             f.row_tip(
                 "Shift",
-                "Without a pose: where the anatomy is found, mm (patient x, y, z)",
+                "Patient x, y, z of the anatomy in mm, without a pose",
                 |ui| {
                     for v in &mut p.translation_mm {
                         ui.add(egui::DragValue::new(v).speed(0.5).max_decimals(1));
@@ -2239,7 +2215,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             );
             f.row_tip(
                 "Turn",
-                "Without a pose: rotations about x, y, z through the series' centre, degrees",
+                "Rotations about x, y, z in degrees, without a pose",
                 |ui| {
                     for v in &mut p.rotation_deg {
                         ui.add(egui::DragValue::new(v).speed(0.1).max_decimals(2));
@@ -2250,9 +2226,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         Op::RegisterByStructures(p) => {
             f.row_tip(
                 "Pairs",
-                "The structures arriving on Fixed and on Moving pair by name. Write the \
-                 ones named differently here: fixed name = moving name, separated by commas \
-                 (Heart = heart_total).",
+                "Names that differ, as fixed = moving, separated by commas",
                 |ui| text(ui, &mut p.pairs, "Heart = heart_total", 160.0),
             );
             f.row("Transform", |ui| {
@@ -2271,8 +2245,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Robust",
-                "Huber width: distances beyond it count linearly, so a slice contoured \
-                 differently does not steer the fit; 0 is least squares",
+                "Huber width of the fit; 0 is plain least squares",
                 |ui| {
                     ui.add(
                         egui::DragValue::new(&mut p.shape.robust_mm)
@@ -2283,7 +2256,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             );
             f.row("", |ui| {
                 ui.checkbox(&mut p.shape.symmetric, "Both ways")
-                    .on_hover_text("Also lay the moving surfaces onto the fixed structures");
+                    .on_hover_text("Also fit moving onto fixed");
             });
             f.row("Refine", |ui| {
                 choice(
@@ -2297,7 +2270,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             if p.shape.refine != cat::ShapeRefine::None {
                 f.row_tip(
                     "Margin",
-                    "Each structure grown by this much bounds its refinement",
+                    "Margin around each structure for the refinement",
                     |ui| {
                         ui.add(
                             egui::DragValue::new(&mut p.shape.margin_mm)
@@ -2328,7 +2301,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         Op::PropagateToGroup(p) => {
             f.row_tip(
                 "Deformable",
-                "The deformable registration (the local refinement of an anchored run)",
+                "The deformable method of the local refinement",
                 |ui| {
                     choice(ui, ("m", id), &mut p.method, &cat::DeformMethod::ALL, |v| {
                         v.label()
@@ -2366,7 +2339,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Anchor lands as",
-                "The carried anchor lands beside each phase's own contour under this name",
+                "Name of the carried anchor on each phase",
                 |ui| text(ui, &mut p.anchor_landed_as, "<anchor>_prop", 130.0),
             );
             f.row("File into", |ui| {
@@ -2399,8 +2372,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             if p.rigid {
                 f.row_tip(
                     "Rigid around",
-                    "The rigid fit is made on each structure dilated by this margin; 0 is one \
-                     global rigid body",
+                    "Margin of each structure's rigid fit; 0 is one global fit",
                     |ui| {
                         ui.add(
                             egui::DragValue::new(&mut p.local_rigid_margin_mm)
@@ -2440,8 +2412,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         Op::ExportDicom(p) => {
             f.row_tip(
                 "Folder",
-                "Inside the run folder, or an absolute path; {input} is the title of the folder \
-                 node the study came from",
+                "Inside the run folder, or absolute; {input} is the source folder's title",
                 |ui| text(ui, &mut p.folder, "{input}", 150.0),
             );
             f.row("Structures as", |ui| {
@@ -2513,17 +2484,17 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             );
             f.row_tip(
                 "Study",
-                "Words of its description, or its date (YYYYMMDD); empty takes the newest",
+                "Description words or date (YYYYMMDD); empty is the newest",
                 |ui| text(ui, &mut p.study, "the newest", 150.0),
             );
             f.row_tip(
                 "Archive",
-                "The archive's folder; empty is the station's (Tools > PACS)",
+                "The archive's folder; empty is the station's",
                 |ui| text(ui, &mut p.archive, "the station's", 150.0),
             );
             f.row_tip(
                 "Workspace",
-                "Where the study is shown when a run shows its steps in the viewer",
+                "Where the study is shown during a step-by-step run",
                 |ui| {
                     choice(
                         ui,
@@ -2692,7 +2663,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Protocol file",
-                "A protocol saved from the DVH window, read when the run starts",
+                "A protocol saved from the DVH module",
                 |ui| text(ui, &mut p.protocol_file, "none", 160.0),
             );
             f.row("", |ui| {
@@ -2730,7 +2701,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Archive",
-                "The archive's folder; empty is the station's (Tools > PACS)",
+                "The archive's folder; empty is the station's",
                 |ui| text(ui, &mut p.archive, "the station's", 150.0),
             );
         }
@@ -2759,7 +2730,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Mirrors",
-                "Test-time mirrors besides the plain pass: 2 is the published recipe",
+                "Test-time mirrors; 2 is the published recipe",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut p.tta).range(0..=crate::synth::TTA_MAX));
                 },
@@ -2769,8 +2740,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Air outside",
-                "network (TotalSegmentator's body network, 6 mm), classical (threshold), \
-                 none, or the name of a structure on the image",
+                "network, classical, none, or a structure's name",
                 |ui| text(ui, &mut p.mask, "network", 120.0),
             );
             f.row("Compute", |ui| {
@@ -2780,8 +2750,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Folder",
-                "Where the series' files go: inside the run folder, or an absolute path; \
-                 {input} is the study's title",
+                "Inside the run folder, or an absolute path; {input} is the study's title",
                 |ui| text(ui, &mut p.folder, "sct/{input}", 150.0),
             );
         }
@@ -2792,14 +2761,13 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             if p.wet {
                 f.row_tip(
                     "HU:RSP",
-                    "HU to relative stopping power, pairs separated by commas; the default \
-                     is a generic curve, not a scanner's calibration",
+                    "HU:RSP pairs, separated by commas; a generic default",
                     |ui| text(ui, &mut p.hlut, "-1000:0.001, 0:1, 1000:1.55", 200.0),
                 );
             }
             f.row("", |ui| {
                 ui.checkbox(&mut p.structures, "Dice of TotalSegmentator's structures")
-                    .on_hover_text("TotalSegmentator (total, 3 mm) on both images: minutes");
+                    .on_hover_text("Takes minutes");
             });
             f.row("", |ui| {
                 ui.checkbox(
@@ -2858,8 +2826,7 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
 fn names_row(f: &mut form::Form, id: u32, names: &mut cat::NameClash) {
     f.row_tip(
         "Name taken",
-        "When the set it goes into already holds a structure of that name. The same \
-         name lands on every phase of a 4D group, and later steps look it up by it.",
+        "When the set already holds a structure of that name",
         |ui| {
             choice(ui, ("clash", id), names, &cat::NameClash::ALL, |v| {
                 v.label()
@@ -2872,7 +2839,7 @@ fn names_row(f: &mut form::Form, id: u32, names: &mut cat::NameClash) {
 fn margin_row(f: &mut form::Form, label: &str, m: &mut cat::MarginMm) {
     f.row_tip(
         label,
-        "Grow (positive) or shrink (negative); a per-direction margin is set in the file",
+        "Grow (positive) or shrink (negative); per direction in the file",
         |ui| {
             ui.add(
                 egui::DragValue::new(&mut m.uniform_mm)
@@ -2909,17 +2876,12 @@ fn output_rows(
             v.label()
         });
     });
-    f.row_tip(
-        "Into",
-        "The image's own structure set is the one that references it - each phase's own on \
-         a 4D group",
-        |ui| choice(ui, ("set", id), set, &cat::SetChoice::ALL, |v| v.label()),
-    );
-    f.row_tip(
-        "New set label",
-        "The label of a structure set or segmentation series the step has to make",
-        |ui| text(ui, label, "", 150.0),
-    );
+    f.row_tip("Into", "The structure set the step writes into", |ui| {
+        choice(ui, ("set", id), set, &cat::SetChoice::ALL, |v| v.label())
+    });
+    f.row_tip("New set label", "Label of a new set the step makes", |ui| {
+        text(ui, label, "", 150.0)
+    });
 }
 
 /// The unsaved-changes question: `Some(true)` to drop them, `Some(false)`
