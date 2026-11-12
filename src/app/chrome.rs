@@ -14,6 +14,7 @@ impl ViewerApp {
         let mut open_models = false;
         let mut open_pacs = false;
         let mut open_export = false;
+        let mut save_to_pacs: Option<usize> = None;
         let mut wf_menu: Option<workflow_edit::WfPending> = None;
         let mut wf_show_editor = false;
         let mut wf_show_run = false;
@@ -109,6 +110,31 @@ impl ViewerApp {
                         open_export = true;
                         ui.close();
                     }
+                    // Into this station's PACS, beside the study: one line
+                    // per workspace holding something.
+                    ui.add_enabled_ui(!loaded.is_empty(), |ui| {
+                        ui.menu_button("📤 Save to the PACS", |ui| {
+                            for slot in &loaded {
+                                let label = format!(
+                                    "{} · {}",
+                                    SLOT_NAMES[*slot],
+                                    self.workspace_summary(*slot)
+                                );
+                                if ui
+                                    .button(label)
+                                    .on_hover_text(
+                                        "Write this workspace's new structure sets and \
+                                         segmentations into this station's PACS, beside the \
+                                         study they belong to, in the PACS's own folders",
+                                    )
+                                    .clicked()
+                                {
+                                    save_to_pacs = Some(*slot);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
                     ui.separator();
                     if tip_button(
                         ui,
@@ -536,6 +562,9 @@ impl ViewerApp {
         }
         if open_models {
             self.open_models_window();
+        }
+        if let Some(slot) = save_to_pacs {
+            self.open_pacs_save(slot, None);
         }
         if open_export {
             self.open_export_dialog();

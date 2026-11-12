@@ -24,7 +24,7 @@ network and over the internet, and the two ways of working.
 |---|---|
 | **Source** | **🏥 This station** (this page), one **🔗** button per paired server ([pacs-server.md](pacs-server.md#working-on-a-servers-studies)), **➕ Add server** |
 | **📥 Import folder** | Copy every DICOM file under a folder into the main storage folder |
-| **📤 Send workspace A / B** | Write that workspace's structure sets and segmentation series back into the PACS, attached to the study they belong to |
+| **📤 Send workspace A / B** | Opens [Save to the PACS](#saving-to-the-pacs) on that workspace: its structure sets and segmentation series, the new ones ticked, written beside the study they belong to |
 | **⟲ Rescan** | Look through the storage folders again; only files not seen before are read |
 | **🔍** | Show only the rows whose name (or UID, or folder) holds the text, with what leads to them |
 | **✖ Reset filters** | Clear the search text and untick everything in the list beside 🔍: every study shows again (also under the scope in the [analytics](#analytics) while anything filters) |
@@ -334,7 +334,8 @@ Import copies; it never moves. Each file is opened as far as the pixel data
 (not into it), and its Patient ID, Study Instance UID and SOP Instance UID
 decide where it lands: beside the study's files when the main folder holds
 the study already, else in `<main folder>/<patient>/<study uid>/` as
-`<sop instance uid>.dcm`. A file whose SOP Instance UID the PACS holds
+`<sop instance uid>.dcm` ([Save to the PACS](#saving-to-the-pacs) files
+beside the study in whichever storage folder holds it). A file whose SOP Instance UID the PACS holds
 already is left alone, so importing the same folder twice is a no-op and
 re-importing a folder that has grown files only the new ones. Anything that
 will not open as DICOM is counted as skipped and reported, not treated as an
@@ -354,11 +355,42 @@ patient ▶ study ▶ series tree and the same merging into whatever the workspa
 already holds. The session remembers the folders the selection covers (a
 folder whose every file was loaded) rather than each file.
 
-## Sending changes back
+## Saving to the PACS
 
-*Send workspace A / B* writes back **derived objects only** - the structure sets
-and the segmentation series. The images are already in the PACS; re-sending
-them would duplicate hundreds of megabytes under new Instance UIDs.
+What is made on a study of the PACS - a structure set drawn or filled by a
+model, a segmentation painted - is saved into the PACS itself, beside the
+study, through **Save to the PACS**. Three ways open it:
+
+* **File ▶ 📤 Save to the PACS ▶** a workspace;
+* **📤 Save to the PACS** in the menu of a structure set or segmentation row
+  of the data tree (that one alone ticked);
+* **📤 Send workspace A / B** in this window.
+
+The window lists the workspace's structure sets and segmentation series,
+each with what the PACS knows of it:
+
+| State | Meaning | Ticked |
+|---|---|---|
+| **new** | made here and never saved | yes |
+| **not in the PACS** | read from a file the PACS does not hold | yes |
+| **in the PACS** | the PACS holds an object with its SOP Instance UID (it was loaded from there, or saved before) | no; ticked, it is saved again as a new object beside the old one - how an edited set is kept, the old version staying |
+| **empty** | nothing drawn in it | cannot be |
+| **study not in the PACS** | the study it belongs to is not in the PACS: import the study first | cannot be |
+
+Under the list, a line per study says the folder they go into. That is the
+folder holding the study's files - the patient's folder in its cohort folder,
+in whichever [storage folder](#several-storage-folders) holds the study (the
+one holding most of it, should it be split), not only the main one. The
+catalog learns the new files in the same step, so the tree lists them at
+once, without a rescan. Once saved, a new object takes on the identity of its
+copy in the PACS (its SOP and Series Instance UIDs, its file name): it reads
+**in the PACS** from then on and is not offered a second time. An object
+loaded from the PACS and saved again keeps the identity it was loaded with,
+which a plan or a registration may refer to.
+
+Only **derived objects** are written - the structure sets and the
+segmentation series. The images are already in the PACS; re-sending them
+would duplicate hundreds of megabytes under new Instance UIDs.
 
 Each written object gets
 
@@ -372,11 +404,12 @@ Each written object gets
   on the images they were drawn on;
 * a **reference to the image series** it was drawn on.
 
-The objects are written to a scratch folder (removed afterwards) and imported
-through the ordinary import path, so a half-failed upload leaves the PACS
-untouched. Every send creates new instances, so sending twice leaves two
+The objects are written to a scratch folder (removed afterwards) and filed
+through the ordinary import path, told to file a study's files beside the
+ones the PACS holds wherever they are, so a half-failed save leaves the PACS
+untouched. Every save creates new instances, so saving a set twice leaves two
 structure sets rather than overwriting one; the unwanted one can be removed
-through the data tree, or as a series from the PACS.
+as a series from the PACS.
 
 ## What it is not
 

@@ -298,6 +298,10 @@ src/
     tags.rs         the person's decisions (names, cohorts, 4D groups) as a
                     JSON file by UID and patient key, merged into another
                     station's catalog (Settings > Export / Import tags)      DICOM
+    save.rs         Save to the PACS: chosen derived objects written by
+                    export_derived_some and filed beside their study in any
+                    storage folder (Importer::beside_the_study,
+                    Archive::study_home), with what each became             DICOM
   audit.rs          the call log both servers write (data/<server>/audit-*.log)
                                                                                  App
   pacs/             the PACS server and its client: the archive served to
@@ -550,10 +554,16 @@ src/
     pacs_win.rs       the PACS window: menu bar (Settings: storage folders,
                       PACS server page), the row of sources, the local tree
                       and its context menu (rename, cohorts, move files,
-                      remove), import, load, send back
+                      remove), import, load, send back (through
+                      pacs_save.rs)
     pacs_remote.rs    the PACS window on a paired server: its tree, pull
                       (patients, studies, single series), load, send, sync,
                       upload, the Tasks tab, Add server / pairing
+    pacs_save.rs      Save to the PACS (File menu, a set's tree menu, the
+                      PACS window's Send workspace): the workspace's sets
+                      and segmentations as new / in the PACS / not in it,
+                      the new ones ticked, saved beside their study; a new
+                      object takes on its PACS identity on landing
     pacs_stats.rs     the PACS window's analytics panel (an edge_panel): the
                       patients' words (a chart per WordKind: age group,
                       sex, site, subject) and the modalities of the

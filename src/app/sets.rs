@@ -83,6 +83,8 @@ pub(super) enum SetAction {
         set: SetRef,
         items: Vec<usize>,
     },
+    /// Open *Save to the PACS* with this series alone ticked.
+    SaveToPacs(SetRef),
 }
 
 /// Deferred right-click action on individual structures / segments.
@@ -259,6 +261,16 @@ impl ViewerApp {
             SetAction::Connect(r, uid) => self.connect_set(r, &uid),
             SetAction::Transfer { from, to, copy } => self.transfer_set(from, to, copy),
             SetAction::ExportSeg { set, items } => self.export_seg_series(set, &items),
+            SetAction::SaveToPacs(set) => self.open_pacs_save(
+                set.slot,
+                Some((
+                    match set.kind {
+                        SetKind::Structures => crate::dicom_export::DerivedKind::StructureSet,
+                        SetKind::Segmentations => crate::dicom_export::DerivedKind::Segmentation,
+                    },
+                    set.idx,
+                )),
+            ),
         }
     }
 

@@ -896,6 +896,16 @@ impl ViewerApp {
         // Poll a model download / update batch.
         self.poll_models_job(ctx);
 
+        // Poll a save into the PACS.
+        if let Some((slot, (rows, saved, tree))) = poll_tool_job(
+            &mut self.pacs_save_job,
+            ctx,
+            "Saving to the PACS",
+            &mut self.error,
+        ) {
+            self.on_pacs_saved(slot, rows, saved, tree);
+        }
+
         // Poll the tool windows' workers.
         if let Some((slot, result)) =
             poll_tool_job(&mut self.autoseg_job, ctx, AUTOSEG.name, &mut self.error)

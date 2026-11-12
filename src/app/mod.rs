@@ -76,6 +76,7 @@ mod motion;
 mod motion_results;
 mod object_view;
 mod pacs_remote;
+mod pacs_save;
 mod pacs_server_win;
 mod pacs_stats;
 mod pacs_tree;
@@ -776,6 +777,9 @@ pub struct ViewerApp {
     /// window opens.
     export_plan: Option<export::ExportPlan>,
     export_job: Option<Job<anyhow::Result<export::ExportSummary>>>,
+    /// *Save to the PACS*: its window, and the save running.
+    pacs_save: Option<pacs_save::PacsSave>,
+    pacs_save_job: Option<Job<pacs_save::SaveDone>>,
     export_result: Option<String>,
     /// What the finished run could not do exactly as asked.
     export_warnings: Vec<String>,
@@ -1350,6 +1354,8 @@ impl ViewerApp {
             export_dir: String::new(),
             export_plan: None,
             export_job: None,
+            pacs_save: None,
+            pacs_save_job: None,
             export_result: None,
             export_warnings: Vec::new(),
             gen_open: false,
