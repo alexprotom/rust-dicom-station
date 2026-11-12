@@ -88,7 +88,7 @@ fn width_bounds(img: &crate::extras::PlanarImage) -> (f32, f32) {
 }
 
 /// The window an image comes up with: the one it carries.
-fn default_window(img: &crate::extras::PlanarImage) -> (f32, f32) {
+pub(super) fn default_window(img: &crate::extras::PlanarImage) -> (f32, f32) {
     let (lo, hi) = width_bounds(img);
     (img.window.0, img.window.1.clamp(lo, hi))
 }
@@ -273,7 +273,7 @@ impl ViewerApp {
     }
 
     /// The kind of image `idx` of `slot`, when there is one.
-    fn planar_kind(&self, slot: usize, idx: usize) -> Option<PlanarKind> {
+    pub(super) fn planar_kind(&self, slot: usize, idx: usize) -> Option<PlanarKind> {
         self.slots[slot.min(MAX_WORKSPACES - 1)]
             .study
             .as_ref()
@@ -505,7 +505,7 @@ impl ViewerApp {
     /// The images pane `k` of `slot` shows, bottom first: its stack, or the
     /// stand-in's first image of the pane's kind; none while it shows a
     /// report.
-    fn pane_images(&self, slot: usize, k: usize) -> Vec<usize> {
+    pub(super) fn pane_images(&self, slot: usize, k: usize) -> Vec<usize> {
         if !self.planar_drawn(slot, k)
             || self.pane_report(slot, k).is_some()
             || self.pane_object(slot, k).is_some()

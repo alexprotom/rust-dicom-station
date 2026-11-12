@@ -141,13 +141,28 @@ the planar structure sets (`ObjKind::PlanarStructures`: a presentation
 state per set, referencing the images under the UIDs they go out with).
 The workflow step writes every planar structure set and the images made
 here; the MCP tool takes planar sets with the structures and planar images
-with the images.
+with the images. The Export window also writes, beside every planar image
+with contours of a ticked set on it, a copy with the contours burned into
+its pixels (a Secondary Capture, `Burned In Annotation YES`), for the
+viewers that draw no presentation state
+([export-and-tools.md](export-and-tools.md#2d-contours-burned-in)); the
+MCP tool and the workflow step leave it off.
 
 *💾 Save as presentation state* (and the MCP `save_planar_structures`)
 writes the state into a folder together with every referenced image that
 has no file of its own (a DRR, a moved copy) as an RT Image under the UIDs
 the set already references, so the folder is self-contained. File names
-carry no label (`gsps_1.dcm`, `rtimage_1.dcm`).
+carry no label (`gsps_1.dcm`, `rtimage_1_1.dcm`: the set's number, then
+the image's, so two sets saved into one folder keep their images apart).
+
+A planar image's own menu in the tree saves it alone: *💾 Save ▸ As DICOM*
+(the Export window with it and the sets drawn on it ticked), *With contours
+burned in (DICOM)* and *As PNG*, both drawn as the panes draw them (every
+set's structures on that image less the hidden ones, through the pane's
+window). The 2D/3D section's *💾 DICOM* writes, besides the registration,
+the DRRs and the report, every planar structure set with contours on the
+setup's radiographs as a presentation state, and each such radiograph with
+the contours burned in (`setup_contours_1.dcm`, ...).
 
 `gsps::read` takes what RDS writes and what others write: `POLYLINE` and
 `INTERPOLATED` (as a polyline through its points) become rings, `CIRCLE`

@@ -28,7 +28,22 @@ impl ViewerApp {
             return;
         };
         let params = dicom_export::ExportParams::for_study(first);
-        self.export_plan = Some(ExportPlan::build(studies, params));
+        let mut plan = ExportPlan::build(studies, params);
+        // 2D contours go out burned into copies of their images too: many
+        // viewers draw no presentation state, and the copy is what they show.
+        plan.burn_in_contours = true;
+        // The windows the panes show the planar images with.
+        for slot in 0..MAX_WORKSPACES {
+            let Some(study) = self.slots[slot].study.as_ref() else {
+                continue;
+            };
+            for (i, img) in study.planar_images.iter().enumerate() {
+                if let Some(wl) = self.planar_shown_window(slot, i) {
+                    plan.planar_windows.insert(img.sop_instance_uid.clone(), wl);
+                }
+            }
+        }
+        self.export_plan = Some(plan);
         self.export_result = None;
         self.export_warnings.clear();
         self.export_open = true;
@@ -202,6 +217,22 @@ fn run_options(ui: &mut egui::Ui, plan: &mut ExportPlan) {
                  data survive.\nOn: the images are written afresh from the loaded volume - \
                  needed only when the voxels themselves were changed.",
             );
+        let planar = plan.studies().any(|st| {
+            st.objects
+                .iter()
+                .any(|o| o.kind == ObjKind::PlanarStructures)
+        });
+        if planar {
+            ui.separator();
+            ui.checkbox(&mut plan.burn_in_contours, "2D contours also burned in")
+                .on_hover_text(
+                    "On: beside every planar image that goes out with 2D contours on it (of a \
+                     ticked planar structure set), a copy with the contours drawn into its \
+                     pixels, as a Secondary Capture - what a viewer that draws no \
+                     presentation state shows. The contours still go out as a presentation \
+                     state, which keeps them editable.",
+                );
+        }
     });
 }
 

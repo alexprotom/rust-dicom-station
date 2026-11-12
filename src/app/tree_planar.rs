@@ -83,6 +83,7 @@ impl ViewerApp {
         let mut remove: Option<ObjRef> = None;
         let mut focus: Option<RenameTarget> = None;
         let mut project: Option<usize> = None;
+        let mut save: Option<super::save_menu::SaveRequest> = None;
         let current = self.tree_focus.clone();
         let panes: Vec<Vec<usize>> = images
             .iter()
@@ -211,6 +212,7 @@ impl ViewerApp {
                             }
                             ui.separator();
                         }
+                        self.planar_save_entries(ui, slot, i, &mut save);
                         if Self::rename_entry(ui) {
                             rename = Some(RenameTarget::Planar { slot, idx: i });
                             ui.close();
@@ -230,6 +232,9 @@ impl ViewerApp {
         }
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if save.is_some() {
+            self.save_request = save;
         }
         if remove.is_some() {
             self.obj_remove = remove;

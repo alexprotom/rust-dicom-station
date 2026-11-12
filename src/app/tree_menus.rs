@@ -98,6 +98,16 @@ impl ViewerApp {
             *out = Some(SetAction::SaveToPacs(here));
             ui.close();
         }
+        if Self::save_dicom_entry(
+            ui,
+            match here.kind {
+                SetKind::Structures => "structure set",
+                SetKind::Segmentations => "segmentation series",
+            },
+        ) {
+            *out = Some(SetAction::SaveDicom(here));
+            ui.close();
+        }
         if here.kind == SetKind::Segmentations
             && tip_button(
                 ui,

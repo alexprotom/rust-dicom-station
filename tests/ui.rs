@@ -278,8 +278,8 @@ fn every_widget_of_the_tool_windows_has_a_name() {
         ("Tools", "Anonymize DICOM folder"),
         ("Tools", "Generate test data"),
         ("Tools", "Download test data"),
-        ("File", "Export DICOM"),
-        ("File", "Save image"),
+        ("Save", "Export DICOM"),
+        ("Save", "Save image"),
     ] {
         ui.click(&Target::label(menu).role("button")).unwrap();
         ui.settle(SETTLE);
@@ -301,6 +301,65 @@ fn every_widget_of_the_tool_windows_has_a_name() {
         "{} widget(s) without a name (see `Named` in src/app/widgets.rs):\n{}",
         unnamed.len(),
         unnamed.join("\n")
+    );
+}
+
+#[test]
+fn the_save_menu_holds_every_way_out_and_one_pane_can_be_saved() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    // File opens and clears; what writes is under Save.
+    ui.click(&Target::label("File").role("button")).unwrap();
+    ui.settle(SETTLE);
+    assert!(!ui.has(&Target::containing("Export DICOM").role("button")));
+    ui.key("Escape").unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("Save").role("button")).unwrap();
+    ui.settle(SETTLE);
+    for entry in [
+        "Export DICOM",
+        "Save to the PACS",
+        "Save image",
+        "Image of one pane",
+    ] {
+        assert!(
+            ui.has(&Target::containing(entry).role("button")),
+            "{entry} is not in the Save menu:\n{}",
+            ui.tree_text()
+        );
+    }
+    // The dialog lists the panes on screen by name, one choice each.
+    let coronal = ui.find_all(&Target::label("Coronal")).len();
+    ui.click(&Target::containing("Save image").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert!(ui.has_label("Pane"), "no pane choice:\n{}", ui.tree_text());
+    assert_eq!(
+        ui.find_all(&Target::label("Coronal")).len(),
+        coronal + 1,
+        "the coronal pane is not offered on its own:\n{}",
+        ui.tree_text()
+    );
+}
+
+#[test]
+fn a_series_saved_from_its_menu_opens_the_export_with_it_alone() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let row = ui
+        .find(&Target::containing(" sl.)").role("button"))
+        .unwrap_or_else(|e| panic!("no series row: {e:#}\n{}", ui.tree_text()));
+    ui.click_at(row.rect.center(), egui::PointerButton::Secondary, 1);
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Save as DICOM").role("button"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.settle(SETTLE);
+    assert!(
+        ui.has(&Target::containing(
+            "1 image series, 0 RT object(s) selected"
+        )),
+        "not the series alone:\n{}",
+        ui.tree_text()
     );
 }
 

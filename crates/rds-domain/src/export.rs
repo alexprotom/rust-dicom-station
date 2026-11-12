@@ -347,6 +347,34 @@ pub struct ExportPlan {
     /// Write the images from the loaded voxels instead of copying the source
     /// files. Off by default: copying is lossless and much faster.
     pub rerender_images: bool,
+    /// Beside every planar image that goes out with 2D contours on it (of a
+    /// planar structure set ticked in the plan), a copy with them burned
+    /// into its pixels, as a Secondary Capture ([`crate::burn_in`]) - what
+    /// a viewer that draws no presentation state shows. Off in a plan
+    /// [`ExportPlan::build`] makes; the export window turns it on.
+    pub burn_in_contours: bool,
+    /// The window (centre, width) each planar image is shown with, by its
+    /// SOP Instance UID as loaded: what a presentation state's VOI and a
+    /// burned-in copy's grey are taken from. An image not in it has its own.
+    pub planar_windows: HashMap<String, (f32, f32)>,
+}
+
+/// One thing of the plan to export on its own ([`ExportPlan::select_only`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// Every series and object of a study.
+    Study { slot: usize, uid: String },
+    /// An image series, by its index in `LoadedStudy::series`.
+    Series { slot: usize, index: usize },
+    /// Several image series of one workspace at once (a 4D group's).
+    SeriesList { slot: usize, series: Vec<usize> },
+    /// An RT object, by its kind and its index in the study's list of that
+    /// kind (the [`ObjNode::index`]).
+    Object {
+        slot: usize,
+        kind: ObjKind,
+        index: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +420,92 @@ impl ExportPlan {
             layout: Layout::Tree,
             params,
             rerender_images: false,
+            burn_in_contours: false,
+            planar_windows: HashMap::new(),
         }
+    }
+
+    /// Tick `pick` alone: everything else of the plan is unticked. What it
+    /// takes along: a planar image takes the planar structure sets that have
+    /// contours on it, and a planar structure set the images it is drawn on,
+    /// so the presentation state and its images go out together. Returns
+    /// whether `pick` is in the plan at all; when it is not, nothing changes.
+    pub fn select_only(&mut self, pick: &Pick, studies: &[Option<&LoadedStudy>]) -> bool {
+        let found = self.studies().any(|st| match pick {
+            Pick::Study { slot, uid } => st.slot == *slot && st.source_uid == *uid,
+            Pick::Series { slot, index } => st
+                .series
+                .iter()
+                .any(|s| s.slot == *slot && s.index == *index),
+            Pick::SeriesList { slot, series } => st
+                .series
+                .iter()
+                .any(|s| s.slot == *slot && series.contains(&s.index)),
+            Pick::Object { slot, kind, index } => st
+                .objects
+                .iter()
+                .any(|o| o.slot == *slot && o.kind == *kind && o.index == *index),
+        });
+        if !found {
+            return false;
+        }
+        // The planar companions of the pick, as (kind, index) in its slot.
+        let mut also: Vec<(ObjKind, usize)> = Vec::new();
+        if let Pick::Object { slot, kind, index } = pick {
+            if let Some(study) = studies.get(*slot).copied().flatten() {
+                match kind {
+                    ObjKind::Planar => {
+                        if let Some(img) = study.planar_images.get(*index) {
+                            let uid = img.sop_instance_uid.as_str();
+                            for (k, set) in study.planar_structs.iter().enumerate() {
+                                let on = !uid.is_empty()
+                                    && set.structures.iter().any(|s| {
+                                        s.contour(uid).is_some_and(|c| !c.region.is_empty())
+                                            || s.points.iter().any(|(u, _)| u == uid)
+                                    });
+                                if on {
+                                    also.push((ObjKind::PlanarStructures, k));
+                                }
+                            }
+                        }
+                    }
+                    ObjKind::PlanarStructures => {
+                        if let Some(set) = study.planar_structs.get(*index) {
+                            for u in &set.images {
+                                if let Some(i) = study.planar_by_uid(u) {
+                                    also.push((ObjKind::Planar, i));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for st in self.studies_mut() {
+            let whole = matches!(pick, Pick::Study { slot, uid } if st.slot == *slot && st.source_uid == *uid);
+            for s in &mut st.series {
+                s.selected = whole
+                    || match pick {
+                        Pick::Series { slot, index } => (*slot, *index) == (s.slot, s.index),
+                        Pick::SeriesList { slot, series } => {
+                            *slot == s.slot && series.contains(&s.index)
+                        }
+                        _ => false,
+                    };
+            }
+            for o in &mut st.objects {
+                let me = Pick::Object {
+                    slot: o.slot,
+                    kind: o.kind,
+                    index: o.index,
+                };
+                let companion = matches!(pick, Pick::Object { slot, .. } if *slot == o.slot)
+                    && also.contains(&(o.kind, o.index));
+                o.selected = whole || *pick == me || companion;
+            }
+        }
+        true
     }
 
     /// Re-fill every identifier from the mode.
@@ -1258,6 +1371,8 @@ fn export_one_study(
             Some((img.sop_instance_uid.as_str(), out))
         })
         .collect();
+    // The burned-in copies of the study's planar images, one series for all.
+    let burned_series = dicom_export::new_uid();
 
     for (n, node) in st.objects.iter().filter(|o| o.selected).enumerate() {
         progress.set(format!("Writing {} {}", node.kind.glyph(), node.label));
@@ -1393,6 +1508,40 @@ fn export_one_study(
                     }
                 }
                 *files += 1;
+                if plan.burn_in_contours {
+                    // The contours of the planar sets that go out with it.
+                    let sets = st
+                        .objects
+                        .iter()
+                        .filter(|o| o.kind == ObjKind::PlanarStructures && o.selected)
+                        .filter_map(|o| study.planar_structs.get(o.index));
+                    let lines = crate::burn_in::overlays(sets, &img.sop_instance_uid, &|_, _| true);
+                    if !lines.is_empty() {
+                        let wl = plan
+                            .planar_windows
+                            .get(&img.sop_instance_uid)
+                            .copied()
+                            .unwrap_or(img.window);
+                        let rgb = crate::burn_in::render(img, wl, &lines);
+                        let meta = dicom_export::ObjectMeta {
+                            patient_name: patient.name.trimmed().to_string(),
+                            patient_id: patient.id.trimmed().to_string(),
+                            study_uid: st.uid.trimmed().to_string(),
+                            label: "CONTOURS".into(),
+                            description: format!("{} with contours", out.label),
+                        };
+                        let path = dir.join(format!("SC_{}.dcm", 700 + node.index));
+                        crate::burn_in::write_secondary_capture(
+                            &path,
+                            out,
+                            &rgb,
+                            &meta,
+                            &burned_series,
+                            900,
+                        )?;
+                        *files += 1;
+                    }
+                }
             }
             ObjKind::PlanarStructures => {
                 let Some(set) = study.planar_structs.get(node.index) else {
@@ -1427,7 +1576,7 @@ fn export_one_study(
                             .get(u.as_str())
                             .cloned()
                             .unwrap_or_else(|| study.planar_images[i].clone());
-                        let wl = img.window;
+                        let wl = plan.planar_windows.get(u).copied().unwrap_or(img.window);
                         Some((img, wl))
                     })
                     .collect();

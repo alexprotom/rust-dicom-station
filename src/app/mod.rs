@@ -100,6 +100,7 @@ mod reg_shape;
 mod rename;
 mod report_view;
 mod run_report;
+mod save_menu;
 mod seg;
 mod seg_edit;
 mod seg_engines;
@@ -845,6 +846,8 @@ pub struct ViewerApp {
     /// A rename requested from a context menu, opened after the frame's
     /// borrows are released.
     rename_request: Option<RenameTarget>,
+    /// A *Save* entry clicked in a data-tree menu, carried out the same way.
+    save_request: Option<save_menu::SaveRequest>,
     /// The data-tree row the keyboard acts on: the one last clicked, in
     /// either button. F2 renames it, Delete removes it. The same address a
     /// rename takes, because every row the tree shows can be renamed, and
@@ -1389,6 +1392,7 @@ impl ViewerApp {
             item_action: None,
             rename: None,
             rename_request: None,
+            save_request: None,
             tree_focus: None,
             tree_picks: Vec::new(),
             tick_anchor: None,
@@ -2030,6 +2034,9 @@ impl eframe::App for ViewerApp {
         }
         if let Some(target) = self.rename_request.take() {
             self.open_rename(target);
+        }
+        if let Some(req) = self.save_request.take() {
+            self.apply_save_request(req);
         }
         self.modals(&ctx);
         // A PACS call started this frame - by a click, or by the result of

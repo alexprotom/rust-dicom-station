@@ -8,9 +8,34 @@ their own documents. Export writes a folder; the archive writes into the
 application's own store, with the same DICOM writer underneath - see
 [pacs.md](pacs.md) for when to reach for which.
 
+## Where saving lives
+
+Everything that writes something out is in the **Save** menu of the menu bar
+(*File* keeps opening data, clearing a workspace and *Quit*):
+
+| Entry | What it writes |
+|---|---|
+| 💾 Export DICOM | the window below: any patients, studies, series and objects as DICOM |
+| 📤 Save to the PACS ▸ | a workspace's new structure sets and segmentations into this station's PACS ([pacs.md](pacs.md)) |
+| 💾 Save image | a picture of the screen: a row, all rows, or one pane ([below](#saving-a-picture-of-the-views)) |
+| ⛶ Image of one pane ▸ | the same dialog, on the pane picked |
+| ◌ 2D contours as presentation state ▸ | a planar structure set as a GSPS ([planar-2d.md](planar-2d.md)) |
+| 🖊 Planar image with contours burned in ▸ | a planar image with its 2D contours drawn into its pixels ([below](#2d-contours-burned-in)) |
+
+The last two are there only when the workspaces hold 2D contours. The data
+tree saves one object the same ways: every series, study, structure set,
+segmentation series, dose, plan, planar image and planar structure set has
+**💾 Save as DICOM...** in its right-click menu, which opens *Export DICOM*
+with only that one ticked (`ExportPlan::select_only`), so its names and UIDs
+are on screen before anything is written. A planar image takes the planar
+structure sets drawn on it along, and a planar structure set the images it
+is drawn on. A planar image's menu has **💾 Save ▸** with *As DICOM*, *With
+contours burned in (DICOM)* and *As PNG* (its own resolution, as the pane
+shows it, with the contours drawn in).
+
 ## DICOM export
 
-*File ▶ 💾 Export DICOM* opens one window for everything that is loaded. What
+*Save ▶ 💾 Export DICOM* opens one window for everything that is loaded. What
 goes out is chosen inside it, not by which menu entry was clicked: the tree
 lists **workspace ▸ patient ▸ study ▸ series and RT objects** for both A and B
 at once, every row has a tick box, and a tick on a study or a patient takes
@@ -139,11 +164,38 @@ presentation state*), with every referenced image that has no file of its
 own written beside it.
 See [planar-2d.md](planar-2d.md).
 
+### 2D contours burned in
+
+Many viewers never draw a presentation state's graphics, so a planar image
+whose contours went out only as a GSPS opens there as the bare image. With
+**2D contours also burned in** ticked (on in the window; the tick box is
+there when the plan holds a planar structure set), every planar image that
+goes out with contours of a ticked planar set on it gets a copy beside it,
+`SC_7nn.dcm`, with the contours drawn into its pixels
+([`burn_in`](../crates/rds-domain/src/burn_in.rs)):
+
+* a **Secondary Capture** (`1.2.840.10008.5.1.4.1.1.7`, modality `OT`),
+  `RGB` at 8 bits, Image Type `DERIVED\SECONDARY`, **Burned In Annotation
+  `YES`**, the image's Pixel Spacing, and the image it was made from in the
+  Source Image Sequence; one series per study for all of them;
+* the grey is the image through the window its pane shows it with (the
+  export takes the panes' windows along), mapped as the panes map it; each
+  structure's rings are drawn in its colour with an antialiased stroke a
+  four-hundredth of the image's longer side (1.5 to 6 pixels), and a point
+  of interest is an × of the same stroke.
+
+It is a picture, not data: the contours cannot be read back out of it, which
+is why it goes beside the image and its presentation state, never instead of
+them. Read back here, it lands under *Additional*. The plans the MCP server
+and the workflows build leave it off, so what they write is unchanged.
+
 ## Saving a picture of the views
 
-*File ▸ 💾 Save image* writes what the central area shows as a **PNG** or a
-**JPEG**: one workspace's row on its own, or **All** - every row on screen,
-one above the other. The picture is the row's
+*Save ▸ 💾 Save image* writes what the central area shows as a **PNG** or a
+**JPEG**: one workspace's row on its own, **All** - every row on screen,
+one above the other - or one **pane** (the panes on screen are listed by
+name, a planar pane with the image it shows; *Save ▸ ⛶ Image of one pane*
+opens the dialog on one). The picture is the row's (or the pane's)
 own pixels - the panes as laid out, with their contours, dose wash,
 crosshair, orientation labels, slice counters and 3D surfaces - so what the
 figure shows is what was on the screen. The dialog closes itself before the

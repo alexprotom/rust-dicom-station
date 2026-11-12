@@ -530,10 +530,15 @@ src/
                       clock, the 4D phase volume cache and its budget, the light
                       phase switch that keeps the view, and the Image playback
                       module that carries the settings
-    snapshot.rs       File > Save image: one row of the central area or both,
-                      cut out of egui's screenshot, resampled to the chosen
-                      DPI and written as a PNG (with pHYs) or a JPEG (with
-                      the JFIF density)
+    snapshot.rs       Save > Save image: one row of the central area, all of
+                      them or one pane, cut out of egui's screenshot,
+                      resampled to the chosen DPI and written as a PNG (with
+                      pHYs) or a JPEG (with the JFIF density)
+    save_menu.rs      the Save menu of the menu bar and the data tree's Save
+                      entries (SaveRequest, carried out after the tree is
+                      drawn): Export DICOM with one object ticked
+                      (ExportPlan::select_only), a planar image with its 2D
+                      contours burned in (DICOM or PNG)
     record.rs         saving a run: armed first, it takes the next run that
                       starts and ends after one full cycle. The pane, frame
                       by frame, out of egui's own screenshot, written as an
@@ -559,7 +564,7 @@ src/
     pacs_remote.rs    the PACS window on a paired server: its tree, pull
                       (patients, studies, single series), load, send, sync,
                       upload, the Tasks tab, Add server / pairing
-    pacs_save.rs      Save to the PACS (File menu, a set's tree menu, the
+    pacs_save.rs      Save to the PACS (Save menu, a set's tree menu, the
                       PACS window's Send workspace): the workspace's sets
                       and segmentations as new / in the PACS / not in it,
                       the new ones ticked, saved beside their study; a new
@@ -643,6 +648,10 @@ src/
                     Presentation State, written and read (POLYLINE,
                     INTERPOLATED, CIRCLE, ELLIPSE, POINT; PIXEL and DISPLAY
                     units)                                                       DICOM
+  burn_in.rs        a planar image with its 2D contours drawn into its
+                    pixels (windowed grey, antialiased strokes in the
+                    structures' colours), written as an RGB Secondary
+                    Capture with Burned In Annotation YES                        DICOM
   dicom_export.rs   DICOM writer: the object builders (CT slice, RTSTRUCT with
                     its image reference chain, SEG, RTDOSE, RTPLAN, Deformable
                     and rigid Spatial Registration, RT Image with its

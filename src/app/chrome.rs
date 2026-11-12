@@ -15,6 +15,7 @@ impl ViewerApp {
         let mut open_pacs = false;
         let mut open_export = false;
         let mut save_to_pacs: Option<usize> = None;
+        let mut save_req: Option<save_menu::SaveRequest> = None;
         let mut wf_menu: Option<workflow_edit::WfPending> = None;
         let mut wf_show_editor = false;
         let mut wf_show_run = false;
@@ -94,60 +95,18 @@ impl ViewerApp {
                         });
                     });
                     ui.separator();
-                    // One export for everything that is loaded: which
-                    // patients, studies and series go out is chosen in the
-                    // window, not by which menu entry was clicked.
-                    let anything = self.slots.iter().any(|s| s.study.is_some());
-                    if enabled_tip_button(
-                        ui,
-                        anything,
-                        "💾 Export DICOM",
-                        "Write any patients, studies, series and RT objects of either \
-                         workspace as DICOM - with every name and UID shown and editable, \
-                         structures as RTSTRUCT or SEG, and the references between the \
-                         objects kept intact",
-                    ) {
-                        open_export = true;
-                        ui.close();
-                    }
-                    // Into this station's PACS, beside the study: one line
-                    // per workspace holding something.
-                    ui.add_enabled_ui(!loaded.is_empty(), |ui| {
-                        ui.menu_button("📤 Save to the PACS", |ui| {
-                            for slot in &loaded {
-                                let label = format!(
-                                    "{} · {}",
-                                    SLOT_NAMES[*slot],
-                                    self.workspace_summary(*slot)
-                                );
-                                if ui
-                                    .button(label)
-                                    .on_hover_text(
-                                        "Write this workspace's new structure sets and \
-                                         segmentations into this station's PACS, beside the \
-                                         study they belong to, in the PACS's own folders",
-                                    )
-                                    .clicked()
-                                {
-                                    save_to_pacs = Some(*slot);
-                                    ui.close();
-                                }
-                            }
-                        });
-                    });
-                    ui.separator();
-                    if tip_button(
-                        ui,
-                        "💾 Save image",
-                        "A picture of the views as they are on screen - one workspace's row \
-                         or both - as a PNG or a JPEG, at a chosen resolution",
-                    ) {
-                        open_save_img = true;
-                        ui.close();
-                    }
-                    ui.separator();
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                // Everything that writes something out: DICOM, the PACS, a
+                // picture of the screen, 2D contours. The data tree's
+                // right-click menus save one object the same ways.
+                ui.menu_button("Save", |ui| {
+                    if let Some(r) =
+                        self.save_menu(ui, &mut open_export, &mut open_save_img, &mut save_to_pacs)
+                    {
+                        save_req = Some(r);
                     }
                 });
                 // Switches, like the Modules menu: ticking one leaves the
@@ -568,6 +527,9 @@ impl ViewerApp {
         }
         if open_export {
             self.open_export_dialog();
+        }
+        if let Some(r) = save_req {
+            self.apply_save_request(r);
         }
         if let Some(what) = wf_menu {
             self.wf_replace(what);

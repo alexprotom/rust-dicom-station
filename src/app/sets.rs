@@ -85,6 +85,8 @@ pub(super) enum SetAction {
     },
     /// Open *Save to the PACS* with this series alone ticked.
     SaveToPacs(SetRef),
+    /// Open *Export DICOM* with this series alone ticked.
+    SaveDicom(SetRef),
 }
 
 /// Deferred right-click action on individual structures / segments.
@@ -271,6 +273,14 @@ impl ViewerApp {
                     set.idx,
                 )),
             ),
+            SetAction::SaveDicom(set) => self.open_export_only(crate::export::Pick::Object {
+                slot: set.slot,
+                kind: match set.kind {
+                    SetKind::Structures => crate::export::ObjKind::Structures,
+                    SetKind::Segmentations => crate::export::ObjKind::Segmentation,
+                },
+                index: set.idx,
+            }),
         }
     }
 

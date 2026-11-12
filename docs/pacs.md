@@ -361,7 +361,7 @@ What is made on a study of the PACS - a structure set drawn or filled by a
 model, a segmentation painted - is saved into the PACS itself, beside the
 study, through **Save to the PACS**. Three ways open it:
 
-* **File ▶ 📤 Save to the PACS ▶** a workspace;
+* **Save ▶ 📤 Save to the PACS ▶** a workspace;
 * **📤 Save to the PACS** in the menu of a structure set or segmentation row
   of the data tree (that one alone ticked);
 * **📤 Send workspace A / B** in this window.
