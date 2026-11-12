@@ -39,6 +39,7 @@
 
 pub mod catalog;
 pub mod fourd;
+pub mod save;
 pub mod tags;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -941,6 +942,57 @@ impl Archive {
         })
     }
 
+    /// The folder a study's new objects go into, in the PACS's own layout:
+    /// the folder holding the study's files (their nearest common folder),
+    /// in the storage folder holding most of them - a cohort folder of a
+    /// second storage folder as well as the main one. `None` when the PACS
+    /// holds nothing of the study.
+    pub fn study_home(&self, study_uid: &str) -> Option<PathBuf> {
+        let c = self.cat();
+        let map = self.storage_map(&c);
+        self.study_home_in(&c, &map, study_uid)
+    }
+
+    fn study_home_in(
+        &self,
+        c: &Catalog,
+        map: &HashMap<u32, usize>,
+        study_uid: &str,
+    ) -> Option<PathBuf> {
+        let mut by_root: BTreeMap<usize, Vec<PathBuf>> = BTreeMap::new();
+        for s in c.series.values().filter(|s| s.study == study_uid) {
+            for f in &s.files {
+                if let Some(&r) = map.get(&f.0) {
+                    by_root
+                        .entry(r)
+                        .or_default()
+                        .push(catalog::abs_of(&self.roots[r], &f.1));
+                }
+            }
+        }
+        // Most files first; a tie goes to the folder listed first.
+        let (_, files) = by_root
+            .into_iter()
+            .max_by_key(|(r, v)| (v.len(), std::cmp::Reverse(*r)))?;
+        Some(common_dir(files.iter().map(PathBuf::as_path)))
+    }
+
+    /// Which of `sops` (SOP Instance UIDs) the PACS holds in its folders.
+    pub fn held_sops<'a>(&self, sops: impl IntoIterator<Item = &'a str>) -> HashSet<String> {
+        let want: HashSet<&str> = sops.into_iter().collect();
+        if want.is_empty() {
+            return HashSet::new();
+        }
+        let c = self.cat();
+        let map = self.storage_map(&c);
+        c.series
+            .values()
+            .flat_map(|s| s.files.iter())
+            .filter(|f| map.contains_key(&f.0) && want.contains(f.4.as_str()))
+            .map(|f| f.4.clone())
+            .collect()
+    }
+
     /// Where the main folder files a study it does not hold yet.
     fn new_study_dir(&self, patient: &str, study_uid: &str) -> PathBuf {
         self.root()
@@ -991,6 +1043,7 @@ impl Archive {
             homes: HashMap::new(),
             filed: Vec::new(),
             take_files: false,
+            beside_study: false,
         }
     }
 
@@ -1497,6 +1550,7 @@ pub struct Importer<'a> {
     /// What the catalog has to learn at the end.
     filed: Vec<(Head, PathBuf, u64)>,
     take_files: bool,
+    beside_study: bool,
 }
 
 impl Importer<'_> {
@@ -1506,6 +1560,24 @@ impl Importer<'_> {
     pub fn taking_files(mut self) -> Self {
         self.take_files = true;
         self
+    }
+
+    /// File the new files of a study the PACS holds beside its files in
+    /// whichever storage folder holds them ([`Archive::study_home`]), not
+    /// only in the main one: objects made on a study of the PACS, saved
+    /// into its own layout (a cohort folder of a second storage folder
+    /// included). A study it does not hold still goes to the main folder.
+    pub fn beside_the_study(mut self) -> Self {
+        self.beside_study = true;
+        self
+    }
+
+    /// Where each file filed so far went, by SOP Instance UID.
+    pub fn filed_paths(&self) -> HashMap<String, PathBuf> {
+        self.filed
+            .iter()
+            .map(|(h, p, _)| (h.sop.clone(), p.clone()))
+            .collect()
     }
 
     /// File every DICOM file under `src`. Returns what happened and the
@@ -1619,6 +1691,12 @@ impl Importer<'_> {
         if let Some(home) = self.homes.get(&h.study) {
             return home.clone();
         }
+        if self.beside_study {
+            if let Some(home) = self.archive.study_home_in(&self.cat, &self.map, &h.study) {
+                self.homes.insert(h.study.clone(), home.clone());
+                return home;
+            }
+        }
         let main_files: Vec<PathBuf> = self
             .cat
             .series
@@ -1644,13 +1722,20 @@ impl Importer<'_> {
             return Ok(());
         }
         let main = self.archive.root().to_path_buf();
+        let roots = self.archive.roots.clone();
         let filed = self.filed;
-        catalog::update(&main.clone(), move |c| {
-            let r = storage_index(c, &main);
+        catalog::update(&main, move |c| {
             for (h, dest, bytes) in &filed {
-                let Some(rel) = catalog::rel_of(&main, dest) else {
+                // The storage folder the file lies in: the nearest, should
+                // one be inside another.
+                let Some((root, rel)) = roots
+                    .iter()
+                    .filter_map(|r| catalog::rel_of(r, dest).map(|rel| (r, rel)))
+                    .min_by_key(|(_, rel)| rel.len())
+                else {
                     continue;
                 };
+                let r = storage_index(c, root);
                 // Put back into the catalog what it lists already (two
                 // imports filing the same file) only once.
                 if c.series

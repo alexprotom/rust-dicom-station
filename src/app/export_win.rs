@@ -28,10 +28,26 @@ impl ViewerApp {
             return;
         };
         let params = dicom_export::ExportParams::for_study(first);
-        self.export_plan = Some(ExportPlan::build(studies, params));
+        let mut plan = ExportPlan::build(studies, params);
+        // 2D contours go out burned into copies of their images too: many
+        // viewers draw no presentation state, and the copy is what they show.
+        plan.burn_in_contours = true;
+        // The windows the panes show the planar images with.
+        for slot in 0..MAX_WORKSPACES {
+            let Some(study) = self.slots[slot].study.as_ref() else {
+                continue;
+            };
+            for (i, img) in study.planar_images.iter().enumerate() {
+                if let Some(wl) = self.planar_shown_window(slot, i) {
+                    plan.planar_windows.insert(img.sop_instance_uid.clone(), wl);
+                }
+            }
+        }
+        self.export_plan = Some(plan);
         self.export_result = None;
         self.export_warnings.clear();
         self.export_open = true;
+        self.raise_window("export");
     }
 
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
@@ -201,6 +217,22 @@ fn run_options(ui: &mut egui::Ui, plan: &mut ExportPlan) {
                  data survive.\nOn: the images are written afresh from the loaded volume - \
                  needed only when the voxels themselves were changed.",
             );
+        let planar = plan.studies().any(|st| {
+            st.objects
+                .iter()
+                .any(|o| o.kind == ObjKind::PlanarStructures)
+        });
+        if planar {
+            ui.separator();
+            ui.checkbox(&mut plan.burn_in_contours, "2D contours also burned in")
+                .on_hover_text(
+                    "On: beside every planar image that goes out with 2D contours on it (of a \
+                     ticked planar structure set), a copy with the contours drawn into its \
+                     pixels, as a Secondary Capture - what a viewer that draws no \
+                     presentation state shows. The contours still go out as a presentation \
+                     state, which keeps them editable.",
+                );
+        }
     });
 }
 
@@ -215,10 +247,11 @@ fn tri_checkbox(ui: &mut egui::Ui, state: Option<bool>) -> Option<bool> {
             ui.checkbox(&mut on, "")
         })
         .inner
-        .on_hover_text("Part of this is selected")
+        .tip("Part of this is selected")
     } else {
         ui.checkbox(&mut on, "")
-    };
+    }
+    .named("Select all of this");
     if resp.changed() {
         // From partly selected, the first click selects the rest.
         return Some(if state.is_none() { true } else { on });
@@ -401,7 +434,8 @@ fn series_node(ui: &mut egui::Ui, s: &mut SeriesNode) {
     };
     state
         .show_header(ui, |ui| {
-            ui.checkbox(&mut s.selected, "");
+            ui.checkbox(&mut s.selected, "")
+                .named_with(|| format!("Export {title}"));
             ui.label(title);
             ui.weak(detail);
         })
@@ -427,7 +461,8 @@ fn object_node(ui: &mut egui::Ui, o: &mut ObjNode, formats: &mut bool) {
     let structures = o.kind.is_structures();
     state
         .show_header(ui, |ui| {
-            ui.checkbox(&mut o.selected, "");
+            ui.checkbox(&mut o.selected, "")
+                .named_with(|| format!("Export {title}"));
             ui.label(title);
             ui.weak(detail);
             if structures {
@@ -512,7 +547,12 @@ fn common_tags(ui: &mut egui::Ui, plan: &mut ExportPlan) {
                                     .desired_width(NAME_W)
                                     .hint_text("(empty)"),
                             );
-                            if f.value != f.suggested && ui.small_button("↺").clicked() {
+                            if f.value != f.suggested
+                                && ui
+                                    .small_button("↺")
+                                    .named("Back to the suggested value")
+                                    .clicked()
+                            {
                                 f.value = f.suggested.clone();
                             }
                         });
@@ -586,7 +626,7 @@ fn revert_button(ui: &mut egui::Ui, f: &mut Field) {
     if f.value != f.original
         && ui
             .add(egui::Button::new("↺").small())
-            .on_hover_text(format!(
+            .tip(format!(
                 "Back to what the data says: “{}”",
                 if f.original.is_empty() {
                     "(empty)"

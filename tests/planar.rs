@@ -1211,6 +1211,82 @@ fn a_study_export_carries_its_drr_and_the_contours_on_it() {
     }
 }
 
+#[test]
+fn one_planar_image_goes_out_with_its_contours_and_a_burned_in_copy() {
+    use rust_dicom_station::dicom_export::ExportParams;
+    use rust_dicom_station::export::{self, ExportPlan, ObjKind, Pick};
+    let mut study = LoadedStudy::default();
+    let img = drr_like("1.2.826.0.8.11", "1.2.826.0.8.10");
+    let other = drr_like("1.2.826.0.8.12", "1.2.826.0.8.10");
+    study.planar_images.push(img.clone());
+    study.planar_images.push(other);
+    let mut set = PlanarStructureSet::new("Burned", "", "projected");
+    set.structure_entry("PTV", Some([230, 60, 60]))
+        .contour_entry(&img.sop_instance_uid)
+        .region = Region::from_ring(square([30.0, 20.0], 6.0));
+    set.refresh_images();
+    study.planar_structs.push(set);
+
+    let mut plan = ExportPlan::build(export::one_study(&study), ExportParams::for_study(&study));
+    assert!(
+        !plan.burn_in_contours,
+        "a plan built without the window writes what it always wrote"
+    );
+    plan.burn_in_contours = true;
+    // The image with contours on its own: the set drawn on it goes with it,
+    // the other image does not.
+    let one = Pick::Object {
+        slot: 0,
+        kind: ObjKind::Planar,
+        index: 0,
+    };
+    assert!(plan.select_only(&one, &export::one_study(&study)));
+    let picked: Vec<(ObjKind, usize)> = plan
+        .studies()
+        .flat_map(|s| s.objects.iter().filter(|o| o.selected))
+        .map(|o| (o.kind, o.index))
+        .collect();
+    assert_eq!(
+        picked,
+        vec![(ObjKind::Planar, 0), (ObjKind::PlanarStructures, 0)]
+    );
+    // Something the plan does not hold leaves it as it was.
+    let none = Pick::Series { slot: 0, index: 7 };
+    assert!(!plan.select_only(&none, &export::one_study(&study)));
+
+    let dir = scratch("burn_in");
+    let p = rust_dicom_station::progress::Progress::default();
+    let sum = export::run(&plan, export::one_study(&study), &dir, &p).unwrap();
+    assert_eq!(
+        sum.files, 3,
+        "the image, its presentation state and the burned-in copy: {:?}",
+        sum.warnings
+    );
+    let back = rust_dicom_station::loader::load_directory(&dir, &p).unwrap();
+    let copy = back
+        .planar_images
+        .iter()
+        .find(|p| p.sop_class_uid == rust_dicom_station::sop::SOP_SECONDARY_CAPTURE)
+        .expect("the burned-in copy");
+    assert_eq!(
+        copy.kind,
+        rust_dicom_station::extras::PlanarKind::Additional
+    );
+    assert_eq!((copy.cols, copy.rows), (img.cols, img.rows));
+    let rgb = copy.rgb.as_ref().expect("in colour");
+    let at = |x: usize, y: usize| {
+        let i = (y * img.cols + x) * 3;
+        [rgb[i], rgb[i + 1], rgb[i + 2]]
+    };
+    // The top edge of the square, in the structure's colour; its middle as
+    // the image was.
+    assert_eq!(at(30, 14), [230, 60, 60]);
+    let mid = at(30, 20);
+    assert!(mid[0] == mid[1] && mid[1] == mid[2], "{mid:?}");
+    assert_eq!(back.planar_structs.len(), 1, "the contours as a state too");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // ---------------------------------------------------------------------------
 // Undo, removals, and a planar setup refined in 3D
 // ---------------------------------------------------------------------------

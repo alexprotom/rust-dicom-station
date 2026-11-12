@@ -392,7 +392,7 @@ impl PacsWindow {
     /// Take a new tree, keeping what is unfolded and selected where those
     /// rows are still there, and what is picked in the list beside 🔍 where
     /// the new tree still offers it.
-    fn set_tree(&mut self, tree: Tree) {
+    pub(super) fn set_tree(&mut self, tree: Tree) {
         self.facets = facets(&tree);
         let offered: BTreeSet<&Facet> = self.facets.iter().map(|(f, _)| f).collect();
         self.study_filter.picked.retain(|f| offered.contains(f));
@@ -423,8 +423,6 @@ pub(super) enum PacsOutcome {
     /// The catalog as it was: the folders not walked.
     Listed(Tree),
     Imported(ImportSummary, Tree),
-    /// Objects written back into the PACS: how many, and where.
-    Uploaded(usize, String, Tree),
     /// A name, a cohort, a move or a removal: what was done, and the PACS
     /// as it is now.
     Changed(String, Tree),
@@ -625,6 +623,7 @@ enum Act {
 
 impl ViewerApp {
     pub(super) fn open_pacs_window(&mut self) {
+        self.raise_window("pacs");
         if self.pacs.is_none() {
             let servers = self.reload_servers();
             self.pacs = Some(PacsWindow::new(servers));
@@ -676,47 +675,6 @@ impl ViewerApp {
         });
     }
 
-    /// Write the structure sets and segmentation series of a workspace back
-    /// into the PACS.
-    ///
-    /// They are written to a scratch folder first and then imported, so the
-    /// filing rule lives in exactly one place - the archive - and an upload
-    /// that fails half way leaves the PACS untouched rather than
-    /// half-written.
-    fn start_pacs_upload(&mut self, slot: usize) {
-        let Some(study) = self.slots[slot].study.as_ref() else {
-            self.error = Some(format!("workspace {} is not loaded", SLOT_NAMES[slot]));
-            return;
-        };
-        let derived = study.structure_sets.iter().any(|ss| !ss.rois.is_empty())
-            || study
-                .seg_series
-                .iter()
-                .any(|sr| sr.segs.iter().any(|s| s.count > 0));
-        if !derived {
-            self.error = Some(format!(
-                "workspace {} has no structure sets or segmentations to send",
-                SLOT_NAMES[slot]
-            ));
-            return;
-        }
-        let study = study.clone();
-        let params = dicom_export::ExportParams::for_study(&study);
-        let scratch = std::env::temp_dir().join(format!(
-            "rds_upload_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
-        ));
-        self.pacs_job_with("Writing the derived objects", move |a, p| {
-            let n = dicom_export::export_derived(&study, &scratch, &params, p)?;
-            let sum = a.import(&scratch, p);
-            let _ = std::fs::remove_dir_all(&scratch);
-            Ok(PacsOutcome::Uploaded(n, sum?.describe(), a.tree()))
-        });
-    }
-
     /// A PACS job finished.
     pub(super) fn on_pacs_done(&mut self, outcome: PacsOutcome) {
         let Some(w) = &mut self.pacs else {
@@ -743,10 +701,6 @@ impl ViewerApp {
             }
             PacsOutcome::Imported(sum, tree) => {
                 w.status = Some(format!("✔ imported: {}", sum.describe()));
-                w.set_tree(tree);
-            }
-            PacsOutcome::Uploaded(n, filed, tree) => {
-                w.status = Some(format!("✔ {n} object(s) sent - {filed}"));
                 w.set_tree(tree);
             }
             PacsOutcome::Changed(msg, tree) => {
@@ -1022,7 +976,7 @@ impl ViewerApp {
                     app.start_pacs_import(dir);
                 });
             }
-            Act::Send(slot) => self.start_pacs_upload(slot),
+            Act::Send(slot) => self.open_pacs_save(slot, None),
             Act::Load(slot) => {
                 let picks: Vec<Pick> = match &self.pacs {
                     Some(w) => pacs_tree::series_ids(&w.nodes, &w.view.tops())
@@ -1549,10 +1503,10 @@ fn local_body(
                     egui::Button::new(format!("📤 Send workspace {}", SLOT_NAMES[slot])),
                 )
                 .on_hover_text(
-                    "Write this workspace's structure sets and segmentation series back \
-                     into the PACS, attached to the study they belong to (new SOP Instance \
-                     UIDs, original Study and Frame of Reference UIDs). Images are never \
-                     re-sent.",
+                    "Choose which of this workspace's structure sets and segmentation \
+                     series to write into the PACS, beside the study they belong to (new \
+                     SOP Instance UIDs, original Study and Frame of Reference UIDs). What \
+                     the PACS holds already is not ticked; images are never re-sent.",
                 )
                 .clicked()
             {

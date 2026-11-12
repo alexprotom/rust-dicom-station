@@ -2099,7 +2099,8 @@ impl ViewerApp {
                 for (i, (name, color, cm3)) in entries.iter().enumerate() {
                     ui.horizontal(|ui| {
                         if let Some(on) = d.ticked.get_mut(i) {
-                            ui.checkbox(on, "");
+                            ui.checkbox(on, "")
+                                .named_with(|| format!("Propagate {name}"));
                         }
                         // The swatch is the colour the *copy* will
                         // land in, which starts as the source's. The
@@ -2108,7 +2109,7 @@ impl ViewerApp {
                         // apart on the destination image.
                         let chosen = d.colors.get(i).copied().flatten();
                         let mut shown = chosen.unwrap_or(*color);
-                        if color_swatch(ui, &mut shown) {
+                        if color_swatch(ui, &mut shown, name) {
                             if let Some(slot) = d.colors.get_mut(i) {
                                 *slot = Some(shown);
                             }
@@ -2278,7 +2279,7 @@ impl ViewerApp {
                                         .map(|(_, c, _)| *c)
                                         .unwrap_or([255, 255, 255]);
                                     let mut shown = d.anchor_color.unwrap_or(own);
-                                    if color_swatch(ui, &mut shown) {
+                                    if color_swatch(ui, &mut shown, "the anchor's copies") {
                                         d.anchor_color = Some(shown);
                                     }
                                     if d.anchor_color.is_some()

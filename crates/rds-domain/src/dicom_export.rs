@@ -8,7 +8,7 @@
 //! standard tooling such as pydicom; they are QA/research exports, not
 //! guaranteed-complete clinical IODs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1388,27 +1388,58 @@ pub fn export_derived(
     params: &ExportParams,
     progress: &Progress,
 ) -> Result<usize> {
+    export_derived_some(study, dir, params, progress, &|_, _| true).map(|v| v.len())
+}
+
+/// Which of a study's derived objects: a structure set or a segmentation
+/// series, by its place in `study.structure_sets` / `study.seg_series`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DerivedKind {
+    StructureSet,
+    Segmentation,
+}
+
+/// One file [`export_derived_some`] wrote, and the object it holds.
+#[derive(Clone, Debug)]
+pub struct DerivedFile {
+    pub kind: DerivedKind,
+    pub index: usize,
+    pub path: PathBuf,
+}
+
+/// The study a derived object belongs to: its own Study Instance UID where
+/// it says so, else that of the image series it references, else that of
+/// the workspace's first series.
+pub fn derived_study_uid(study: &LoadedStudy, own: &str, referenced: &str) -> String {
+    if !own.is_empty() {
+        return own.to_string();
+    }
+    study
+        .series
+        .iter()
+        .find(|se| se.uid == referenced)
+        .map(|se| se.study_uid.clone())
+        .or_else(|| study.series.first().map(|se| se.study_uid.clone()))
+        .unwrap_or_default()
+}
+
+/// [`export_derived`] for the objects `keep` names, empty ones left out
+/// all the same; returns the files written, each with its object.
+pub fn export_derived_some(
+    study: &LoadedStudy,
+    dir: &Path,
+    params: &ExportParams,
+    progress: &Progress,
+    keep: &dyn Fn(DerivedKind, usize) -> bool,
+) -> Result<Vec<DerivedFile>> {
     std::fs::create_dir_all(dir).with_context(|| format!("create directory {}", dir.display()))?;
     let (today_date, today_time) = today();
     let vol_for = study.volume.frame_of_reference_uid.clone();
-    // The study an object belongs to, from the object itself where it says
-    // so and from the series it references otherwise.
-    let study_of = |own: &str, referenced: &str| -> String {
-        if !own.is_empty() {
-            return own.to_string();
-        }
-        study
-            .series
-            .iter()
-            .find(|se| se.uid == referenced)
-            .map(|se| se.study_uid.clone())
-            .or_else(|| study.series.first().map(|se| se.study_uid.clone()))
-            .unwrap_or_default()
-    };
-    let mut n_files = 0usize;
+    let study_of = |own: &str, referenced: &str| derived_study_uid(study, own, referenced);
+    let mut written = Vec::new();
 
     for (si, ss) in study.structure_sets.iter().enumerate() {
-        if ss.rois.is_empty() {
+        if ss.rois.is_empty() || !keep(DerivedKind::StructureSet, si) {
             continue;
         }
         progress.set(format!(
@@ -1435,12 +1466,17 @@ pub fn export_derived(
             ..ImageRef::default()
         };
         let o = build_rtstruct(ss, &ctx, 2 + si as i64, &new_uid(), &image);
-        write_object(o, SOP_RTSTRUCT, &dir.join(format!("RS_derived_{si}.dcm")))?;
-        n_files += 1;
+        let path = dir.join(format!("RS_derived_{si}.dcm"));
+        write_object(o, SOP_RTSTRUCT, &path)?;
+        written.push(DerivedFile {
+            kind: DerivedKind::StructureSet,
+            index: si,
+            path,
+        });
     }
 
     for (gi, ser) in study.seg_series.iter().enumerate() {
-        if ser.segs.iter().all(|s| s.count == 0) {
+        if ser.segs.iter().all(|s| s.count == 0) || !keep(DerivedKind::Segmentation, gi) {
             continue;
         }
         progress.set(format!("Writing SEG {}/{}", gi + 1, study.seg_series.len()));
@@ -1463,10 +1499,15 @@ pub fn export_derived(
             image_sop_uids: &[],
             params,
         };
-        dicomseg::write(ser, &seg_ctx, &dir.join(format!("SEG_derived_{gi}.dcm")))?;
-        n_files += 1;
+        let path = dir.join(format!("SEG_derived_{gi}.dcm"));
+        dicomseg::write(ser, &seg_ctx, &path)?;
+        written.push(DerivedFile {
+            kind: DerivedKind::Segmentation,
+            index: gi,
+            path,
+        });
     }
-    Ok(n_files)
+    Ok(written)
 }
 
 // ---------------------------------------------------------------------------

@@ -1082,3 +1082,114 @@ fn one_code_given_to_two_people_in_two_cohorts_is_found() {
         ]
     );
 }
+
+/// A segmentation drawn on a study kept in a cohort folder of a second
+/// storage folder is saved into that folder, beside the study, not into
+/// the main one; the catalog learns it, and what the PACS holds already
+/// is told by its SOP Instance UID.
+#[test]
+fn a_new_segmentation_is_saved_beside_its_study_in_the_pacs_layout() {
+    use rust_dicom_station::archive::save::save_derived;
+    use rust_dicom_station::dicom_export::DerivedKind;
+
+    let main = scratch("test_archive_save_main");
+    let second = scratch("test_archive_save_second");
+    let study_dir = second.join("Trial A").join("PHANTOM");
+    gen_test_data::generate(&study_dir, &GenParams::default(), &Progress::default())
+        .expect("test data generation succeeds");
+    std::fs::create_dir_all(&main).unwrap();
+    let archive = Archive::with_roots(vec![main.clone(), second.clone()]);
+    archive
+        .refresh(&Progress::default())
+        .expect("scan succeeds");
+
+    let mut study =
+        loader::load_directory(&study_dir, &Progress::default()).expect("the study loads");
+    let study_uid = study.series[study.active_series].study_uid.clone();
+    let home = archive
+        .study_home(&study_uid)
+        .expect("the PACS holds the study");
+    assert!(
+        home.starts_with(&study_dir),
+        "the study's own folder: {home:?}"
+    );
+    assert!(archive.study_home("1.2.3.4.5.404").is_none());
+
+    // What came from the PACS is known as such.
+    let loaded: Vec<&str> = study
+        .structure_sets
+        .iter()
+        .map(|s| s.sop_instance_uid.as_str())
+        .collect();
+    assert!(!loaded.is_empty());
+    assert_eq!(
+        archive.held_sops(loaded.iter().copied()).len(),
+        loaded.len()
+    );
+
+    let dims = study.volume.dims;
+    let mut ser = SegSeries::new(
+        "Saved here".into(),
+        study.volume.grid(),
+        study.series[study.active_series].uid.clone(),
+        study_uid.clone(),
+    );
+    ser.segs.push(Segmentation::from_mask(
+        "Ball".into(),
+        [40, 200, 40],
+        dims,
+        ball(dims, 6.0),
+    ));
+    study.seg_series.push(ser);
+    let new_seg = study.seg_series.len() - 1;
+    let before = archive.tree().studies();
+
+    let params = ExportParams::for_study(&study);
+    let saved = save_derived(&archive, &study, &params, &Progress::default(), &|k, i| {
+        k == DerivedKind::Segmentation && i == new_seg
+    })
+    .expect("the save succeeds");
+    assert_eq!(saved.summary.stored, 1, "the new series only");
+    assert_eq!(saved.objects.len(), 1);
+    let o = &saved.objects[0];
+    assert_eq!((o.kind, o.index), (DerivedKind::Segmentation, new_seg));
+    assert_eq!(o.path.parent(), Some(home.as_path()), "beside the study");
+    assert!(o.path.is_file());
+    // The main folder holds the catalog and nothing else.
+    fn dicoms(d: &std::path::Path) -> usize {
+        std::fs::read_dir(d)
+            .map(|es| {
+                es.flatten()
+                    .map(|e| {
+                        let p = e.path();
+                        if p.is_dir() {
+                            dicoms(&p)
+                        } else {
+                            usize::from(p.extension().is_some_and(|x| x == "dcm"))
+                        }
+                    })
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+    assert_eq!(dicoms(&main), 0, "nothing filed into the main folder");
+
+    // The catalog knows it: the same study, one modality more.
+    let tree = archive.tree();
+    assert_eq!(tree.studies(), before, "no new study");
+    let st = tree
+        .cohorts
+        .iter()
+        .flat_map(|c| c.patients.iter())
+        .flat_map(|p| p.studies.iter())
+        .find(|s| s.study_uid == study_uid)
+        .expect("the study is listed");
+    assert!(
+        st.modalities.iter().any(|m| m == "SEG"),
+        "{:?}",
+        st.modalities
+    );
+    assert!(archive
+        .held_sops([o.sop_instance_uid.as_str()])
+        .contains(&o.sop_instance_uid));
+}

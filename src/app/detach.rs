@@ -20,6 +20,11 @@
 //!   that opens the window; after that the window belongs to the user.
 //! * **Titles follow one pattern**, [`window_title`]: `Rust DICOM Station:`
 //!   and the tool's name, so a task bar full of them reads as one program.
+//! * **Opening an open window brings it to the front.** The button that
+//!   opens a tool also calls [`ViewerApp::raise_window`](super::ViewerApp::raise_window)
+//!   with its id; a window that is already there, hidden behind the main
+//!   one or minimized, is restored and focused instead of staying where
+//!   the user cannot see it. A window being created gets the focus anyway.
 //!
 //! If a backend cannot make native windows at all - Android is one, with
 //! its single window per process - the tool is drawn as an [`egui::Window`]
@@ -37,6 +42,10 @@ const SEEN: &str = "tool_window_last_pass";
 /// egui-memory key prefix of the *Keep on top* switch of one window. It
 /// starts off every time a window opens and is not part of the settings.
 const ON_TOP: &str = "tool_window_on_top";
+/// egui-memory key prefix of a request to bring one window to the front,
+/// set by [`raise_window`](super::ViewerApp::raise_window) and taken by the
+/// window's next draw.
+const RAISE: &str = "tool_window_raise";
 
 /// A window with no height of its own opens this tall.
 const DEFAULT_TALL: f32 = 620.0;
@@ -100,6 +109,31 @@ fn geometry(ctx: &egui::Context, id: &str) -> Geometry {
 
 fn set_geometry(ctx: &egui::Context, id: &str, g: Geometry) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new((GEOM, id)), g));
+}
+
+impl super::ViewerApp {
+    /// Bring the tool window `id` (the id it passes to [`tool_window`]) to
+    /// the front on its next draw. Called next to whatever opens it, so a
+    /// click on a button whose window is already open shows that window
+    /// rather than doing nothing visible. Harmless for a window that is shut
+    /// or being created.
+    pub(super) fn raise_window(&mut self, id: &'static str) {
+        self.raise_windows.push(id);
+    }
+
+    /// Hand the pending [`raise_window`](Self::raise_window) requests to
+    /// the windows; once a pass, before they are drawn.
+    pub(super) fn pass_raise_requests(&mut self, ctx: &egui::Context) {
+        for id in self.raise_windows.drain(..) {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new((RAISE, id)), true));
+        }
+    }
+}
+
+/// Whether the window `id` was asked to come to the front, clearing the ask.
+fn take_raise(ctx: &egui::Context, id: &str) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::new((RAISE, id))))
+        .unwrap_or(false)
 }
 
 /// The title of every window of this application: the program, then what
@@ -175,6 +209,9 @@ fn tool_window_body(
     if fresh {
         ctx.data_mut(|d| d.insert_temp(on_top_key, false));
     }
+    // Taken either way, so an ask made while the window is being created
+    // does not linger; a new window is focused by the system already.
+    let raise = take_raise(ctx, id) && !fresh;
 
     let mut builder = egui::ViewportBuilder::default().with_title(&title);
     if fresh {
@@ -204,6 +241,14 @@ fn tool_window_body(
         egui::ViewportId::from_hash_of(("tool_window", id)),
         builder,
         |ui, _class| {
+            if raise {
+                // Restored first: a minimized window cannot take the focus.
+                if ui.ctx().input(|i| i.viewport().minimized == Some(true)) {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                }
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
             // *Keep on top*: the window stays over the main one (and every
             // other) while the switch is on. The switch is per window, off
             // when the window opens, and never written to the settings.
@@ -291,8 +336,13 @@ fn embedded_window(
             DEFAULT_TALL
         },
     ];
+    let win_id = egui::Id::new(("tool_window", id));
+    if take_raise(ctx, id) {
+        // An `egui::Window` lives on the middle layer under its own id.
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, win_id));
+    }
     egui::Window::new(title)
-        .id(egui::Id::new(("tool_window", id)))
+        .id(win_id)
         .open(open)
         .collapsible(false)
         .resizable(true)

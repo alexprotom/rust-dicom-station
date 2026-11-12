@@ -317,13 +317,16 @@ impl ViewerApp {
 
         if generate {
             self.gen_open = true;
+            self.raise_window("generator");
         }
         if download {
             self.testdata_open = true;
+            self.raise_window("testdata");
         }
 
         if anonymize {
             self.anon_open = true;
+            self.raise_window("anonymize");
         }
     }
 }

@@ -350,6 +350,7 @@ impl ViewerApp {
         if let Some(e) = &mut self.wf_editor {
             e.open = true;
         }
+        self.raise_window("workflow_editor");
     }
 
     /// Pick a workflow file for the section.
@@ -848,6 +849,7 @@ impl ViewerApp {
                 if let Some(e) = &mut self.wf_editor {
                     e.open = true;
                 }
+                self.raise_window("workflow_editor");
             }
             None => {}
         }
@@ -959,11 +961,7 @@ fn setup_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunActio
                         .hint_text("a DICOM folder")
                         .desired_width(330.0),
                 );
-                if ui
-                    .small_button("📂")
-                    .on_hover_text("Choose the folder")
-                    .clicked()
-                {
+                if ui.small_button("📂").tip("Choose the folder").clicked() {
                     actions.push(RunAction::BrowseInput(k));
                 }
             });
@@ -973,11 +971,7 @@ fn setup_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunActio
             "The run makes a folder of its own here, named after the workflow and the time",
             |ui| {
                 ui.add(egui::TextEdit::singleline(&mut run.out_root).desired_width(330.0));
-                if ui
-                    .small_button("📂")
-                    .on_hover_text("Choose the folder")
-                    .clicked()
-                {
+                if ui.small_button("📂").tip("Choose the folder").clicked() {
                     actions.push(RunAction::BrowseRoot);
                 }
             },
@@ -1277,7 +1271,7 @@ fn finished_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunAc
         ui.monospace(out.run_dir.display().to_string());
         if ui
             .small_button("📋")
-            .on_hover_text("Copy the folder's path")
+            .tip("Copy the folder's path")
             .clicked()
         {
             ui.ctx().copy_text(out.run_dir.display().to_string());

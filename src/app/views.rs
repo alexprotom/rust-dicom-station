@@ -427,14 +427,14 @@ impl ViewerApp {
                     let can_right = at.is_some() && i + 1 < row.len();
                     if ui
                         .add_enabled(can_left, egui::Button::new("◀").small())
-                        .on_hover_text("Move this pane one place left in the row")
+                        .tip("Move this pane one place left in the row")
                         .clicked()
                     {
                         shift = Some((slot, i, false));
                     }
                     if ui
                         .add_enabled(can_right, egui::Button::new("▶").small())
-                        .on_hover_text("Move this pane one place right in the row")
+                        .tip("Move this pane one place right in the row")
                         .clicked()
                     {
                         shift = Some((slot, i, true));
@@ -554,10 +554,15 @@ impl ViewerApp {
             // would leave it a stub in the corner of a wide view.
             let saved = ui.spacing().slider_width;
             ui.spacing_mut().slider_width = slider_rect.width();
-            let resp = ui.put(
-                slider_rect,
-                egui::Slider::new(&mut slice, 0..=max_slice).show_value(false),
-            );
+            let resp = ui
+                .put(
+                    slider_rect,
+                    egui::Slider::new(&mut slice, 0..=max_slice).show_value(false),
+                )
+                .named_with(|| {
+                    let plane = self.slots[slot].views[idx].plane;
+                    format!("{} slice", plane.title())
+                });
             ui.spacing_mut().slider_width = saved;
             if resp.changed() {
                 self.slots[slot].views[idx].slice = slice;
@@ -1607,18 +1612,28 @@ impl ViewerApp {
                 max_rect,
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
-            .on_hover_text(if is_max {
+            .tip(if is_max {
                 "Restore the multi-view layout"
             } else {
                 "Maximize this view to the whole window"
+            })
+            // Three panes carry this button: which one is in the name.
+            .named_with(|| {
+                let what = if is_max {
+                    "Restore the row from"
+                } else {
+                    "Maximize"
+                };
+                format!("{what} {}", plane.title())
             });
-        let close_resp = Self::close_button(ui, close_rect);
+        let close_resp =
+            Self::close_button(ui, close_rect).named_with(|| format!("Close {}", plane.title()));
         let fold_resp = ui
             .put(
                 fold_rect,
                 egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
-            .on_hover_text(if folded {
+            .tip(if folded {
                 "Show the buttons of this bar: play, zoom, the hand and reset. One \
                  switch for every pane, and it is remembered between runs."
             } else {
@@ -1635,13 +1650,10 @@ impl ViewerApp {
         let mut clicked_detach = false;
         if !folded {
             clicked_detach = self.detach_button(ui, detach_rect, slot, PaneKind::Plane(plane));
-            fit_resp = Some(
-                ui.put(fit_rect, egui::Button::new("⟲").small())
-                    .on_hover_text(
-                        "Reset this view: fit zoom, clear pan and put the crosshair back \
+            fit_resp = Some(ui.put(fit_rect, egui::Button::new("⟲").small()).tip(
+                "Reset this view: fit zoom, clear pan and put the crosshair back \
                          at the volume center",
-                    ),
-            );
+            ));
             hand_resp = Some(
                 ui.put(
                     hand_rect,
@@ -1649,7 +1661,7 @@ impl ViewerApp {
                         .frame_when_inactive(true)
                         .small(),
                 )
-                .on_hover_text(
+                .tip(
                     "Move the image: while this is on, dragging with the left button \
                      slides the image instead of placing the crosshair. Off, a middle \
                      drag still moves it. The switch is shared by every view.",
@@ -1657,11 +1669,11 @@ impl ViewerApp {
             );
             zout_resp = Some(
                 ui.put(zout_rect, egui::Button::new("➖").small())
-                    .on_hover_text("Zoom out, about the middle of the view"),
+                    .tip("Zoom out, about the middle of the view"),
             );
             zin_resp = Some(
                 ui.put(zin_rect, egui::Button::new("➕").small())
-                    .on_hover_text("Zoom in, about the middle of the view"),
+                    .tip("Zoom in, about the middle of the view"),
             );
         }
         let slice_target = play::PlayTarget::Slices { slot, view: idx };

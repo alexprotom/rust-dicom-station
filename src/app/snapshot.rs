@@ -1,5 +1,5 @@
-//! *File ▸ Save image*: one row of the central area, or both, written out as
-//! a PNG or a JPEG at a chosen resolution.
+//! *Save ▸ Save image*: one row of the central area, all of them, or one
+//! pane of a row, written out as a PNG or a JPEG at a chosen resolution.
 //!
 //! The picture is the row's own pixels, taken with egui's screenshot the way
 //! [`super::record`] takes a run's frames, so a figure carries the contours,
@@ -34,6 +34,8 @@ pub(super) enum ImgWhat {
     Row(usize),
     /// Every row on screen, as they sit one above the other.
     Both,
+    /// One pane of a row (or the maximized one), on its own.
+    Pane(usize, PaneKind),
 }
 
 /// What it is written as.
@@ -221,21 +223,84 @@ impl ViewerApp {
                 .flatten()
                 .copied()
                 .reduce(|a, b| a.union(b)),
+            ImgWhat::Pane(s, k) => self
+                .panes_on_screen()
+                .into_iter()
+                .find(|(ps, pk, _)| (*ps, *pk) == (s, k))
+                .map(|(_, _, r)| r),
         }
     }
 
-    /// *File ▸ Save image*.
+    /// The panes of the main window on screen now, row by row and left to
+    /// right, with where each was drawn: those of the open rows' layouts,
+    /// or the maximized one alone, less any in a window of its own (the
+    /// picture is cut out of the main window).
+    pub(super) fn panes_on_screen(&self) -> Vec<(usize, PaneKind, Rect)> {
+        let mut out = Vec::new();
+        for slot in self.open_slots() {
+            if self.slots[slot].study.is_none() {
+                continue;
+            }
+            let kinds = match self.maximized {
+                Some((s, k)) if s == slot => vec![k],
+                Some(_) => Vec::new(),
+                None => self.row_panes(slot),
+            };
+            for kind in kinds {
+                if self.is_detached(slot, kind) {
+                    continue;
+                }
+                if let Some((_, _, r)) = self
+                    .pane_rects
+                    .iter()
+                    .find(|(s, k, _)| (*s, *k) == (slot, kind))
+                {
+                    out.push((slot, kind, *r));
+                }
+            }
+        }
+        out
+    }
+
+    /// What a pane is called in the dialog and the menu: its own name, the
+    /// image a planar pane shows on top, and the workspace when there are
+    /// several on screen.
+    pub(super) fn pane_caption(&self, slot: usize, kind: PaneKind) -> String {
+        let top = super::planar::pane_index(kind)
+            .and_then(|k| self.pane_images(slot, k).last().copied())
+            .and_then(|i| self.slots[slot].study.as_ref()?.planar_images.get(i))
+            .map(|img| img.label.trim().to_string())
+            .filter(|l| !l.is_empty());
+        let name = match top {
+            Some(l) => format!("{} · {l}", kind.label()),
+            None => kind.label().to_string(),
+        };
+        if self.open_slots().len() > 1 {
+            format!("{} · {name}", SLOT_NAMES[slot])
+        } else {
+            name
+        }
+    }
+
+    /// *Save ▸ Save image*.
     pub(super) fn save_image_window(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.save_img.take() else {
             return;
         };
         let rows = self.open_slots();
         let both = rows.len() > 1;
-        // A row that is no longer on screen cannot be saved.
-        if !matches!(d.what, ImgWhat::Row(s) if rows.contains(&s)) && d.what != ImgWhat::Both {
-            d.what = ImgWhat::Row(rows[0]);
-        }
-        if !both && d.what == ImgWhat::Both {
+        let panes = self.panes_on_screen();
+        let captions: Vec<String> = panes
+            .iter()
+            .map(|(s, k, _)| self.pane_caption(*s, *k))
+            .collect();
+        // A row or a pane that is no longer on screen cannot be saved.
+        let shown = match d.what {
+            ImgWhat::Row(s) => rows.contains(&s),
+            ImgWhat::Both => both,
+            ImgWhat::Pane(s, k) => panes.iter().any(|(ps, pk, _)| (*ps, *pk) == (s, k)),
+        };
+        if !shown {
             d.what = ImgWhat::Row(rows[0]);
         }
         let ppp = ctx.pixels_per_point();
@@ -265,7 +330,7 @@ impl ViewerApp {
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.label("Rows");
+                    ui.label("Row");
                     for slot in &rows {
                         ui.selectable_value(
                             &mut d.what,
@@ -280,6 +345,20 @@ impl ViewerApp {
                     });
                     if !both {
                         ui.weak("one workspace on screen");
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label("Pane");
+                    for ((slot, kind, _), caption) in panes.iter().zip(&captions) {
+                        ui.selectable_value(&mut d.what, ImgWhat::Pane(*slot, *kind), caption)
+                            .on_hover_text(
+                                "That pane on its own, with its bar, contours, labels and \
+                                 overlays as they are on screen",
+                            );
+                    }
+                    if panes.is_empty() {
+                        ui.weak("no pane on screen");
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
@@ -392,6 +471,14 @@ impl ViewerApp {
                     .into_iter()
                     .map(|s| SLOT_NAMES[s])
                     .collect::<String>(),
+                d.format.ext()
+            ),
+            // The pane's kind, never the image's label: that may be
+            // anything, a patient's name included.
+            ImgWhat::Pane(s, k) => format!(
+                "view_{}_{}.{}",
+                SLOT_NAMES[s.min(MAX_WORKSPACES - 1)],
+                k.label().replace(' ', "_"),
                 d.format.ext()
             ),
         };

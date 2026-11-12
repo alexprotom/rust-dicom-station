@@ -16,6 +16,7 @@ impl ViewerApp {
             return;
         }
         let mut rename: Option<RenameTarget> = None;
+        let mut save: Option<crate::export::Pick> = None;
         let mut remove: Option<ObjRef> = None;
         let mut new_active: Option<usize> = None;
         let mut new_shown: Option<bool> = None;
@@ -96,6 +97,14 @@ impl ViewerApp {
                                 ui.close();
                             }
                             ui.separator();
+                            if Self::save_dicom_entry(ui, "plan") {
+                                save = Some(crate::export::Pick::Object {
+                                    slot,
+                                    kind: crate::export::ObjKind::Plan,
+                                    index: pi,
+                                });
+                                ui.close();
+                            }
                             if Self::rename_entry(ui) {
                                 rename = Some(me.clone());
                                 ui.close();
@@ -208,6 +217,9 @@ impl ViewerApp {
         }
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if let Some(p) = save {
+            self.save_request = Some(super::save_menu::SaveRequest::Dicom(p));
         }
         if remove.is_some() {
             self.obj_remove = remove;

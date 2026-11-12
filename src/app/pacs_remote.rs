@@ -437,7 +437,7 @@ pub(super) fn source_row(ui: &mut egui::Ui, w: &PacsWindow, c: &Ctx, actions: &m
             let on = w.source == Source::Remote(s.server_id.clone());
             if ui
                 .add(egui::Button::selectable(on, format!("🔗 {}", s.name)))
-                .on_hover_text(format!(
+                .tip(format!(
                     "{}\nrole: {}\npaired {}",
                     s.label(),
                     s.role.describe(),
@@ -873,7 +873,7 @@ fn tasks_ui(ui: &mut egui::Ui, v: &mut RemoteView, c: &Ctx, actions: &mut Vec<Ac
         ui.label(egui::RichText::new("Queue").strong());
         if ui
             .add_enabled(!c.busy, egui::Button::new("⟲"))
-            .on_hover_text("Read the queue again")
+            .tip("Read the queue again")
             .clicked()
         {
             actions.push(Action::RefreshTasks);

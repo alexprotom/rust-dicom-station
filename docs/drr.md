@@ -151,9 +151,13 @@ values mirrored about the middle of the range, so dark is high attenuation;
 the range itself is unchanged, and the info rows say which convention was
 used. Off, the values are the line integral itself.
 
-Planar images are not written by *File ▶ Export DICOM*, which covers CT,
-RTSTRUCT, SEG, RTDOSE and RTPLAN; a 2D/3D registration writes its DRRs as
-RT Images with their geometry ([registration-2d3d.md](registration-2d3d.md)).
+*Save ▶ Export DICOM* writes the renderings as RT Images with their
+geometry, the structures projected onto them as a presentation state, and a
+copy of each with those contours burned in
+([export-and-tools.md](export-and-tools.md#2d-contours-burned-in)); a
+rendering's own right-click menu in the tree saves it alone the same ways,
+or as a PNG. A 2D/3D registration writes its DRRs as RT Images with their
+geometry ([registration-2d3d.md](registration-2d3d.md)).
 
 ## Structures on the renderings
 

@@ -14,6 +14,7 @@ pub mod anonymize;
 pub mod archive;
 pub mod audit;
 pub mod bodymask;
+pub mod burn_in;
 pub mod contours;
 pub mod curation;
 pub mod derived;

@@ -72,6 +72,7 @@ impl ViewerApp {
         let mut switch_to = None;
         let mut fourd: Option<FourDAction> = None;
         let mut rename = None;
+        let mut save: Option<crate::export::Pick> = None;
         let mut focus = None;
         let mut act: Option<TreeAction> = None;
         let mut out = SeriesOut::default();
@@ -163,6 +164,10 @@ impl ViewerApp {
                             ui.close();
                         }
                         ui.separator();
+                        if Self::save_dicom_entry(ui, "series") {
+                            save = Some(crate::export::Pick::Series { slot, index: *sidx });
+                            ui.close();
+                        }
                         menu.common_entries(ui, &targets, &open, &mut out);
                     });
                 }
@@ -185,6 +190,13 @@ impl ViewerApp {
                 ui.close();
             }
             ui.separator();
+            if Self::save_dicom_entry(ui, "group's series (every phase)") {
+                save = Some(crate::export::Pick::SeriesList {
+                    slot,
+                    series: members.clone(),
+                });
+                ui.close();
+            }
             if Self::rename_entry(ui) {
                 rename = Some(me_group.clone());
                 ui.close();
@@ -246,6 +258,9 @@ impl ViewerApp {
         }
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if let Some(p) = save {
+            self.save_request = Some(super::save_menu::SaveRequest::Dicom(p));
         }
         if let Some(i) = switch_to {
             // Stepping between the phases of the group already on display

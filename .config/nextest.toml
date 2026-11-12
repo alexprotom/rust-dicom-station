@@ -14,14 +14,15 @@ fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # Suites that build one on-disk fixture and share it between their tests
-# (`synthetic_study`, `dvh`: a `OnceLock` that removes and regenerates a
-# folder under target/). Under `cargo test` that happens once per binary;
-# under nextest every test is its own process and would regenerate the same
-# folder at the same moment. One at a time, each process regenerates it
-# without another one deleting it underneath.
+# (`synthetic_study`, `dvh`, `ui`: a `OnceLock` that removes and regenerates
+# a folder under target/; `ui` also empties one settings folder per test).
+# Under `cargo test` that happens once per binary; under nextest every test
+# is its own process and would regenerate the same folder at the same
+# moment. One at a time, each process regenerates it without another one
+# deleting it underneath.
 [test-groups]
 shared-fixture = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = "binary(synthetic_study) | binary(dvh)"
+filter = "binary(synthetic_study) | binary(dvh) | binary(ui)"
 test-group = "shared-fixture"

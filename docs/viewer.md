@@ -383,8 +383,9 @@ again. The drawing tools are not in the panel: the toolbar's **✏
 Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
 what is about files and folders rather than the images on screen, each a
 window: **🏥 PACS**, **📦 Downloaded models**, **🔏 Anonymize DICOM folder**,
-**📐 Generate test data** and **📥 Download test data** (*Export DICOM* and
-*Save image* are in the *File* menu).
+**📐 Generate test data** and **📥 Download test data** (*Export DICOM*,
+*Save to the PACS*, *Save image* and the 2D contours' outputs are in the
+*Save* menu; see [export-and-tools.md](export-and-tools.md#where-saving-lives)).
 
 ## Image information
 

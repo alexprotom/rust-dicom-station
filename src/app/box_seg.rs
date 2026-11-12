@@ -889,7 +889,8 @@ impl ViewerApp {
                 ui.add(egui::Slider::new(
                     &mut self.medsam2.cfg.threshold,
                     -4.0..=4.0,
-                ));
+                ))
+                .named("Threshold");
             });
             device_row(ui, &mut self.medsam2.device);
             browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::MedSam2);

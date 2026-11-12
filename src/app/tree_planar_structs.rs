@@ -72,6 +72,7 @@ impl ViewerApp {
         }
         let mut act: Option<Act> = None;
         let mut rename: Option<RenameTarget> = None;
+        let mut save: Option<super::save_menu::SaveRequest> = None;
         let active = self.slots[slot].active_planar;
         {
             let Some(study) = &self.slots[slot].study else {
@@ -105,11 +106,15 @@ impl ViewerApp {
                                 for (j, s) in set.structures.iter().enumerate() {
                                     ui.horizontal(|ui| {
                                         let mut color = s.color;
-                                        if color_swatch(ui, &mut color) {
+                                        if color_swatch(ui, &mut color, &s.name) {
                                             act = Some(Act::Color(k, j, color));
                                         }
                                         let mut on = self.planar_visible(slot, set, &s.name);
-                                        if ui.checkbox(&mut on, "").changed() {
+                                        if ui
+                                            .checkbox(&mut on, "")
+                                            .named_with(|| format!("Show {}", s.name))
+                                            .changed()
+                                        {
                                             act = Some(Act::Visible(k, j, on));
                                         }
                                         let mut tip = String::new();
@@ -207,6 +212,16 @@ impl ViewerApp {
                                 act = Some(Act::Save(k));
                                 ui.close();
                             }
+                            if Self::save_dicom_entry(ui, "set and the images it is drawn on") {
+                                save = Some(super::save_menu::SaveRequest::Dicom(
+                                    crate::export::Pick::Object {
+                                        slot,
+                                        kind: crate::export::ObjKind::PlanarStructures,
+                                        index: k,
+                                    },
+                                ));
+                                ui.close();
+                            }
                             ui.separator();
                             if Self::remove_entry(ui, "🗑 Remove") {
                                 act = Some(Act::RemoveSet(k));
@@ -218,6 +233,9 @@ impl ViewerApp {
         }
         if rename.is_some() {
             self.rename_request = rename;
+        }
+        if save.is_some() {
+            self.save_request = save;
         }
         let Some(a) = act else { return };
         self.apply_planar_act(slot, a);

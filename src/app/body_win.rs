@@ -322,7 +322,7 @@ impl ViewerApp {
                         .suffix(" mm")
                         .fixed_decimals(1),
                 )
-                .on_hover_text(
+                .tip(
                     "The opening that decides what is solid enough to be a body. \
                      Anything thicker than twice this keeps its exact surface; \
                      anything thinner is left to the thin-anatomy step below.",
@@ -419,7 +419,7 @@ impl ViewerApp {
                         .suffix(" mm")
                         .fixed_decimals(1),
                 )
-                .on_hover_text("A closing applied last, to take the staircase off the contour.");
+                .tip("A closing applied last, to take the staircase off the contour.");
             });
             if d.params.method == Method::ModelAssisted {
                 ui.separator();
@@ -430,7 +430,7 @@ impl ViewerApp {
                             .suffix(" mm")
                             .fixed_decimals(1),
                     )
-                    .on_hover_text(
+                    .tip(
                         "How far the network's answer is grown before it is used as \
                          a mask. It is planned at 6 mm or 1.5 mm, so it needs room \
                          not to clip the skin the threshold found.",
@@ -501,7 +501,7 @@ fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Tissue above:");
                 ui.add(egui::Slider::new(t, -900.0..=200.0).suffix(" HU"))
-                    .on_hover_text(
+                    .tip(
                         "−300 HU sits in the gap between air and fat. The skin edge moves \
                          about half a millimetre per 100 HU through the partial-volume ramp, \
                          so this is the one number worth agreeing on with your planning \
@@ -539,7 +539,8 @@ fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
                     egui::Slider::new(&mut fraction, 0.02..=0.6)
                         .prefix("× p99  ")
                         .fixed_decimals(2),
-                );
+                )
+                .named("Threshold as a fraction of the 99th percentile");
                 ui.label("bias blur:");
                 ui.add(
                     egui::DragValue::new(&mut sigma)

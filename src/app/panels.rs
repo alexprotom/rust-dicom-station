@@ -88,7 +88,7 @@ impl ViewerApp {
                             .frame(false)
                             .min_size(egui::vec2(20.0, 22.0)),
                     )
-                    .on_hover_text(hint)
+                    .tip(hint)
                     .clicked()
                 {
                     open = !open;
@@ -259,11 +259,13 @@ impl ViewerApp {
             id,
             default_open,
         );
-        let (_, header, _) = state
+        let title: String = title.into();
+        let open = state.is_open();
+        let (arrow, header, _) = state
             .show_header(ui, |ui| {
                 let resp = ui.add(
                     egui::Label::new(
-                        egui::RichText::new(title.into()).text_style(egui::TextStyle::Button),
+                        egui::RichText::new(title.as_str()).text_style(egui::TextStyle::Button),
                     )
                     .wrap()
                     .sense(egui::Sense::click()),
@@ -272,6 +274,7 @@ impl ViewerApp {
                 resp
             })
             .body(body);
+        name_fold_arrow(&arrow, open, &title);
         let resp = header.inner;
         // Clicking the title opens and closes the node, as it does on a
         // standard header; the arrow keeps working on its own.
@@ -339,7 +342,7 @@ impl ViewerApp {
                 .corner_radius(2.0)
                 .sense(egui::Sense::hover()),
         )
-        .on_hover_text(
+        .tip(
             "The keyboard is on this row: ↑ and ↓ step to the row above and below at this \
              level, F2 renames it, Delete removes it",
         );
@@ -591,7 +594,7 @@ impl ViewerApp {
             if here.kind == SetKind::Segmentations
                 && ui
                     .small_button("💾")
-                    .on_hover_text(format!("Write the {what} as a DICOM SEG file of their own"))
+                    .tip(format!("Write the {what} as a DICOM SEG file of their own"))
                     .clicked()
             {
                 *item_act = Some(ItemAction::ExportSeg {

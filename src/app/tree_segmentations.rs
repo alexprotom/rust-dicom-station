@@ -204,11 +204,14 @@ impl ViewerApp {
                         for (i, row) in rows.iter_mut().enumerate() {
                             let name = row.0.clone();
                             ui.horizontal(|ui| {
-                                color_swatch(ui, &mut row.1);
-                                let tick = ui.checkbox(&mut ticks[i], "").on_hover_text(
-                                    "Show / select this segmentation\nShift-click: tick or \
+                                color_swatch(ui, &mut row.1, &name);
+                                let tick = ui
+                                    .checkbox(&mut ticks[i], "")
+                                    .named_with(|| format!("Show {name}"))
+                                    .tip(
+                                        "Show / select this segmentation\nShift-click: tick or \
                                  untick the whole range from the last one",
-                                );
+                                    );
                                 if tick.clicked() {
                                     new_anchor =
                                         Some((here, apply_tick(&mut ticks, i, shift, anchor)));

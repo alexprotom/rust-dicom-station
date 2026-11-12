@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 
 use egui::{Align2, Vec2};
 
+use super::widgets::Named;
 use super::ViewerApp;
 
 /// A file-type filter, as the desktop dialog shows it.
@@ -430,11 +431,7 @@ impl Browser {
                             go = Some(p.to_path_buf());
                         }
                     }
-                    if ui
-                        .button("⟳")
-                        .on_hover_text("List the folder again")
-                        .clicked()
-                    {
+                    if ui.button("⟳").tip("List the folder again").clicked() {
                         self.refresh();
                     }
                     // Breadcrumbs: every ancestor is a button.

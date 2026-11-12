@@ -241,7 +241,12 @@ that row goes back. The apply row:
 * **💾 DICOM** - into a folder: the correction as a rigid Spatial
   Registration (from the radiographs' frame of reference - or a new one,
   named in the description, when they share the CT's - onto the CT's), the
-  DRRs at the answer as RT Images with their geometry, and the report.
+  DRRs at the answer as RT Images with their geometry, the 2D contours on
+  the radiographs (*Project the outlines* above, or drawn there) - each
+  planar structure set with contours on them as a presentation state, and
+  each such radiograph once more with them burned in as a Secondary Capture
+  any viewer shows (`setup_contours_1.dcm`, ...) - and the report. The MCP
+  `export_setup` and the workflow step write the same.
 * **📋 Copy** - the report as text, the 4 × 4 matrix (room to CT) at its
   end; **📋 Table** - the numbers tab-separated, for a spreadsheet.
 

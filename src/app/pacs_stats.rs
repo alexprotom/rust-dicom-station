@@ -37,6 +37,7 @@ use crate::archive::{PatientEntry, SeriesEntry, StudyEntry, Tree};
 
 use super::pacs_tree::{self, NodeId};
 use super::pacs_win::{patient_words, Facet, PacsWindow, WordKind};
+use super::widgets::Named;
 
 /// One bar, slice or legend line.
 #[derive(Clone, Debug, PartialEq)]
@@ -282,15 +283,15 @@ pub(super) fn panel_body(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .small_button("⟳")
-                .on_hover_text("Recalculate for the rows selected now")
+                .tip("Recalculate for the rows selected now")
                 .clicked()
             {
                 recalc = true;
             }
             ui.selectable_value(pie, true, "◐")
-                .on_hover_text("Show the figures as rings");
+                .tip("Show the figures as rings");
             ui.selectable_value(pie, false, "📊")
-                .on_hover_text("Show the figures as bars");
+                .tip("Show the figures as bars");
         });
     });
     if w.stats.is_none() || recalc || (auto && w.stats_for.as_ref() != Some(&key)) {

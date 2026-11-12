@@ -382,7 +382,8 @@ impl ViewerApp {
             );
             ui.horizontal_wrapped(|ui| {
                 ui.label("Threshold:");
-                ui.add(egui::Slider::new(&mut d.cfg.threshold, 0.05..=0.95));
+                ui.add(egui::Slider::new(&mut d.cfg.threshold, 0.05..=0.95))
+                    .named("Threshold");
             });
             device_row(ui, &mut d.device);
             browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::SegVol);

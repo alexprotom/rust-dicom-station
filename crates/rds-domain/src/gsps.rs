@@ -677,8 +677,9 @@ pub fn save_set(
             }
             img.sop_class_uid = SOP_RTIMAGE.to_string();
             // File names carry no label: a label may be anything, a
-            // patient's name included.
-            let path = dir.join(format!("rtimage_{}.dcm", files.len() + 1));
+            // patient's name included. The set's number keeps the images
+            // of two sets saved into one folder apart.
+            let path = dir.join(format!("rtimage_{}_{}.dcm", k + 1, files.len() + 1));
             crate::dicom_export::write_rt_image(
                 &path,
                 &img,

@@ -117,15 +117,23 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 /// A new manifest id: when, and which tool.
+///
+/// The millisecond keeps two dry runs of one second apart, and a count of
+/// the ids this process has made keeps apart two of one millisecond: three
+/// catalog edits in a row (a backup of the catalog before each, named by
+/// this id) are well within one on a fast machine, and a backup filed under
+/// the name of the one before would replace it.
 pub fn new_id(tool: &str) -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static ISSUED: AtomicU32 = AtomicU32::new(0);
     let (d, t) = crate::dicom_export::today();
     let t: String = t.chars().take(6).collect();
-    // Two dry runs in one second get different ids.
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_millis())
         .unwrap_or(0);
-    format!("{d}-{t}-{n:03}-{tool}")
+    let k = ISSUED.fetch_add(1, Ordering::Relaxed) % 10_000;
+    format!("{d}-{t}-{n:03}-{k:04}-{tool}")
 }
 
 /// Whether `id` is one [`new_id`] could have made: no path in it.

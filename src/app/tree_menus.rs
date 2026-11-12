@@ -89,19 +89,37 @@ impl ViewerApp {
                 copy: op == TreeOp::Copy,
             });
         });
-        if here.kind == SetKind::Segmentations {
-            ui.separator();
-            if tip_button(
+        ui.separator();
+        if tip_button(
+            ui,
+            "📤 Save to the PACS",
+            "Write it into this station's PACS, beside the study it belongs to",
+        ) {
+            *out = Some(SetAction::SaveToPacs(here));
+            ui.close();
+        }
+        if Self::save_dicom_entry(
+            ui,
+            match here.kind {
+                SetKind::Structures => "structure set",
+                SetKind::Segmentations => "segmentation series",
+            },
+        ) {
+            *out = Some(SetAction::SaveDicom(here));
+            ui.close();
+        }
+        if here.kind == SetKind::Segmentations
+            && tip_button(
                 ui,
                 "💾 Export as DICOM SEG",
                 "Write this series as one DICOM Segmentation file",
-            ) {
-                *out = Some(SetAction::ExportSeg {
-                    set: here,
-                    items: Vec::new(),
-                });
-                ui.close();
-            }
+            )
+        {
+            *out = Some(SetAction::ExportSeg {
+                set: here,
+                items: Vec::new(),
+            });
+            ui.close();
         }
         ui.separator();
         if Self::remove_entry(ui, "🗑 Remove") {

@@ -298,6 +298,7 @@ impl ViewerApp {
             let targets = self.copy_targets(slot);
             let open = self.open_slots();
             let uid = node.uid.clone();
+            let mut save: Option<String> = None;
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             let mut focus = None;
@@ -342,6 +343,10 @@ impl ViewerApp {
                     }
                 }
                 ui.separator();
+                if Self::save_dicom_entry(ui, "study (its series and objects)") {
+                    save = Some(uid.clone());
+                    ui.close();
+                }
                 if Self::rename_entry(ui) {
                     rename = Some(RenameTarget::Study {
                         slot,
@@ -373,6 +378,11 @@ impl ViewerApp {
             }
             if rename.is_some() {
                 self.rename_request = rename;
+            }
+            if let Some(uid) = save {
+                self.save_request = Some(super::save_menu::SaveRequest::Dicom(
+                    crate::export::Pick::Study { slot, uid },
+                ));
             }
             if focus.is_some() {
                 self.tree_focus = focus;
@@ -548,6 +558,7 @@ impl ViewerApp {
         let targets = self.copy_targets(slot);
         let open = self.open_slots();
         let mut switch_to = None;
+        let mut save: Option<usize> = None;
         let mut out = SeriesOut::default();
         let mut focus = None;
         let group_names = self.group_names(slot);
@@ -615,9 +626,18 @@ impl ViewerApp {
                         menu.fourd_entries(ui, &group_names, &mut out);
                     });
                     ui.separator();
+                    if Self::save_dicom_entry(ui, "series") {
+                        save = Some(i);
+                        ui.close();
+                    }
                     menu.common_entries(ui, &targets, &open, &mut out);
                 });
             }
+        }
+        if let Some(index) = save {
+            self.save_request = Some(super::save_menu::SaveRequest::Dicom(
+                crate::export::Pick::Series { slot, index },
+            ));
         }
         if let Some(i) = switch_to {
             self.start_series_switch(slot, i);

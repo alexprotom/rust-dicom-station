@@ -804,7 +804,7 @@ impl ViewerApp {
                                 ui.selectable_value(t, Some(i), label(Some(i)));
                             }
                         });
-                    if which == 1 && ui.small_button("⇄").on_hover_text("Swap them").clicked() {
+                    if which == 1 && ui.small_button("⇄").tip("Swap them").clicked() {
                         std::mem::swap(&mut st.fixed, &mut st.moving);
                         st.pairs = st.pairs.iter().map(|(a, b)| (*b, *a)).collect();
                     }
@@ -1007,7 +1007,11 @@ impl ViewerApp {
                             .map(|r| format!("  {r:.2} mm"))
                             .unwrap_or_default()
                     ));
-                    if ui.small_button("✖").clicked() {
+                    if ui
+                        .small_button("✖")
+                        .named("Remove this point pair")
+                        .clicked()
+                    {
                         drop = Some(k);
                     }
                 });

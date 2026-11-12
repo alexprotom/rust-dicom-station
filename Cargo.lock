@@ -2929,6 +2929,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_kittest"
+version = "0.36.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a9ea43248738d0396342e7b537b3a79568b2a5d16e8c3fdfc0d8bcbd89dbf6d"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui-wgpu",
+ "image",
+ "kittest",
+ "log",
+ "pollster 1.0.1",
+ "serde",
+ "toml",
+ "wgpu 30.0.0",
+]
+
+[[package]]
 name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4878,6 +4896,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kittest"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90ceaa75eb0036a32b6b9833962eb18137449e9817e2e586006471925b727fd5"
+dependencies = [
+ "accesskit",
+ "accesskit_consumer 0.35.0",
+]
+
+[[package]]
 name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6692,7 +6720,7 @@ dependencies = [
 
 [[package]]
 name = "rds-domain"
-version = "0.12.4"
+version = "0.12.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -7013,7 +7041,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.12.4"
+version = "0.12.7"
 dependencies = [
  "anyhow",
  "burn",
@@ -7024,6 +7052,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui-snarl",
+ "egui_kittest",
  "image",
  "png",
  "rayon",

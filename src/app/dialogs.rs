@@ -33,12 +33,14 @@ impl ViewerApp {
 
     // -- Modals -----------------------------------------------------------
     pub(super) fn modals(&mut self, ctx: &egui::Context) {
+        self.pass_raise_requests(ctx);
         self.generator_window(ctx);
         self.testdata_window(ctx);
         self.save_image_window(ctx);
         self.anonymize_window(ctx);
         self.models_window(ctx);
         self.pacs_window(ctx);
+        self.pacs_save_window(ctx);
         self.export_window(ctx);
         self.rename_window(ctx);
         self.project_window(ctx);
@@ -429,7 +431,8 @@ impl ViewerApp {
                         );
                         ui.end_row();
                         for (organ, sel) in p.organs.iter().zip(p.selected.iter_mut()) {
-                            ui.checkbox(sel, "");
+                            ui.checkbox(sel, "")
+                                .named_with(|| format!("Keep {}", organ.name));
                             let (rect, _) =
                                 ui.allocate_exact_size(egui::vec2(12.0, 12.0), Sense::hover());
                             ui.painter().rect_filled(
@@ -804,7 +807,7 @@ impl ViewerApp {
                                             if f.replacement != f.suggested
                                                 && ui
                                                     .small_button("↺")
-                                                    .on_hover_text(format!(
+                                                    .tip(format!(
                                                         "Back to the suggestion: “{}”",
                                                         if f.suggested.is_empty() {
                                                             "(clear)"

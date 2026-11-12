@@ -1407,7 +1407,13 @@ pub fn moved_copy(
 /// Write a setup out: the correction as a rigid Spatial Registration (the
 /// room's frame - the radiographs' own when they name one, else a new one
 /// the description names - onto the planning CT's), the DRRs at the answer
-/// as RT Images, and the report as JSON. Returns the files written.
+/// as RT Images, the 2D contours on its radiographs (the structures
+/// projected at the setup, or drawn there) - each planar structure set
+/// with contours on them as a presentation state ([`crate::gsps::save_set`],
+/// with the radiographs made here as RT Images beside it), and each such
+/// radiograph once more with the contours burned in, as a Secondary
+/// Capture ([`crate::burn_in`]) any viewer shows - and the report as JSON.
+/// Returns the files written.
 pub fn write_files(
     study: &LoadedStudy,
     s: &SetupResult,
@@ -1442,6 +1448,43 @@ pub fn write_files(
             dicom_export::write_rt_image(&path, &img, &meta("DRR", "DRR at the setup pose"))?;
             files.push(path);
         }
+    }
+    // The 2D contours on the setup's radiographs.
+    let radiographs: Vec<&PlanarImage> = s
+        .images
+        .iter()
+        .filter_map(|i| study.planar_images.get(*i))
+        .filter(|p| !p.sop_instance_uid.is_empty())
+        .collect();
+    let on_them = |set: &crate::planar_structs::PlanarStructureSet| {
+        radiographs
+            .iter()
+            .any(|p| !crate::burn_in::overlays([set], &p.sop_instance_uid, &|_, _| true).is_empty())
+    };
+    for (k, set) in study.planar_structs.iter().enumerate() {
+        if on_them(set) {
+            let (written, _) = crate::gsps::save_set(study, k, dir, &|_| None)?;
+            files.extend(written);
+        }
+    }
+    let burned_series = dicom_export::new_uid();
+    for (n, p) in radiographs.iter().enumerate() {
+        let lines =
+            crate::burn_in::overlays(&study.planar_structs, &p.sop_instance_uid, &|_, _| true);
+        if lines.is_empty() {
+            continue;
+        }
+        let rgb = crate::burn_in::render(p, p.window, &lines);
+        let path = dir.join(format!("setup_contours_{}.dcm", n + 1));
+        crate::burn_in::write_secondary_capture(
+            &path,
+            p,
+            &rgb,
+            &meta("CONTOURS", &format!("{} with contours", p.label)),
+            &burned_series,
+            900,
+        )?;
+        files.push(path);
     }
     let json_path = dir.join("setup_report.json");
     let text = serde_json::to_string_pretty(&s.json())?;

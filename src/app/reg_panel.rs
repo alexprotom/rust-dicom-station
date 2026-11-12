@@ -1878,7 +1878,11 @@ impl ViewerApp {
                         .show(ui, |ui| {
                             for (i, l) in self.reg_landmarks.iter().enumerate() {
                                 ui.horizontal(|ui| {
-                                    if ui.small_button("🗑").clicked() {
+                                    if ui
+                                        .small_button("🗑")
+                                        .named_with(|| format!("Remove landmark pair {}", i + 1))
+                                        .clicked()
+                                    {
                                         drop_landmark = Some(i);
                                     }
                                     let d = l.displacement();
@@ -2311,7 +2315,7 @@ impl ViewerApp {
                         ui.add(
                             egui::Slider::new(&mut self.field_scale, 0.5..=20.0).logarithmic(true),
                         )
-                        .on_hover_text(
+                        .tip(
                             "Arrows are drawn this many times their true length; \
                              millimetre motion is invisible at 1×",
                         );

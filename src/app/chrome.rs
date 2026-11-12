@@ -14,6 +14,8 @@ impl ViewerApp {
         let mut open_models = false;
         let mut open_pacs = false;
         let mut open_export = false;
+        let mut save_to_pacs: Option<usize> = None;
+        let mut save_req: Option<save_menu::SaveRequest> = None;
         let mut wf_menu: Option<workflow_edit::WfPending> = None;
         let mut wf_show_editor = false;
         let mut wf_show_run = false;
@@ -93,35 +95,18 @@ impl ViewerApp {
                         });
                     });
                     ui.separator();
-                    // One export for everything that is loaded: which
-                    // patients, studies and series go out is chosen in the
-                    // window, not by which menu entry was clicked.
-                    let anything = self.slots.iter().any(|s| s.study.is_some());
-                    if enabled_tip_button(
-                        ui,
-                        anything,
-                        "💾 Export DICOM",
-                        "Write any patients, studies, series and RT objects of either \
-                         workspace as DICOM - with every name and UID shown and editable, \
-                         structures as RTSTRUCT or SEG, and the references between the \
-                         objects kept intact",
-                    ) {
-                        open_export = true;
-                        ui.close();
-                    }
-                    ui.separator();
-                    if tip_button(
-                        ui,
-                        "💾 Save image",
-                        "A picture of the views as they are on screen - one workspace's row \
-                         or both - as a PNG or a JPEG, at a chosen resolution",
-                    ) {
-                        open_save_img = true;
-                        ui.close();
-                    }
-                    ui.separator();
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                // Everything that writes something out: DICOM, the PACS, a
+                // picture of the screen, 2D contours. The data tree's
+                // right-click menus save one object the same ways.
+                ui.menu_button("Save", |ui| {
+                    if let Some(r) =
+                        self.save_menu(ui, &mut open_export, &mut open_save_img, &mut save_to_pacs)
+                    {
+                        save_req = Some(r);
                     }
                 });
                 // Switches, like the Modules menu: ticking one leaves the
@@ -279,6 +264,7 @@ impl ViewerApp {
                          a new folder) with consistently regenerated UIDs",
                     ) {
                         self.anon_open = true;
+                        self.raise_window("anonymize");
                         ui.close();
                     }
                     ui.separator();
@@ -516,14 +502,19 @@ impl ViewerApp {
                 self.clear_workspace(slot);
             }
         }
-        if open_save_img && self.save_img.is_none() {
-            self.save_img = Some(snapshot::SaveImgDialog::default());
+        if open_save_img {
+            if self.save_img.is_none() {
+                self.save_img = Some(snapshot::SaveImgDialog::default());
+            }
+            self.raise_window("save_image");
         }
         if open_testdata {
             self.testdata_open = true;
+            self.raise_window("testdata");
         }
         if open_gen {
             self.gen_open = true;
+            self.raise_window("generator");
         }
         if open_pacs {
             self.open_pacs_window();
@@ -531,8 +522,14 @@ impl ViewerApp {
         if open_models {
             self.open_models_window();
         }
+        if let Some(slot) = save_to_pacs {
+            self.open_pacs_save(slot, None);
+        }
         if open_export {
             self.open_export_dialog();
+        }
+        if let Some(r) = save_req {
+            self.apply_save_request(r);
         }
         if let Some(what) = wf_menu {
             self.wf_replace(what);
@@ -541,6 +538,7 @@ impl ViewerApp {
             if let Some(e) = &mut self.wf_editor {
                 e.open = true;
             }
+            self.raise_window("workflow_editor");
         }
         if wf_show_run {
             self.reveal_module(Module::Workflows);
@@ -820,7 +818,7 @@ impl ViewerApp {
                     // crosshair hidden, left-click navigation is disabled.
                     if ui
                         .selectable_label(self.show_crosshair, "⌖")
-                        .on_hover_text(
+                        .tip(
                             "Show / hide the slice intersection (crosshair).\n\
                              Hidden: left click does not navigate - slices change \
                              only by scrolling each view",
@@ -995,7 +993,7 @@ impl ViewerApp {
                     // `Sense::hover`: it looks like a button and answers the
                     // pointer, but there is nothing to click.
                     ui.add(egui::Button::new("?").small().sense(egui::Sense::hover()))
-                        .on_hover_text(hint);
+                        .tip(hint);
                 });
             });
         });

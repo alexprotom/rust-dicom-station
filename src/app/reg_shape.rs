@@ -281,7 +281,8 @@ impl ViewerApp {
                             ui.end_row();
                             for r in &rows {
                                 let entry = st.choices.entry(r.key()).or_insert((false, 1.0));
-                                ui.checkbox(&mut entry.0, "");
+                                ui.checkbox(&mut entry.0, "")
+                                    .named_with(|| format!("Use {}", r.label()));
                                 ui.horizontal(|ui| {
                                     let (rect, _) = ui.allocate_exact_size(
                                         egui::vec2(10.0, 10.0),
@@ -307,11 +308,7 @@ impl ViewerApp {
                                      so 1 everywhere means every structure counts the same.",
                                 );
                                 if r.by_hand {
-                                    if ui
-                                        .small_button("🗑")
-                                        .on_hover_text("Remove this pair")
-                                        .clicked()
-                                    {
+                                    if ui.small_button("🗑").tip("Remove this pair").clicked() {
                                         let at = st
                                             .extra
                                             .iter()
@@ -438,7 +435,7 @@ impl ViewerApp {
                 "Distances beyond this width count linearly, not squared (Huber), so a \
                  slice contoured differently on one image does not steer the whole fit.",
                 |ui| {
-                    ui.checkbox(&mut st.robust, "");
+                    ui.checkbox(&mut st.robust, "").named("Robust");
                     ui.add_enabled(
                         st.robust,
                         egui::DragValue::new(&mut st.robust_mm)
@@ -454,7 +451,7 @@ impl ViewerApp {
                  contoured over a shorter length on one image from sliding along its \
                  partner.",
                 |ui| {
-                    ui.checkbox(&mut st.symmetric, "");
+                    ui.checkbox(&mut st.symmetric, "").named("Both ways");
                 },
             );
             f.wide(|ui| {

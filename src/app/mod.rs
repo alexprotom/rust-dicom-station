@@ -76,6 +76,7 @@ mod motion;
 mod motion_results;
 mod object_view;
 mod pacs_remote;
+mod pacs_save;
 mod pacs_server_win;
 mod pacs_stats;
 mod pacs_tree;
@@ -99,6 +100,7 @@ mod reg_shape;
 mod rename;
 mod report_view;
 mod run_report;
+mod save_menu;
 mod seg;
 mod seg_edit;
 mod seg_engines;
@@ -776,6 +778,9 @@ pub struct ViewerApp {
     /// window opens.
     export_plan: Option<export::ExportPlan>,
     export_job: Option<Job<anyhow::Result<export::ExportSummary>>>,
+    /// *Save to the PACS*: its window, and the save running.
+    pacs_save: Option<pacs_save::PacsSave>,
+    pacs_save_job: Option<Job<pacs_save::SaveDone>>,
     export_result: Option<String>,
     /// What the finished run could not do exactly as asked.
     export_warnings: Vec<String>,
@@ -790,6 +795,10 @@ pub struct ViewerApp {
     gen_result: Option<String>,
     /// Load the generated study into workspace A once it has been written.
     gen_load_after: bool,
+
+    /// Tool windows to bring to the front on the next pass (their
+    /// `tool_window` ids): `detach::raise_window`.
+    raise_windows: Vec<&'static str>,
 
     // Tools ▶ Download test data: the repository's data-test/ from GitHub.
     /// Dialog visibility.
@@ -837,6 +846,8 @@ pub struct ViewerApp {
     /// A rename requested from a context menu, opened after the frame's
     /// borrows are released.
     rename_request: Option<RenameTarget>,
+    /// A *Save* entry clicked in a data-tree menu, carried out the same way.
+    save_request: Option<save_menu::SaveRequest>,
     /// The data-tree row the keyboard acts on: the one last clicked, in
     /// either button. F2 renames it, Delete removes it. The same address a
     /// rename takes, because every row the tree shows can be renamed, and
@@ -1346,6 +1357,8 @@ impl ViewerApp {
             export_dir: String::new(),
             export_plan: None,
             export_job: None,
+            pacs_save: None,
+            pacs_save_job: None,
             export_result: None,
             export_warnings: Vec::new(),
             gen_open: false,
@@ -1354,6 +1367,7 @@ impl ViewerApp {
             gen_job: None,
             gen_result: None,
             gen_load_after: true,
+            raise_windows: Vec::new(),
             testdata_open: false,
             testdata_dir: testdata::default_output_dir().display().to_string(),
             testdata_job: None,
@@ -1378,6 +1392,7 @@ impl ViewerApp {
             item_action: None,
             rename: None,
             rename_request: None,
+            save_request: None,
             tree_focus: None,
             tree_picks: Vec::new(),
             tick_anchor: None,
@@ -2019,6 +2034,9 @@ impl eframe::App for ViewerApp {
         }
         if let Some(target) = self.rename_request.take() {
             self.open_rename(target);
+        }
+        if let Some(req) = self.save_request.take() {
+            self.apply_save_request(req);
         }
         self.modals(&ctx);
         // A PACS call started this frame - by a click, or by the result of
