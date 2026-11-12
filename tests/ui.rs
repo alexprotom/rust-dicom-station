@@ -18,7 +18,10 @@
 //! (`target/ui-test-state`), pointed at once, before the first of them
 //! starts, and emptied at every turn: each test begins from a first start
 //! of the program, whatever ran before it (the modules ticked, the last
-//! session and the folded sections are all settings).
+//! session and the folded sections are all settings). Under nextest every
+//! test is a process of its own and the lock orders nothing between them,
+//! so `.config/nextest.toml` runs this suite one test at a time, as it does
+//! the other suites that regenerate a fixture under `target/`.
 
 mod common;
 #[path = "common/headless.rs"]
