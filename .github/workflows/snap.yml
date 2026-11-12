@@ -59,6 +59,25 @@ jobs:
           rm -rf snap
           cp -r packaging/linux/snap snap
 
+      # action-build installs LXD from the Snap Store in one try, so a
+      # moment without the store fails the release ("error: unable to
+      # contact snap store", 2026-11-12). LXD is installed here first, tried
+      # again for some eight minutes; the action then finds it and only
+      # refreshes it, a failure of which it lets pass.
+      - name: Install LXD
+        shell: bash
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            sudo snap install lxd && exit 0
+            [ "$attempt" -eq 6 ] && break
+            wait=$((attempt * 30))
+            echo "::warning::snap install lxd failed (attempt $attempt), trying again in $wait s"
+            sleep "$wait"
+          done
+          echo "::error::the Snap Store could not be reached for LXD"
+          exit 1
+
       # snapcraft in a fresh LXD container: rustup, the GNOME SDK and the
       # release build of both executables. Nothing is cached between runs.
       - name: Build snap
