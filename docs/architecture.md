@@ -299,9 +299,12 @@ src/
                     JSON file by UID and patient key, merged into another
                     station's catalog (Settings > Export / Import tags)      DICOM
     save.rs         Save to the PACS: chosen derived objects written by
-                    export_derived_some and filed beside their study in any
-                    storage folder (Importer::beside_the_study,
-                    Archive::study_home), with what each became             DICOM
+                    export_derived_some and filed beside the series they
+                    were drawn on in any storage folder, never loose in a
+                    cohort (Importer::beside_the_study + referencing,
+                    Archive::study_home), with what each became and, when
+                    it stopped half way, what failed (Archive::save_targets
+                    is the window's one-pass, no-scan lookup)              DICOM
   audit.rs          the call log both servers write (data/<server>/audit-*.log)
                                                                                  App
   pacs/             the PACS server and its client: the archive served to
@@ -566,9 +569,12 @@ src/
                       upload, the Tasks tab, Add server / pairing
     pacs_save.rs      Save to the PACS (Save menu, a set's tree menu, the
                       PACS window's Send workspace): the workspace's sets
-                      and segmentations as new / in the PACS / not in it,
-                      the new ones ticked, saved beside their study; a new
-                      object takes on its PACS identity on landing
+                      and segmentations as new / changed / in the PACS /
+                      not in it (changed: an edit fingerprint kept per SOP
+                      UID in StudySlot::saved_marks), the new and changed
+                      ones ticked, what the PACS holds read on a job, saved
+                      beside their series; a new object takes on its PACS
+                      identity on landing
     pacs_stats.rs     the PACS window's analytics panel (an edge_panel): the
                       patients' words (a chart per WordKind: age group,
                       sex, site, subject) and the modalities of the

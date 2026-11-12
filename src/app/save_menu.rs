@@ -288,7 +288,9 @@ impl ViewerApp {
         }
     }
 
-    /// *Export DICOM* with only `pick` ticked.
+    /// *Export DICOM* with only `pick` ticked. An Export window already open
+    /// keeps what was typed into it ([`Self::open_export_dialog`]); only
+    /// its ticks change.
     pub(super) fn open_export_only(&mut self, pick: Pick) {
         self.open_export_dialog();
         let studies: [Option<&LoadedStudy>; MAX_WORKSPACES] =
@@ -298,8 +300,8 @@ impl ViewerApp {
         };
         if !plan.select_only(&pick, &studies) {
             self.notice = Some(
-                "That object is not one Export DICOM writes; the window is open with \
-                 everything ticked"
+                "That object is not one Export DICOM writes; the window is open with its \
+                 ticks as they were"
                     .into(),
             );
         }
@@ -371,6 +373,22 @@ impl ViewerApp {
             return;
         }
         let rgb = crate::burn_in::render(img, wl, &lines);
+        // Everything the writing needs is taken now, with the pixels: the
+        // file dialog may stay open while the study changes (the egui file
+        // browser of Android and iOS does not block), and an image looked
+        // up again by index afterwards could be another one, of another
+        // size.
+        let head = img.header();
+        let meta = self.slots[slot].study.as_ref().map(|study| {
+            crate::dicom_export::ObjectMeta::of_study(
+                study,
+                "CONTOURS",
+                &format!("{} with contours", img.label),
+            )
+        });
+        let Some(meta) = meta else {
+            return;
+        };
         // A file name says nothing of the image: its label may be anything,
         // a patient's name included.
         let (title, name, filter) = if png {
@@ -383,22 +401,11 @@ impl ViewerApp {
             )
         };
         self.ask_save(title, name, None, Some(filter), move |app, dest| {
-            let Some(study) = app.slots[slot].study.as_ref() else {
-                return;
-            };
-            let Some(img) = study.planar_images.get(idx) else {
-                return;
-            };
             let res = if png {
-                let picture = egui::ColorImage::from_rgb([img.cols, img.rows], &rgb);
+                let picture = egui::ColorImage::from_rgb([head.cols, head.rows], &rgb);
                 snapshot::write_png(&dest, &picture, 96).map(|_| ())
             } else {
-                let meta = crate::dicom_export::ObjectMeta::of_study(
-                    study,
-                    "CONTOURS",
-                    &format!("{} with contours", img.label),
-                );
-                crate::burn_in::write_secondary_capture(&dest, img, &rgb, &meta, "", 900)
+                crate::burn_in::write_secondary_capture(&dest, &head, &rgb, &meta, "", 900)
                     .map(|_| ())
             };
             match res {

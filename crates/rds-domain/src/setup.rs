@@ -1409,8 +1409,11 @@ pub fn moved_copy(
 /// the description names - onto the planning CT's), the DRRs at the answer
 /// as RT Images, the 2D contours on its radiographs (the structures
 /// projected at the setup, or drawn there) - each planar structure set
-/// with contours on them as a presentation state ([`crate::gsps::save_set`],
-/// with the radiographs made here as RT Images beside it), and each such
+/// with contours on them as a presentation state referencing the setup's
+/// radiographs and no other image ([`crate::gsps::write_state`]), with the
+/// radiographs made here as RT Images beside it, each written once
+/// whatever the number of sets on it ([`crate::gsps::write_made_images`]) -
+/// and each such
 /// radiograph once more with the contours burned in, as a Secondary
 /// Capture ([`crate::burn_in`]) any viewer shows - and the report as JSON.
 /// Returns the files written.
@@ -1461,11 +1464,24 @@ pub fn write_files(
             .iter()
             .any(|p| !crate::burn_in::overlays([set], &p.sop_instance_uid, &|_, _| true).is_empty())
     };
+    // Each set with contours on them as a state referencing the setup's
+    // radiographs alone (its contours on other images are another export's),
+    // and each radiograph made here written once for all the sets.
+    let mut made = crate::gsps::MadeImages::default();
     for (k, set) in study.planar_structs.iter().enumerate() {
-        if on_them(set) {
-            let (written, _) = crate::gsps::save_set(study, k, dir, &|_| None)?;
-            files.extend(written);
+        if !on_them(set) {
+            continue;
         }
+        let mine: Vec<String> = radiographs
+            .iter()
+            .map(|p| p.sop_instance_uid.clone())
+            .filter(|u| set.images.contains(u))
+            .collect();
+        files.extend(crate::gsps::write_made_images(
+            study, &mine, dir, &mut made,
+        )?);
+        let (state, _) = crate::gsps::write_state(study, k, dir, &mine, &|_| None, &made)?;
+        files.push(state);
     }
     let burned_series = dicom_export::new_uid();
     for (n, p) in radiographs.iter().enumerate() {

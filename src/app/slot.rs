@@ -166,6 +166,15 @@ pub(super) struct StudySlot {
     /// What a per-ROI cache compares, so a brush sample costs the edited
     /// structure and not the set (see [`StudySlot::roi_stamp`]).
     pub(super) roi_edits: std::collections::HashMap<(usize, usize), u64>,
+    /// What each structure set and segmentation series held when it was
+    /// loaded or last saved into the PACS, by kind and SOP Instance UID: an
+    /// edit fingerprint ([`super::pacs_save::mark_of_set`],
+    /// [`super::pacs_save::mark_of_seg`]). *Save to the PACS* tells an
+    /// object the PACS holds and that was edited here since (its fingerprint
+    /// moved) from one left as it was. Keyed by UID rather than by index, so
+    /// removing or reordering sets needs nothing renumbered.
+    pub(super) saved_marks:
+        std::collections::HashMap<(crate::dicom_export::DerivedKind, String), u64>,
     /// The row's two planar panes, and the additional pane after them
     /// (`planar::ADDITIONAL_PANE`), which works the same way over the
     /// workspace's additional objects.
@@ -390,6 +399,7 @@ impl StudySlot {
             active_roi: usize::MAX,
             roi_prep: RoiPreps::default(),
             roi_edits: std::collections::HashMap::new(),
+            saved_marks: std::collections::HashMap::new(),
             planar: Default::default(),
             planar_last: 1,
             planar_hidden: Default::default(),

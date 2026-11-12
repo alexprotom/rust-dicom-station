@@ -20,34 +20,69 @@ const UID_W: f32 = 330.0;
 const NAME_W: f32 = 210.0;
 
 impl ViewerApp {
-    /// Open the export window, building a fresh plan from what is loaded.
-    pub(super) fn open_export_dialog(&mut self) {
+    /// A plan built afresh from what is loaded; `None` with nothing loaded.
+    pub(super) fn build_export_plan(&self) -> Option<ExportPlan> {
         let studies: [Option<&LoadedStudy>; MAX_WORKSPACES] =
             std::array::from_fn(|s| self.slots[s].study.as_ref());
-        let Some(first) = studies.iter().flatten().next() else {
-            return;
-        };
+        let first = studies.iter().flatten().next()?;
         let params = dicom_export::ExportParams::for_study(first);
         let mut plan = ExportPlan::build(studies, params);
         // 2D contours go out burned into copies of their images too: many
         // viewers draw no presentation state, and the copy is what they show.
         plan.burn_in_contours = true;
-        // The windows the panes show the planar images with.
+        Some(plan)
+    }
+
+    /// Open the export window. A window already open keeps its plan - the
+    /// pseudonym, the identifier mode, the renames and ticks typed into it -
+    /// while the plan still lists what the workspaces hold
+    /// ([`ExportPlan::matches`]); once they changed (a set added, a study
+    /// replaced), it is rebuilt with what was chosen carried over
+    /// ([`ExportPlan::carried_into`]). A closed window opens on a fresh one;
+    /// its *Reset* builds one from scratch.
+    pub(super) fn open_export_dialog(&mut self) {
+        let studies: [Option<&LoadedStudy>; MAX_WORKSPACES] =
+            std::array::from_fn(|s| self.slots[s].study.as_ref());
+        let kept = self.export_open
+            && self
+                .export_plan
+                .as_ref()
+                .is_some_and(|p| !p.workspaces.is_empty() && p.matches(studies));
+        if !kept {
+            let Some(fresh) = self.build_export_plan() else {
+                return;
+            };
+            let plan = match (self.export_open, self.export_plan.take()) {
+                (true, Some(old)) => old.carried_into(fresh),
+                _ => fresh,
+            };
+            self.export_plan = Some(plan);
+            self.export_result = None;
+            self.export_warnings.clear();
+        }
+        self.export_open = true;
+        self.raise_window("export");
+    }
+
+    /// The window each planar image of every workspace is shown with (a
+    /// pane's, where one shows it), by `(workspace, index)`: what the export
+    /// writes a presentation state's VOI and a burned-in copy's grey with.
+    /// Read when the run starts, so it is what is on screen then.
+    pub(super) fn export_planar_windows(
+        &self,
+    ) -> std::collections::HashMap<(usize, usize), (f32, f32)> {
+        let mut out = std::collections::HashMap::new();
         for slot in 0..MAX_WORKSPACES {
             let Some(study) = self.slots[slot].study.as_ref() else {
                 continue;
             };
-            for (i, img) in study.planar_images.iter().enumerate() {
+            for i in 0..study.planar_images.len() {
                 if let Some(wl) = self.planar_shown_window(slot, i) {
-                    plan.planar_windows.insert(img.sop_instance_uid.clone(), wl);
+                    out.insert((slot, i), wl);
                 }
             }
         }
-        self.export_plan = Some(plan);
-        self.export_result = None;
-        self.export_warnings.clear();
-        self.export_open = true;
-        self.raise_window("export");
+        out
     }
 
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
@@ -70,6 +105,7 @@ impl ViewerApp {
         let mut open = true;
         let mut browse = false;
         let mut do_export = false;
+        let mut reset = false;
         let job_text = self.export_job.as_ref().map(|j| j.progress.get());
         let result = self.export_result.clone();
         let warnings = self.export_warnings.clone();
@@ -134,6 +170,16 @@ impl ViewerApp {
                     ui.weak(format!(
                         "{n_series} image series, {n_obj} RT object(s) selected"
                     ));
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Reset"))
+                        .on_hover_text(
+                            "Build the selection afresh from what is loaded: every tick, \
+                             name and identifier typed here goes back to what the data says",
+                        )
+                        .clicked()
+                    {
+                        reset = true;
+                    }
                     if let Some(msg) = &result {
                         ui.label(msg);
                     }
@@ -155,6 +201,13 @@ impl ViewerApp {
         self.export_plan = Some(plan);
         if !open {
             self.export_result = None;
+        }
+        if reset && open {
+            if let Some(fresh) = self.build_export_plan() {
+                self.export_plan = Some(fresh);
+                self.export_result = None;
+                self.export_warnings.clear();
+            }
         }
         if browse {
             self.ask_folder("Select the export output folder", |app, d| {

@@ -366,6 +366,107 @@ fn a_series_saved_from_its_menu_opens_the_export_with_it_alone() {
     );
 }
 
+/// What was typed into an open Export window survives a tree's *Save as
+/// DICOM*: only the ticks change.
+#[test]
+fn a_tree_save_keeps_what_was_typed_into_the_open_export_window() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let save_series = |ui: &mut Ui| {
+        let row = ui
+            .find(&Target::containing(" sl.)").role("button"))
+            .unwrap_or_else(|e| panic!("no series row: {e:#}\n{}", ui.tree_text()));
+        ui.click_at(row.rect.center(), egui::PointerButton::Secondary, 1);
+        ui.settle(SETTLE);
+        ui.click(&Target::containing("Save as DICOM").role("button"))
+            .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+        ui.settle(SETTLE);
+    };
+    ui.click(&Target::label("Save").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Export DICOM").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    let field = ui
+        .find(&Target::label("PHANTOM^RT").role("textinput"))
+        .unwrap_or_else(|e| panic!("no patient name field: {e:#}\n{}", ui.tree_text()));
+    // Past the end of the name, then a pseudonym's tail.
+    ui.click_at(
+        field.rect.right_center() - egui::vec2(4.0, 0.0),
+        egui::PointerButton::Primary,
+        1,
+    );
+    ui.settle(SETTLE);
+    ui.key("End").unwrap();
+    ui.type_text("-PSEUDO");
+    ui.settle(SETTLE);
+    assert!(
+        ui.has(&Target::label("PHANTOM^RT-PSEUDO").role("textinput")),
+        "the name was not typed:\n{}",
+        ui.tree_text()
+    );
+    // The window covers the data tree: aside by its title bar, as a person
+    // would, so the tree's rows can be reached.
+    let win = ui
+        .find(&Target::containing("Export DICOM").role("window"))
+        .unwrap_or_else(|e| panic!("no export window: {e:#}\n{}", ui.tree_text()));
+    let grip = egui::pos2(win.rect.min.x + 200.0, win.rect.min.y + 10.0);
+    ui.drag(
+        grip,
+        grip + egui::vec2(700.0, 0.0),
+        egui::PointerButton::Primary,
+    );
+    ui.settle(SETTLE);
+    save_series(&mut ui);
+    assert!(
+        ui.has(&Target::label("PHANTOM^RT-PSEUDO").role("textinput")),
+        "the typed name is gone:\n{}",
+        ui.tree_text()
+    );
+    assert!(
+        ui.has(&Target::containing(
+            "1 image series, 0 RT object(s) selected"
+        )),
+        "not the series alone:\n{}",
+        ui.tree_text()
+    );
+}
+
+/// *Save to the PACS* opens at once and settles once the PACS was read:
+/// here a PACS never scanned, which says so rather than scanning it.
+#[test]
+fn save_to_the_pacs_opens_at_once_and_settles_on_what_the_pacs_holds() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    ui.click(&Target::label("Save").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Save to the PACS").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("A · ").role("button"))
+        .unwrap_or_else(|e| panic!("no workspace entry: {e:#}\n{}", ui.tree_text()));
+    assert!(ui.settle(SETTLE), "the lookup did not land");
+    assert!(
+        ui.has(&Target::label("Close window")),
+        "no window:\n{}",
+        ui.tree_text()
+    );
+    assert!(
+        !ui.has_label("reading the PACS"),
+        "still reading:\n{}",
+        ui.tree_text()
+    );
+    assert!(
+        ui.has_label("PACS not read yet"),
+        "the rows do not say the PACS was never scanned:\n{}",
+        ui.tree_text()
+    );
+    let save = ui
+        .find(&Target::containing("Save 0 objects").role("button"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    assert!(save.disabled, "nothing can be saved");
+}
+
 /// The frame as a picture: the size asked for, and an image in the views
 /// rather than an empty window. Needs a graphics adapter (a software one
 /// will do).

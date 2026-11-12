@@ -18,8 +18,15 @@
 //! Image Type `DERIVED\SECONDARY`, Conversion Type `WSD`, Burned In
 //! Annotation `YES` (PS3.3 C.7.6.1.1.7: a reader is told the pixels carry
 //! annotations), `RGB` at 8 bits a sample, interleaved (Planar Configuration
-//! 0), Pixel Spacing when the image has one, and the image it was made from
-//! in the Source Image Sequence with a Derivation Description.
+//! 0), and the image it was made from in the Source Image Sequence with a
+//! Derivation Description. The image's spacing is millimetres at the imager
+//! (read from Image Plane or Imager Pixel Spacing), so it goes out as Imager
+//! Pixel Spacing (0018,1164), which a viewer does not take for a distance in
+//! the patient; Pixel Spacing (0028,0030) is written only when the image's
+//! geometry gives SID and SAD, as the imager's spacing scaled to the
+//! isocentre plane (`spacing · SAD / SID`), with Pixel Spacing Calibration
+//! Type `GEOMETRY` and a description naming the plane. An image whose
+//! spacing is unknown (exactly one) gets neither.
 //!
 //! **How it is drawn** ([`render`]). The grey is the image's values through
 //! the window `(centre, width)` exactly as the viewer's planar panes map
@@ -275,16 +282,35 @@ pub fn write_secondary_capture(
             env!("CARGO_PKG_VERSION")
         ),
     );
-    // A spacing of exactly one is what a planar image says when it knows
-    // none, and a picture claiming millimetres it does not have would
-    // mislead a measurement more than saying nothing.
+    // A planar image's spacing is millimetres at the imager (it is read
+    // from Image Plane or Imager Pixel Spacing): written as Imager Pixel
+    // Spacing, which says so, and which a viewer does not take for a
+    // distance in the patient without a magnification factor. Pixel Spacing
+    // - the patient - only when the geometry says where the patient is: the
+    // imager's spacing scaled to the isocentre plane (by SAD / SID), with a
+    // calibration type and description naming that plane. A spacing of
+    // exactly one is what a planar image says when it knows none, and a
+    // picture claiming millimetres it does not have would mislead a
+    // measurement more than saying nothing. Both are [between rows, between
+    // columns].
     if img.spacing != [1.0, 1.0] && img.spacing.iter().all(|s| *s > 0.0) {
-        // Pixel Spacing is [between rows, between columns].
-        put_ds_exact(
-            &mut o,
-            tags::PIXEL_SPACING,
-            &[img.spacing[1], img.spacing[0]],
-        );
+        let (row, col) = (img.spacing[1], img.spacing[0]);
+        put_ds_exact(&mut o, tags::IMAGER_PIXEL_SPACING, &[row, col]);
+        if let Some(m) = isocentre_scale(img) {
+            put_ds_exact(&mut o, tags::PIXEL_SPACING, &[row * m, col * m]);
+            put_str(
+                &mut o,
+                tags::PIXEL_SPACING_CALIBRATION_TYPE,
+                VR::CS,
+                "GEOMETRY",
+            );
+            put_str(
+                &mut o,
+                tags::PIXEL_SPACING_CALIBRATION_DESCRIPTION,
+                VR::LO,
+                "Imager spacing scaled to the isocentre plane (SAD / SID)",
+            );
+        }
     }
     put_us(&mut o, tags::ROWS, img.rows as u16);
     put_us(&mut o, tags::COLUMNS, img.cols as u16);
@@ -307,6 +333,13 @@ pub fn write_secondary_capture(
     ));
     write_object(o, SOP_SECONDARY_CAPTURE, path)?;
     Ok(sop_uid)
+}
+
+/// What a length at the imager is at the isocentre plane, `SAD / SID`, when
+/// the image's geometry states both distances.
+fn isocentre_scale(img: &PlanarImage) -> Option<f64> {
+    let g = img.iec.as_ref()?;
+    (g.sad > 0.0 && g.sid > 0.0 && g.sad.is_finite() && g.sid.is_finite()).then(|| g.sad / g.sid)
 }
 
 #[cfg(test)]
@@ -415,6 +448,60 @@ mod tests {
         assert_eq!(
             crate::loader::str_of(&obj, tags::BURNED_IN_ANNOTATION).as_deref(),
             Some("YES")
+        );
+        // No geometry: the spacing is the imager's, and nothing claims a
+        // distance in the patient.
+        assert_eq!(
+            crate::loader::f64s_of(&obj, tags::IMAGER_PIXEL_SPACING),
+            Some(vec![0.5, 0.5])
+        );
+        assert!(crate::loader::f64s_of(&obj, tags::PIXEL_SPACING).is_none());
+        assert_eq!(back.spacing, [0.5, 0.5], "read back at the imager's scale");
+        let _ = std::fs::remove_file(&path);
+
+        // With SID 1500 and SAD 1000: Pixel Spacing at the isocentre plane.
+        let mut placed = image(20, 10);
+        placed.iec = Some(crate::drr::Geometry {
+            sid: 1500.0,
+            sad: 1000.0,
+            ..Default::default()
+        });
+        let path = dir.join("sc_placed.dcm");
+        write_secondary_capture(&path, &placed, &rgb, &meta, "", 900).unwrap();
+        let obj = crate::dicomfile::open_full(&path).unwrap();
+        let ps = crate::loader::f64s_of(&obj, tags::PIXEL_SPACING).expect("Pixel Spacing");
+        assert!(ps.iter().all(|v| (v - 0.5 / 1.5).abs() < 1e-9), "{ps:?}");
+        assert_eq!(
+            crate::loader::str_of(&obj, tags::PIXEL_SPACING_CALIBRATION_TYPE).as_deref(),
+            Some("GEOMETRY")
+        );
+        assert_eq!(
+            crate::loader::f64s_of(&obj, tags::IMAGER_PIXEL_SPACING),
+            Some(vec![0.5, 0.5])
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// What a file dialog's continuation keeps of the image - its header,
+    /// no pixels - is all the writer reads: given the rendered pixels, it
+    /// writes whatever became of the image in the study meanwhile.
+    #[test]
+    fn the_writer_needs_the_header_and_the_pixels_handed_to_it() {
+        let img = image(12, 8);
+        let rgb = render(&img, img.window, &[]);
+        let head = img.header();
+        assert!(head.data.is_empty() && head.rgb.is_none());
+        let dir = std::env::temp_dir().join("rds_burn_in_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sc_header.dcm");
+        let meta = ObjectMeta::default();
+        write_secondary_capture(&path, &head, &rgb, &meta, "", 900).unwrap();
+        let back = crate::extras::load_planar(&path).unwrap();
+        assert_eq!((back.cols, back.rows), (12, 8));
+        assert_eq!(back.rgb.as_deref(), Some(rgb.as_slice()));
+        assert!(
+            write_secondary_capture(&path, &head, &rgb[3..], &meta, "", 900).is_err(),
+            "pixels of another size are refused, not drawn"
         );
         let _ = std::fs::remove_file(&path);
     }

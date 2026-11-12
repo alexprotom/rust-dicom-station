@@ -778,8 +778,10 @@ pub struct ViewerApp {
     /// window opens.
     export_plan: Option<export::ExportPlan>,
     export_job: Option<Job<anyhow::Result<export::ExportSummary>>>,
-    /// *Save to the PACS*: its window, and the save running.
+    /// *Save to the PACS*: its window, the lookup of what the PACS holds,
+    /// and the save running.
     pacs_save: Option<pacs_save::PacsSave>,
+    pacs_save_lookup_job: Option<Job<pacs_save::LookupDone>>,
     pacs_save_job: Option<Job<pacs_save::SaveDone>>,
     export_result: Option<String>,
     /// What the finished run could not do exactly as asked.
@@ -1358,6 +1360,7 @@ impl ViewerApp {
             export_plan: None,
             export_job: None,
             pacs_save: None,
+            pacs_save_lookup_job: None,
             pacs_save_job: None,
             export_result: None,
             export_warnings: Vec::new(),

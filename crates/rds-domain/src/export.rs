@@ -213,7 +213,7 @@ impl Field {
 // ---------------------------------------------------------------------------
 
 /// What an object node is.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ObjKind {
     /// An RT Structure Set as loaded (contours).
     Structures,
@@ -353,10 +353,12 @@ pub struct ExportPlan {
     /// a viewer that draws no presentation state shows. Off in a plan
     /// [`ExportPlan::build`] makes; the export window turns it on.
     pub burn_in_contours: bool,
-    /// The window (centre, width) each planar image is shown with, by its
-    /// SOP Instance UID as loaded: what a presentation state's VOI and a
-    /// burned-in copy's grey are taken from. An image not in it has its own.
-    pub planar_windows: HashMap<String, (f32, f32)>,
+    /// The window (centre, width) each planar image is shown with, by
+    /// `(workspace, index in its planar_images)`: what a presentation
+    /// state's VOI and a burned-in copy's grey are taken from. Filled when
+    /// the run starts, from what the panes show then. An image not in it
+    /// has its own.
+    pub planar_windows: HashMap<(usize, usize), (f32, f32)>,
 }
 
 /// One thing of the plan to export on its own ([`ExportPlan::select_only`]).
@@ -423,6 +425,111 @@ impl ExportPlan {
             burn_in_contours: false,
             planar_windows: HashMap::new(),
         }
+    }
+
+    /// What the plan lists, in order: each image series (`None`) and each
+    /// object (its kind) of each workspace, by index and source UID - what
+    /// a plan built from the same studies lists again.
+    fn shape(&self) -> Vec<(usize, Option<ObjKind>, usize, String)> {
+        let mut out = Vec::new();
+        for st in self.studies() {
+            for s in &st.series {
+                out.push((s.slot, None, s.index, s.source_uid.clone()));
+            }
+            for o in &st.objects {
+                out.push((o.slot, Some(o.kind), o.index, o.source_uid.clone()));
+            }
+        }
+        out
+    }
+
+    /// Whether the plan still lists what `studies` hold: the same image
+    /// series and objects, at the same places, under the same source UIDs.
+    /// Not once a structure set was added or removed, a study replaced.
+    pub fn matches(
+        &self,
+        studies: [Option<&LoadedStudy>; crate::settings::MAX_WORKSPACES],
+    ) -> bool {
+        Self::build(studies, self.params.clone()).shape() == self.shape()
+    }
+
+    /// `fresh` (a plan just built) with what was chosen in this one carried
+    /// over where it still applies: the identifier mode, the layout, the two
+    /// run-wide switches, the common tags, and every field and tick of a
+    /// patient, study, series or object both list (by workspace and source
+    /// UID; a made-here object, which has none, by its kind and index).
+    pub fn carried_into(&self, mut fresh: ExportPlan) -> ExportPlan {
+        if fresh.uid_mode != self.uid_mode {
+            fresh.set_uid_mode(self.uid_mode);
+        }
+        fresh.layout = self.layout;
+        fresh.params = self.params.clone();
+        fresh.rerender_images = self.rerender_images;
+        fresh.burn_in_contours = self.burn_in_contours;
+        let obj_key = |o: &ObjNode| {
+            if o.source_uid.is_empty() {
+                (o.slot, o.kind, o.index.to_string())
+            } else {
+                (o.slot, o.kind, o.source_uid.clone())
+            }
+        };
+        let old_patients: HashMap<(usize, &str), &PatientNode> = self
+            .workspaces
+            .iter()
+            .flat_map(|d| d.patients.iter())
+            .map(|p| ((p.slot, p.key.as_str()), p))
+            .collect();
+        let old_studies: HashMap<(usize, &str), &StudyNode> = self
+            .studies()
+            .map(|s| ((s.slot, s.source_uid.as_str()), s))
+            .collect();
+        let old_series: HashMap<(usize, &str), &SeriesNode> = self
+            .studies()
+            .flat_map(|s| s.series.iter())
+            .map(|s| ((s.slot, s.source_uid.as_str()), s))
+            .collect();
+        let old_objects: HashMap<(usize, ObjKind, String), &ObjNode> = self
+            .studies()
+            .flat_map(|s| s.objects.iter())
+            .map(|o| (obj_key(o), o))
+            .collect();
+        for d in &mut fresh.workspaces {
+            for p in &mut d.patients {
+                if let Some(old) = old_patients.get(&(p.slot, p.key.as_str())) {
+                    p.name = old.name.clone();
+                    p.id = old.id.clone();
+                }
+                for st in &mut p.studies {
+                    if let Some(old) = old_studies.get(&(st.slot, st.source_uid.as_str())) {
+                        st.uid = old.uid.clone();
+                        st.description = old.description.clone();
+                        st.id = old.id.clone();
+                        st.date = old.date.clone();
+                    }
+                    for se in &mut st.series {
+                        if let Some(old) = old_series.get(&(se.slot, se.source_uid.as_str())) {
+                            se.selected = old.selected;
+                            se.uid = old.uid.clone();
+                            se.for_uid = old.for_uid.clone();
+                            se.description = old.description.clone();
+                            se.number = old.number.clone();
+                        }
+                    }
+                    for ob in &mut st.objects {
+                        if let Some(old) = old_objects.get(&obj_key(ob)) {
+                            ob.selected = old.selected;
+                            ob.sop_uid = old.sop_uid.clone();
+                            ob.series_uid = old.series_uid.clone();
+                            ob.description = old.description.clone();
+                            ob.number = old.number.clone();
+                            ob.format = old.format;
+                        }
+                    }
+                }
+            }
+        }
+        fresh.sync_format_uids();
+        fresh
     }
 
     /// Tick `pick` alone: everything else of the plan is unticked. What it
@@ -1519,7 +1626,7 @@ fn export_one_study(
                     if !lines.is_empty() {
                         let wl = plan
                             .planar_windows
-                            .get(&img.sop_instance_uid)
+                            .get(&(node.slot, node.index))
                             .copied()
                             .unwrap_or(img.window);
                         let rgb = crate::burn_in::render(img, wl, &lines);
@@ -1576,7 +1683,11 @@ fn export_one_study(
                             .get(u.as_str())
                             .cloned()
                             .unwrap_or_else(|| study.planar_images[i].clone());
-                        let wl = plan.planar_windows.get(u).copied().unwrap_or(img.window);
+                        let wl = plan
+                            .planar_windows
+                            .get(&(node.slot, i))
+                            .copied()
+                            .unwrap_or(img.window);
                         Some((img, wl))
                     })
                     .collect();
@@ -2367,5 +2478,62 @@ impl ExportPlan {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(label: &str) -> crate::rtstruct::StructureSet {
+        crate::rtstruct::StructureSet {
+            label: label.into(),
+            frame_of_reference_uid: String::new(),
+            sop_instance_uid: String::new(),
+            series_instance_uid: String::new(),
+            study_uid: "1.2.826.0.5.1".into(),
+            referenced_series_uid: String::new(),
+            file_name: "drawn-contours".into(),
+            locked: false,
+            rois: vec![crate::rtstruct::Roi {
+                number: 1,
+                name: "PTV".into(),
+                color: [255, 0, 0],
+                roi_type: String::new(),
+                description: String::new(),
+                contours: Vec::new(),
+            }],
+        }
+    }
+
+    /// A plan kept open across a tree's *Save as DICOM* still fits the
+    /// studies until what they hold changes, and a rebuild keeps what was
+    /// typed into it.
+    #[test]
+    fn a_plan_knows_when_the_studies_moved_on_and_keeps_what_was_typed() {
+        let mut study = LoadedStudy::default();
+        study.structure_sets.push(set("First"));
+        let mut plan = ExportPlan::build(one_study(&study), ExportParams::for_study(&study));
+        assert!(plan.matches(one_study(&study)), "its own studies");
+        plan.workspaces[0].patients[0].name.value = "Typed^Name".into();
+        plan.layout = Layout::Flat;
+        plan.studies_mut().next().unwrap().objects[0]
+            .description
+            .value = "Renamed".into();
+
+        study.structure_sets.push(set("Second"));
+        assert!(!plan.matches(one_study(&study)), "a structure set more");
+        let fresh = ExportPlan::build(one_study(&study), plan.params.clone());
+        let kept = plan.carried_into(fresh);
+        assert!(kept.matches(one_study(&study)));
+        assert_eq!(kept.workspaces[0].patients[0].name.value, "Typed^Name");
+        assert_eq!(kept.layout, Layout::Flat);
+        let objects = &kept.studies().next().unwrap().objects;
+        assert_eq!(objects.len(), 2);
+        assert_eq!(
+            objects[0].description.value, "Renamed",
+            "the old set's field"
+        );
+        assert_ne!(objects[1].description.value, "Renamed");
     }
 }

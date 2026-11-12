@@ -43,6 +43,7 @@
 //! whether or not they are loaded: a set attaches to its images when they
 //! arrive.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -642,12 +643,145 @@ fn ellipse(a0: [f64; 2], a1: [f64; 2], b0: [f64; 2], b1: [f64; 2]) -> Poly {
     p
 }
 
+/// The images made here (no file of their own) written into one folder so
+/// far, for [`write_made_images`] and [`write_state`]: each goes once, under
+/// one series for all that had none.
+#[derive(Clone, Debug)]
+pub struct MadeImages {
+    /// The SOP Instance UIDs written.
+    pub written: HashSet<String>,
+    /// The series an image made here without one is written in, so a
+    /// state's series item names the series it went out in.
+    pub series: String,
+}
+
+impl Default for MadeImages {
+    fn default() -> Self {
+        MadeImages {
+            written: HashSet::new(),
+            series: crate::dicom_export::new_uid(),
+        }
+    }
+}
+
+impl MadeImages {
+    /// Image `img` as it goes out of this folder: an image made here as an
+    /// RT Image, in [`MadeImages::series`] when it has no series of its own.
+    fn as_written(&self, img: &PlanarImage) -> PlanarImage {
+        let mut img = img.clone();
+        if img.source_path.is_none() {
+            if img.series_instance_uid.is_empty() {
+                img.series_instance_uid = self.series.clone();
+            }
+            img.sop_class_uid = SOP_RTIMAGE.to_string();
+        }
+        img
+    }
+}
+
+/// The file name a made-here image is written under: its SOP Instance UID
+/// hashed (FNV-1a), so the same image saved twice into one folder - by two
+/// sets, or one set saved twice - lands in the same file rather than two
+/// files under one UID, and two images never take one name. File names
+/// carry no label: a label may be anything, a patient's name included.
+fn made_image_name(sop_uid: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in sop_uid.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("rtimage_{h:016x}.dcm")
+}
+
+/// Write into `dir` each image of `uids` (SOP Instance UIDs) that was made
+/// here and has no file of its own, as an RT Image under the UIDs it already
+/// has - skipping those `made` says were written into this folder already.
+/// Returns the files written.
+pub fn write_made_images(
+    study: &LoadedStudy,
+    uids: &[String],
+    dir: &Path,
+    made: &mut MadeImages,
+) -> Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(dir).map_err(|e| anyhow!("create {}: {e}", dir.display()))?;
+    let mut files = Vec::new();
+    for uid in uids {
+        let Some(i) = study.planar_by_uid(uid) else {
+            continue;
+        };
+        let src = &study.planar_images[i];
+        if src.source_path.is_some() || made.written.contains(uid) {
+            continue;
+        }
+        let img = made.as_written(src);
+        let path = dir.join(made_image_name(uid));
+        crate::dicom_export::write_rt_image(
+            &path,
+            &img,
+            &ObjectMeta::of_study(study, "IMAGE", &img.label),
+        )?;
+        made.written.insert(uid.clone());
+        files.push(path);
+    }
+    Ok(files)
+}
+
+/// Write planar structure set `k` of `study` into `dir` as a presentation
+/// state referencing `images` (SOP Instance UIDs) and nothing else: the
+/// contours and points on other images are left out, and so is a structure
+/// left with none. `windows` gives the window of an image by index, where a
+/// pane shows it with one; otherwise its own. `made` is what
+/// [`write_made_images`] wrote into the folder, for the series a made-here
+/// image went out in. Returns the file and the state's SOP Instance UID.
+pub fn write_state(
+    study: &LoadedStudy,
+    k: usize,
+    dir: &Path,
+    images: &[String],
+    windows: &dyn Fn(usize) -> Option<(f32, f32)>,
+    made: &MadeImages,
+) -> Result<(PathBuf, String)> {
+    let set = study
+        .planar_structs
+        .get(k)
+        .ok_or_else(|| anyhow!("no planar structure set {}", k + 1))?;
+    std::fs::create_dir_all(dir).map_err(|e| anyhow!("create {}: {e}", dir.display()))?;
+    // The set narrowed to `images`. A structure whose graphics are all on
+    // other images goes; one that has none anywhere (a layer the set was
+    // read with, a structure not drawn yet) stays the empty layer it was.
+    let mut narrow = set.clone();
+    let drawn = |s: &crate::planar_structs::PlanarStructure| {
+        s.contours.iter().any(|c| !c.region.is_empty()) || !s.points.is_empty()
+    };
+    narrow.structures.retain_mut(|s| {
+        let had = drawn(s);
+        s.contours.retain(|c| images.contains(&c.image_uid));
+        s.points.retain(|(u, _)| images.contains(u));
+        drawn(s) || !had
+    });
+    narrow.images.retain(|u| images.contains(u));
+    let mut owned: Vec<(PlanarImage, (f32, f32))> = Vec::new();
+    for uid in images {
+        let Some(i) = study.planar_by_uid(uid) else {
+            continue;
+        };
+        let img = made.as_written(&study.planar_images[i]);
+        let wl = windows(i).unwrap_or(img.window);
+        owned.push((img, wl));
+    }
+    let refs: Vec<(&PlanarImage, (f32, f32))> = owned.iter().map(|(i, w)| (i, *w)).collect();
+    let meta = ObjectMeta::of_study(study, &set.label, &set.label);
+    let path = dir.join(format!("gsps_{}.dcm", k + 1));
+    let uid = write(&path, &narrow, &refs, &meta)?;
+    Ok((path, uid))
+}
+
 /// Save planar structure set `k` of `study` into `dir`: every referenced
 /// image made here (no file of its own) as an RT Image under the UIDs it
-/// already has, then the presentation state, so the folder is
-/// self-contained. `windows` gives the window of an image by index, where
-/// a pane shows it with one; otherwise its own. Returns the files written
-/// and the SOP Instance UID of the state.
+/// already has ([`write_made_images`]), then the presentation state
+/// ([`write_state`]), so the folder is self-contained. `windows` gives the
+/// window of an image by index, where a pane shows it with one; otherwise
+/// its own. Returns the files written and the SOP Instance UID of the state.
 pub fn save_set(
     study: &LoadedStudy,
     k: usize,
@@ -658,40 +792,9 @@ pub fn save_set(
         .planar_structs
         .get(k)
         .ok_or_else(|| anyhow!("no planar structure set {}", k + 1))?;
-    std::fs::create_dir_all(dir).map_err(|e| anyhow!("create {}: {e}", dir.display()))?;
-    let meta = ObjectMeta::of_study(study, &set.label, &set.label);
-    let mut files = Vec::new();
-    // An image made here may have no series yet: one for all of them, so
-    // the state's series item names the series they are written in.
-    let made_series = crate::dicom_export::new_uid();
-    let mut owned: Vec<(PlanarImage, (f32, f32))> = Vec::new();
-    for uid in &set.images {
-        let Some(i) = study.planar_by_uid(uid) else {
-            continue;
-        };
-        let mut img = study.planar_images[i].clone();
-        let wl = windows(i).unwrap_or(img.window);
-        if img.source_path.is_none() {
-            if img.series_instance_uid.is_empty() {
-                img.series_instance_uid = made_series.clone();
-            }
-            img.sop_class_uid = SOP_RTIMAGE.to_string();
-            // File names carry no label: a label may be anything, a
-            // patient's name included. The set's number keeps the images
-            // of two sets saved into one folder apart.
-            let path = dir.join(format!("rtimage_{}_{}.dcm", k + 1, files.len() + 1));
-            crate::dicom_export::write_rt_image(
-                &path,
-                &img,
-                &ObjectMeta::of_study(study, "IMAGE", &img.label),
-            )?;
-            files.push(path);
-        }
-        owned.push((img, wl));
-    }
-    let refs: Vec<(&PlanarImage, (f32, f32))> = owned.iter().map(|(i, w)| (i, *w)).collect();
-    let path = dir.join(format!("gsps_{}.dcm", k + 1));
-    let uid = write(&path, set, &refs, &meta)?;
+    let mut made = MadeImages::default();
+    let mut files = write_made_images(study, &set.images, dir, &mut made)?;
+    let (path, uid) = write_state(study, k, dir, &set.images, windows, &made)?;
     files.push(path);
     Ok((files, uid))
 }
