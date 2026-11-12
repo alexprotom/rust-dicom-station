@@ -320,6 +320,7 @@ impl ViewerApp {
         self.slots[slot].planar[k].object.filter(|o| match *o {
             PaneObject::Registration(i) => i < study.registrations.len(),
             PaneObject::Record(i) => i < study.treat_records.len(),
+            PaneObject::Plan(i) => i < study.plans.len(),
         })
     }
 
@@ -1255,8 +1256,13 @@ impl ViewerApp {
         // a stack; in lines of equal length when the pane is narrow.
         let cells =
             super::pane_windows::bar_cells(rect, by, &[24.0; 9][..if nl >= 2 { 9 } else { 8 }]);
-        let (max_rect, close_rect, fold_rect, detach_rect) =
-            (cells[0], cells[1], cells[2], cells[3]);
+        // Folded: maximize and the arrow only, as a plane's bar.
+        let (max_rect, close_rect, fold_rect) = if folded {
+            (cells[0], Rect::NOTHING, cells[1])
+        } else {
+            (cells[0], cells[1], cells[2])
+        };
+        let detach_rect = cells[3];
         let (fit_rect, hand_rect, zout_rect, zin_rect) = (cells[4], cells[5], cells[6], cells[7]);
         let mode_rect = if nl >= 2 { cells[8] } else { Rect::NOTHING };
         let slider_rect = Rect::from_min_max(
@@ -1325,9 +1331,9 @@ impl ViewerApp {
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
             .tip(if is_max {
-                "Restore the multi-view layout"
+                "Restore the row"
             } else {
-                "Maximize this pane to the whole window"
+                "Maximize this pane"
             });
         let fold_resp = ui
             .put(
@@ -1335,11 +1341,9 @@ impl ViewerApp {
                 egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
             .tip(if folded {
-                "Show the buttons of this bar. One switch for every pane, and it is \
-                 remembered between runs."
+                "Show the pane buttons"
             } else {
-                "Fold these buttons away, leaving the image. One switch for every pane, \
-                 and it is remembered between runs."
+                "Hide the pane buttons"
             });
         let mut fit_resp = None;
         let mut hand_resp = None;
@@ -1351,7 +1355,7 @@ impl ViewerApp {
             clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
             fit_resp = Some(
                 ui.put(fit_rect, egui::Button::new("⟲").small())
-                    .tip("Fit zoom, clear pan, each image's own window"),
+                    .tip("Reset the view"),
             );
             hand_resp = Some(
                 ui.put(
@@ -1360,10 +1364,7 @@ impl ViewerApp {
                         .frame_when_inactive(true)
                         .small(),
                 )
-                .tip(
-                    "Move the image with the left button. Off, a middle drag still moves \
-                     it. Shared by every view.",
-                ),
+                .tip("Pan: drag to move the image"),
             );
             zout_resp = Some(
                 ui.put(zout_rect, egui::Button::new("➖").small())
@@ -1384,7 +1385,7 @@ impl ViewerApp {
                 );
             }
         }
-        let close_resp = Self::close_button(ui, close_rect);
+        let close_resp = (!folded).then(|| Self::close_button(ui, close_rect));
         let mut new_blend = None;
         if has_slider {
             ui.painter().rect_filled(
@@ -1423,7 +1424,7 @@ impl ViewerApp {
         let clicked_zout = hit(zout_rect, &zout_resp);
         let clicked_zin = hit(zin_rect, &zin_resp);
         let clicked_mode = nl >= 2 && hit(mode_rect, &mode_resp);
-        let clicked_close = close_resp.clicked()
+        let clicked_close = close_resp.as_ref().is_some_and(|r| r.clicked())
             || (any_click && pointer_pos.is_some_and(|p| close_rect.contains(p)));
 
         let mut new_zoom = (clicked_zin || clicked_zout).then(|| {

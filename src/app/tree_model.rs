@@ -333,6 +333,7 @@ impl ViewerApp {
                 self.slots[*slot].active_plan = *idx;
                 self.slots[*slot].plans_shown = true;
                 self.settings_gen += 1;
+                self.show_object(*slot, super::object_view::PaneObject::Plan(*idx));
             }
             // Images where a click puts them: a planar image in its pane, a
             // pair side by side in the two planar panes.

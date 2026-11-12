@@ -373,20 +373,44 @@ each with what the PACS knows of it:
 |---|---|---|
 | **new** | made here and never saved | yes |
 | **not in the PACS** | read from a file the PACS does not hold | yes |
-| **in the PACS** | the PACS holds an object with its SOP Instance UID (it was loaded from there, or saved before) | no; ticked, it is saved again as a new object beside the old one - how an edited set is kept, the old version staying |
+| **changed** | the PACS holds an object with its SOP Instance UID, and it was edited here since it was loaded or last saved | yes; saved as a new object beside the old one, the old version staying |
+| **in the PACS** | the PACS holds it, as it is here (loaded from there, or saved before, and not edited since) | no; ticked, it is saved again all the same |
 | **empty** | nothing drawn in it | cannot be |
 | **study not in the PACS** | the study it belongs to is not in the PACS: import the study first | cannot be |
+| **reading the PACS** | the window has just opened and the catalog is being read | not yet |
+| **PACS not read yet** | the PACS has no catalog (it was never scanned): *Rescan* here, then open the window again | cannot be |
 
-Under the list, a line per study says the folder they go into. That is the
-folder holding the study's files - the patient's folder in its cohort folder,
-in whichever [storage folder](#several-storage-folders) holds the study (the
-one holding most of it, should it be split), not only the main one. The
-catalog learns the new files in the same step, so the tree lists them at
-once, without a rescan. Once saved, a new object takes on the identity of its
-copy in the PACS (its SOP and Series Instance UIDs, its file name): it reads
-**in the PACS** from then on and is not offered a second time. An object
-loaded from the PACS and saved again keeps the identity it was loaded with,
-which a plan or a registration may refer to.
+*Changed* is told by a fingerprint of each object taken when it was loaded
+and again when it is saved: of a structure set, its label, references and
+every ROI to the last contour point (a rename, a removal, a margin, a
+brush stroke all move it); of a segmentation series, each segment's name,
+colour and edit generation. The window opens at once and reads what the
+PACS holds from the catalog on a background job (one read of the catalog,
+never a scan of the folders).
+
+Under the list, a line per folder says where the ticked objects go. An
+object goes beside the image series it was drawn on: in the folder holding
+that series, or, when the series has a folder of its own (every file in it
+is of that series), in the folder above it - the study's or the patient's
+folder - in whichever [storage folder](#several-storage-folders) holds it,
+not only the main one. An object that names no series the PACS holds goes
+into the folder holding the study's files (out of a series folder the same
+way), unless that is a storage folder or a cohort folder (a study whose
+series lie under two cohort folders has only the storage folder in common):
+then beside the study's largest series. Nothing is filed loose in a storage
+or a cohort folder, so the patient's cohorts stay as they were. The catalog
+learns the new files in the same step, so the tree lists them at once,
+without a rescan. Once saved, a new object takes on the identity of its copy
+in the PACS (its SOP and Series Instance UIDs, its file name): it reads **in
+the PACS** from then on and is not offered a second time. An object loaded
+from the PACS and saved again keeps the identity it was loaded with, which a
+plan or a registration may refer to, and reads **in the PACS** again until
+the next edit.
+
+A save that stops half way (a file that cannot be put in its place) keeps
+what it filed: the catalog learns those, they take on their PACS identity,
+and the window says *N saved; the rest failed: ...* with the rest still
+ticked, so a retry writes only those.
 
 Only **derived objects** are written - the structure sets and the
 segmentation series. The images are already in the PACS; re-sending them

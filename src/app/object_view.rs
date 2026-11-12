@@ -1,12 +1,14 @@
-//! A registration or a treatment record in the row's additional pane: what
-//! the data tree names in one line, laid out in full.
+//! A registration, a treatment record or an RT plan in the row's additional
+//! pane: what the data tree names in one line, laid out in full.
 //!
 //! The data tree holds data, one row per object; what an object says is
 //! read here, as a report is ([`super::report_view`]). A spatial
 //! registration is its facts (what it is, when, what it references and
 //! whether those are loaded), then each matrix with the frames it maps and
 //! the buttons that apply it between two workspaces, and a deformation
-//! grid's; a treatment record is its facts and the table of its beams. The
+//! grid's; a treatment record is its facts and the table of its beams; a
+//! plan is its facts (kind, radiation, fractions, prescription, date, what
+//! it was made on) and the table of its beams. The
 //! pane keeps the bar every pane has: maximize, detach, close.
 
 use super::*;
@@ -14,11 +16,28 @@ use crate::extras::{SpatialReg, TreatRecord};
 use crate::sessions;
 
 /// What the additional pane shows of the data tree's own objects: an index
-/// into `study.registrations` or `study.treat_records`.
+/// into `study.registrations`, `study.treat_records` or `study.plans`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PaneObject {
     Registration(usize),
     Record(usize),
+    Plan(usize),
+}
+
+impl PaneObject {
+    fn index(self) -> usize {
+        match self {
+            PaneObject::Registration(i) | PaneObject::Record(i) | PaneObject::Plan(i) => i,
+        }
+    }
+
+    fn with_index(self, i: usize) -> PaneObject {
+        match self {
+            PaneObject::Registration(_) => PaneObject::Registration(i),
+            PaneObject::Record(_) => PaneObject::Record(i),
+            PaneObject::Plan(_) => PaneObject::Plan(i),
+        }
+    }
 }
 
 impl ViewerApp {
@@ -54,17 +73,18 @@ impl ViewerApp {
         self.pane_object(slot, super::planar::ADDITIONAL_PANE) == Some(obj)
     }
 
-    /// Registration or record `idx` of `slot` is gone (`registration` says
-    /// which list): the pane that showed it shows nothing of its own again,
-    /// and the ones after it are renumbered.
-    pub(super) fn object_removed(&mut self, slot: usize, registration: bool, idx: usize) {
+    /// The object `gone` names (a registration, a record or a plan, by its
+    /// index before it went) is gone: the pane that showed it shows nothing
+    /// of its own again, and the ones after it in the same list are
+    /// renumbered.
+    pub(super) fn object_removed(&mut self, slot: usize, gone: PaneObject) {
         let k = super::planar::ADDITIONAL_PANE;
         let v = &mut self.slots[slot].planar[k];
-        let (i, rebuild): (usize, fn(usize) -> PaneObject) = match v.object {
-            Some(PaneObject::Registration(i)) if registration => (i, PaneObject::Registration),
-            Some(PaneObject::Record(i)) if !registration => (i, PaneObject::Record),
-            _ => return,
-        };
+        let Some(shown) = v.object else { return };
+        if std::mem::discriminant(&shown) != std::mem::discriminant(&gone) {
+            return;
+        }
+        let (i, idx) = (shown.index(), gone.index());
         if i == idx {
             v.object = None;
             if v.layers.is_empty()
@@ -74,7 +94,7 @@ impl ViewerApp {
                 self.remove_from_row(slot, PaneKind::Additional);
             }
         } else if i > idx {
-            v.object = Some(rebuild(i - 1));
+            v.object = Some(shown.with_index(i - 1));
         }
     }
 
@@ -118,6 +138,26 @@ impl ViewerApp {
                     with_time("treatment record".to_string(), &rec.datetime),
                 )
             }
+            PaneObject::Plan(pi) => {
+                let Some(plan) = study.plans.get(pi) else {
+                    return;
+                };
+                (
+                    if plan.label.is_empty() {
+                        "unnamed plan".to_string()
+                    } else {
+                        plan.label.clone()
+                    },
+                    format!(
+                        "{} plan",
+                        if plan.plan_kind.is_empty() {
+                            "RT"
+                        } else {
+                            &plan.plan_kind
+                        }
+                    ),
+                )
+            }
         };
         let title = if self.comparing() {
             format!("{title} · {}", SLOT_NAMES[slot])
@@ -139,13 +179,13 @@ impl ViewerApp {
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
             .tip(if is_max {
-                "Restore the multi-view layout"
+                "Restore the row"
             } else {
-                "Maximize this pane to the whole window"
+                "Maximize this pane"
             });
         let close_resp = ui
             .put(close_rect, egui::Button::new("✖").small())
-            .tip("Take this pane out of the row");
+            .tip("Close this pane");
         let clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
 
         // ---- the title ----
@@ -191,6 +231,7 @@ impl ViewerApp {
                 match obj {
                     PaneObject::Registration(ri) => self.reg_object_body(ui, slot, ri),
                     PaneObject::Record(ri) => self.record_object_body(ui, slot, ri),
+                    PaneObject::Plan(pi) => self.plan_object_body(ui, slot, pi),
                 }
             });
 
@@ -363,9 +404,8 @@ impl ViewerApp {
                             if invert { "  (inverted)" } else { "" }
                         ));
                         ui.horizontal_wrapped(|ui| {
-                            ui.checkbox(&mut invert, "Invert").on_hover_text(
-                                "Invert the matrix before applying (flip the mapping direction)",
-                            );
+                            ui.checkbox(&mut invert, "Invert")
+                                .on_hover_text("Invert the matrix before applying");
                             // This workspace against each of the others,
                             // both ways round.
                             for other in &partners {
@@ -375,8 +415,7 @@ impl ViewerApp {
                                         SLOT_NAMES[moving], SLOT_NAMES[fixed]
                                     );
                                     let tip = format!(
-                                        "Use this matrix as the transform mapping {} (fixed) \
-                                         coordinates into {} (moving)",
+                                        "Map {} (fixed) into {} (moving)",
                                         SLOT_NAMES[fixed], SLOT_NAMES[moving]
                                     );
                                     if ui
@@ -414,18 +453,9 @@ impl ViewerApp {
                             SLOT_NAMES[moving], SLOT_NAMES[fixed]
                         );
                         let tip = match src {
-                            Some(s) if s == fixed => {
-                                "The grid's own frame of reference matches this workspace - \
-                                 this is the direction the file means"
-                            }
-                            Some(_) => {
-                                "The grid's frame of reference matches the *other* workspace; \
-                                 applying it this way round inverts what the file says"
-                            }
-                            None => {
-                                "Neither loaded workspace matches the grid's frame of \
-                                 reference - check that this is the right pair"
-                            }
+                            Some(s) if s == fixed => "The direction the file means",
+                            Some(_) => "Inverts the direction the file means",
+                            None => "No workspace matches the grid's frame: check the pair",
                         };
                         if enabled_tip_button(ui, true, label, tip) {
                             apply_grid = Some((fixed, moving));
@@ -508,6 +538,59 @@ impl ViewerApp {
         }
         facts_grid(ui, ("record_facts", slot, ri), &facts);
         record_beams(ui, slot, ri, rec);
+    }
+
+    /// Plan `pi` of `slot` in full: its facts, then its beams.
+    fn plan_object_body(&mut self, ui: &mut egui::Ui, slot: usize, pi: usize) {
+        let Some(study) = self.slots[slot].study.as_ref() else {
+            return;
+        };
+        let Some(plan) = study.plans.get(pi) else {
+            return;
+        };
+        let mut facts: Vec<(String, String)> = Vec::new();
+        if !plan.name.is_empty() && plan.name != plan.label {
+            facts.push(("Name".into(), plan.name.clone()));
+        }
+        if !plan.plan_kind.is_empty() {
+            facts.push(("Type".into(), plan.plan_kind.clone()));
+        }
+        let mut radiation: Vec<String> = Vec::new();
+        for b in &plan.beams {
+            let t = b.radiation_type.trim().to_string();
+            if !t.is_empty() && !radiation.contains(&t) {
+                radiation.push(t);
+            }
+        }
+        if !radiation.is_empty() {
+            facts.push(("Radiation".into(), radiation.join(", ")));
+        }
+        if let Some(fx) = plan.n_fractions {
+            facts.push(("Fractions".into(), fx.to_string()));
+        }
+        if let Some(rx) = plan.target_prescription_dose {
+            facts.push(("Prescription".into(), format!("{rx:.2} Gy")));
+            if let Some(fx) = plan.n_fractions.filter(|f| *f > 0) {
+                facts.push(("Per fraction".into(), format!("{:.2} Gy", rx / fx as f64)));
+            }
+        }
+        if !plan.date.is_empty() {
+            facts.push(("Date".into(), plan.date.clone()));
+        }
+        if !plan.referenced_structset_uid.is_empty() {
+            facts.push((
+                "Structures".into(),
+                reference_label(study, &plan.referenced_structset_uid),
+            ));
+        }
+        if !plan.referenced_plan_uid.is_empty() {
+            facts.push((
+                "Verifies".into(),
+                reference_label(study, &plan.referenced_plan_uid),
+            ));
+        }
+        facts_grid(ui, ("plan_facts", slot, pi), &facts);
+        plan_beams(ui, slot, pi, plan);
     }
 
     /// Shown means on screen: a workspace put aside comes back, and a
@@ -602,6 +685,67 @@ fn facts_grid(
             }
         });
     ui.add_space(8.0);
+}
+
+/// The beams of a plan: radiation, angles, energy, meterset and control
+/// points, one row each.
+fn plan_beams(ui: &mut egui::Ui, slot: usize, pi: usize, plan: &crate::rtplan::PlanInfo) {
+    if plan.beams.is_empty() {
+        ui.weak("No beam in this plan");
+        return;
+    }
+    let deg = |v: Option<f64>| v.map(|g| format!("{g:.0}")).unwrap_or_else(|| "-".into());
+    egui::Grid::new(("plan_beams", slot, pi))
+        .striped(true)
+        .min_col_width(10.0)
+        .spacing([14.0, 3.0])
+        .show(ui, |ui| {
+            for c in [
+                "Beam", "No.", "Type", "Delivery", "G°", "C°", "Col°", "E (MeV)", "MU", "Dose/fx",
+                "CPs",
+            ] {
+                ui.strong(c);
+            }
+            ui.end_row();
+            for b in &plan.beams {
+                ui.label(&b.name);
+                ui.label(b.number.to_string());
+                ui.label(format!(
+                    "{}{}",
+                    b.radiation_type,
+                    if b.scan_mode.is_empty() {
+                        String::new()
+                    } else {
+                        format!("/{}", b.scan_mode)
+                    }
+                ));
+                ui.label(if b.delivery_type.is_empty() {
+                    "TREATMENT"
+                } else {
+                    &b.delivery_type
+                });
+                ui.label(deg(b.gantry_angle));
+                ui.label(deg(b.couch_angle));
+                ui.label(deg(b.collimator_angle));
+                ui.label(match (b.energy_min, b.energy_max) {
+                    (Some(a), Some(bb)) if (a - bb).abs() > 0.01 => format!("{a:.0}-{bb:.0}"),
+                    (Some(a), _) => format!("{a:.0}"),
+                    _ => "-".into(),
+                });
+                ui.label(
+                    b.meterset
+                        .map(|m| format!("{m:.1}"))
+                        .unwrap_or_else(|| "-".into()),
+                );
+                ui.label(
+                    b.beam_dose
+                        .map(|d| format!("{d:.2} Gy"))
+                        .unwrap_or_else(|| "-".into()),
+                );
+                ui.label(b.n_control_points.to_string());
+                ui.end_row();
+            }
+        });
 }
 
 /// The beams of a record: metersets specified and delivered, their

@@ -348,10 +348,7 @@ impl ViewerApp {
                 // put right a tick and an arrow at a time.
                 if ui
                     .add_enabled(row != standard, egui::Button::new("⟲ Reset").small())
-                    .on_hover_text(
-                        "Back to the standard row: axial, sagittal and coronal, in that \
-                         order",
-                    )
+                    .on_hover_text("Back to axial, sagittal, coronal")
                     .clicked()
                 {
                     reset = Some(slot);
@@ -391,34 +388,13 @@ impl ViewerApp {
                     } else if last {
                         resp.on_hover_text("A row has to show something");
                     } else if kind == PaneKind::Scene3d {
-                        resp.on_hover_text(
-                            "This workspace's structure and segmentation surfaces, in the \
-                             row; the toolbar's 3D button puts it in and takes it out too",
-                        );
+                        resp.on_hover_text("Structure and segmentation surfaces in 3D");
                     } else if kind == PaneKind::Chart {
-                        resp.on_hover_text(
-                            "The chart of a module: the dose-volume histograms, the curves \
-                             of a motion run. Not drawn while no module has given it \
-                             anything; the module that computes a chart puts it here.",
-                        );
+                        resp.on_hover_text("A module's chart: DVH or motion curves");
                     } else if matches!(kind, PaneKind::Planar(_)) {
-                        resp.on_hover_text(
-                            "One of this workspace's planar images - a radiograph, an RT \
-                             image, a DRR - in the row, with its own window, zoom and \
-                             pan; the menu in its corner or the wheel picks the image. \
-                             Not drawn while the workspace has no planar image. Ticking \
-                             an image under Planar images in the data tree puts it here \
-                             too.",
-                        );
+                        resp.on_hover_text("A planar image: radiograph, RT image or DRR");
                     } else if kind == PaneKind::Additional {
-                        resp.on_hover_text(
-                            "What the workspace holds besides images of the patient: a \
-                             report (a dose report, a scanner's protocol page) as a \
-                             table, a secondary capture or a scanned document as an \
-                             image with its own window, zoom and pan. Not drawn while \
-                             the workspace has none. Clicking one under Reports or \
-                             Additional in the data tree puts it here too.",
-                        );
+                        resp.on_hover_text("Reports, secondary captures, documents");
                     }
                     // Where in the row it sits. A pane that is not in the row
                     // has nowhere to go, and the ends have nowhere further.
@@ -427,14 +403,14 @@ impl ViewerApp {
                     let can_right = at.is_some() && i + 1 < row.len();
                     if ui
                         .add_enabled(can_left, egui::Button::new("◀").small())
-                        .tip("Move this pane one place left in the row")
+                        .tip("Move left")
                         .clicked()
                     {
                         shift = Some((slot, i, false));
                     }
                     if ui
                         .add_enabled(can_right, egui::Button::new("▶").small())
-                        .tip("Move this pane one place right in the row")
+                        .tip("Move right")
                         .clicked()
                     {
                         shift = Some((slot, i, true));
@@ -613,7 +589,7 @@ impl ViewerApp {
                     close_rect,
                     egui::Button::new("Close this workspace").small(),
                 )
-                .on_hover_text("Take the row off the screen again")
+                .on_hover_text("Close this row")
                 .clicked()
             {
                 self.close_workspace(slot);
@@ -707,7 +683,7 @@ impl ViewerApp {
             Rect::from_center_size(rect.center() + Vec2::new(0.0, 14.0), Vec2::new(240.0, 28.0));
         if ui
             .put(btn_rect, egui::Button::new("📂 Add DICOM folder"))
-            .on_hover_text("Add an image series to this workspace so the views have slices to show")
+            .on_hover_text("Add an image series")
             .clicked()
         {
             self.ask_folder(
@@ -1081,6 +1057,21 @@ impl ViewerApp {
                             .line_segment([c + Vec2::new(0.0, -9.0), c + Vec2::new(0.0, 9.0)], s);
                     }
                 }
+            }
+        }
+
+        // The shown plan's beams, cut by this view's plane.
+        {
+            let beams = super::overlays::shown_beams(self, slot);
+            if !beams.is_empty() {
+                super::overlays::draw_beams_2d(
+                    &painter,
+                    &beams,
+                    vol,
+                    plane,
+                    view.slice,
+                    &px_to_screen,
+                );
             }
         }
 
@@ -1460,7 +1451,9 @@ impl ViewerApp {
             painter.text(
                 Pos2::new(
                     rect.center().x,
-                    rect.bottom() - if has_slider { 26.0 } else { 6.0 },
+                    rect.bottom()
+                        - if has_slider { 26.0 } else { 6.0 }
+                        - if self.overlays.ruler { 22.0 } else { 0.0 },
                 ),
                 Align2::CENTER_BOTTOM,
                 lbl(dy),
@@ -1474,6 +1467,31 @@ impl ViewerApp {
                 f,
                 lc,
             );
+        }
+
+        // What Settings > Viewer adds, and the dose legend: the scale along
+        // the bottom, the cube in the lower left corner, the legend on the
+        // right below the pane's buttons.
+        let bottom = rect.bottom() - if has_slider { 26.0 } else { 6.0 };
+        if self.overlays.ruler {
+            super::overlays::draw_ruler(&painter, rect, zoom, bottom - 14.0);
+        }
+        if self.overlays.orientation_cube {
+            let (dx, dy) = vol.plane_screen_dirs(plane);
+            super::overlays::draw_cube_2d(
+                &painter,
+                Pos2::new(rect.left() + 30.0, bottom - 22.0),
+                dx,
+                dy,
+            );
+        }
+        if self.dose_legend.shows(Some(plane)) {
+            let n = if self.pane_buttons_hidden { 2 } else { 8 };
+            let below = super::pane_windows::bar_cells(rect, rect.top() + 22.0, &vec![24.0; n])
+                .iter()
+                .map(|c| c.bottom())
+                .fold(rect.top() + 42.0, f32::max);
+            self.draw_dose_legend(&painter, slot, Pos2::new(rect.right() - 6.0, below + 6.0));
         }
 
         // Loading overlay.
@@ -1565,8 +1583,14 @@ impl ViewerApp {
             widths.push(38.0);
         }
         let cells = super::pane_windows::bar_cells(rect, by, &widths);
-        let (max_rect, close_rect, fold_rect, detach_rect, fit_rect) =
-            (cells[0], cells[1], cells[2], cells[3], cells[4]);
+        // Folded, the bar is two buttons: maximize and the arrow that
+        // brings the rest back; the close goes with the others.
+        let (max_rect, close_rect, fold_rect) = if folded {
+            (cells[0], Rect::NOTHING, cells[1])
+        } else {
+            (cells[0], cells[1], cells[2])
+        };
+        let (detach_rect, fit_rect) = (cells[3], cells[4]);
         let (hand_rect, zout_rect, zin_rect) = (cells[5], cells[6], cells[7]);
         let play3_rect = if slices_here { cells[8] } else { Rect::NOTHING };
         let play4_rect = if phases_here {
@@ -1613,9 +1637,9 @@ impl ViewerApp {
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
             .tip(if is_max {
-                "Restore the multi-view layout"
+                "Restore the row"
             } else {
-                "Maximize this view to the whole window"
+                "Maximize this view"
             })
             // Three panes carry this button: which one is in the name.
             .named_with(|| {
@@ -1626,19 +1650,18 @@ impl ViewerApp {
                 };
                 format!("{what} {}", plane.title())
             });
-        let close_resp =
-            Self::close_button(ui, close_rect).named_with(|| format!("Close {}", plane.title()));
+        let close_resp = (!folded).then(|| {
+            Self::close_button(ui, close_rect).named_with(|| format!("Close {}", plane.title()))
+        });
         let fold_resp = ui
             .put(
                 fold_rect,
                 egui::Button::new(if folded { "◀" } else { "▶" }).small(),
             )
             .tip(if folded {
-                "Show the buttons of this bar: play, zoom, the hand and reset. One \
-                 switch for every pane, and it is remembered between runs."
+                "Show the pane buttons"
             } else {
-                "Fold these buttons away, leaving the image. One switch for every \
-                 pane, and it is remembered between runs."
+                "Hide the pane buttons"
             });
         // Folded, the rest of the bar is not drawn at all - not drawn dim,
         // not drawn small. A viewport with nothing over the anatomy is the
@@ -1650,10 +1673,10 @@ impl ViewerApp {
         let mut clicked_detach = false;
         if !folded {
             clicked_detach = self.detach_button(ui, detach_rect, slot, PaneKind::Plane(plane));
-            fit_resp = Some(ui.put(fit_rect, egui::Button::new("⟲").small()).tip(
-                "Reset this view: fit zoom, clear pan and put the crosshair back \
-                         at the volume center",
-            ));
+            fit_resp = Some(
+                ui.put(fit_rect, egui::Button::new("⟲").small())
+                    .tip("Reset the view"),
+            );
             hand_resp = Some(
                 ui.put(
                     hand_rect,
@@ -1661,19 +1684,15 @@ impl ViewerApp {
                         .frame_when_inactive(true)
                         .small(),
                 )
-                .tip(
-                    "Move the image: while this is on, dragging with the left button \
-                     slides the image instead of placing the crosshair. Off, a middle \
-                     drag still moves it. The switch is shared by every view.",
-                ),
+                .tip("Pan: drag to move the image"),
             );
             zout_resp = Some(
                 ui.put(zout_rect, egui::Button::new("➖").small())
-                    .tip("Zoom out, about the middle of the view"),
+                    .tip("Zoom out"),
             );
             zin_resp = Some(
                 ui.put(zin_rect, egui::Button::new("➕").small())
-                    .tip("Zoom in, about the middle of the view"),
+                    .tip("Zoom in"),
             );
         }
         let slice_target = play::PlayTarget::Slices { slot, view: idx };
@@ -1686,11 +1705,7 @@ impl ViewerApp {
                     play3_rect,
                     egui::Button::new(if on { "⏸3D" } else { "▶3D" }).small(),
                 )
-                .on_hover_text(if on {
-                    "Stop running through the slices"
-                } else {
-                    "Play 3D: run through the slices of this view. Speed and what happens at the end are in the Image playback module."
-                });
+                .on_hover_text(if on { "Stop" } else { "Play the slices" });
             clicked_play3 = resp.clicked()
                 || (any_click && pointer_pos.map(|p| play3_rect.contains(p)).unwrap_or(false));
         }
@@ -1702,11 +1717,7 @@ impl ViewerApp {
                     play4_rect,
                     egui::Button::new(if on { "⏸4D" } else { "▶4D" }).small(),
                 )
-                .on_hover_text(if on {
-                    "Stop running through the phases"
-                } else {
-                    "Play 4D: run this workspace through the phases of its 4D group, with the structures, segmentations and dose of each phase. The first press reads the phases into memory."
-                });
+                .on_hover_text(if on { "Stop" } else { "Play the 4D phases" });
             clicked_play4 = resp.clicked()
                 || (any_click && pointer_pos.map(|p| play4_rect.contains(p)).unwrap_or(false));
         }
@@ -1714,7 +1725,7 @@ impl ViewerApp {
             || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
         let clicked_fold = fold_resp.clicked()
             || (any_click && pointer_pos.map(|p| fold_rect.contains(p)).unwrap_or(false));
-        let clicked_close = close_resp.clicked()
+        let clicked_close = close_resp.as_ref().is_some_and(|r| r.clicked())
             || (any_click && pointer_pos.map(|p| close_rect.contains(p)).unwrap_or(false));
         // A folded bar has no buttons under the pointer, so a click in the
         // space where one used to be belongs to the image.

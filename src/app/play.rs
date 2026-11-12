@@ -847,7 +847,7 @@ impl ViewerApp {
                     .range(0.25..=60.0)
                     .suffix(" slices/s"),
             )
-            .on_hover_text("How fast ▶3D runs through the slices of a view");
+            .on_hover_text("▶3D speed");
         });
         ui.horizontal(|ui| {
             ui.add_space(38.0);
@@ -857,10 +857,7 @@ impl ViewerApp {
                     .range(0.25..=30.0)
                     .suffix(" phases/s"),
             )
-            .on_hover_text(
-                "How fast ▶4D runs through the phases of a 4D group. A ten-phase \
-                 breathing cycle at 5 phases/s is one breath every two seconds.",
-            );
+            .on_hover_text("▶4D speed");
         });
         ui.horizontal(|ui| {
             ui.add_space(38.0);
@@ -870,11 +867,7 @@ impl ViewerApp {
                     .range(0.25..=20.0)
                     .suffix(" steps/s"),
             )
-            .on_hover_text(
-                "How fast the Dose analysis module's Dynamic log plays. Slower than \
-                 the others by default: every step is a different arrangement of the \
-                 anatomy with its own dose numbers, and the numbers are there to be read.",
-            );
+            .on_hover_text("Dynamic log speed");
         });
         ui.horizontal_wrapped(|ui| {
             ui.label("At the end");
@@ -890,29 +883,17 @@ impl ViewerApp {
                     .speed(1)
                     .range(1..=20),
             )
-            .on_hover_text(
-                "Show every n-th slice, so that a long stack can be watched in one pass. \
-                 Phases always step one at a time: skipping phases of a breathing cycle \
-                 hides the motion the cine is there to show.",
-            );
+            .on_hover_text("Show every n-th slice");
         });
 
         ui.separator();
         ui.label("A phase change carries with it:");
         ui.checkbox(&mut self.play.follow_structs, "Structures")
-            .on_hover_text(
-                "Switch to the structure set drawn on the new phase, when the study has \
-                 one per phase (matched by the series the set references)",
-            );
+            .on_hover_text("Switch to the new phase's structure set");
         ui.checkbox(&mut self.play.follow_segs, "Segmentations")
-            .on_hover_text("Switch to the segmentation series that belongs to the new phase");
+            .on_hover_text("Switch to the new phase's segmentation");
         ui.checkbox(&mut self.play.follow_dose, "Dose")
-            .on_hover_text(
-                "Switch to the dose named after the new phase. A dose carries no reference \
-                 to an image series, so the only thing that can tie one to a phase is what \
-                 it is called; a study whose doses are not named after its phases keeps the \
-                 dose it has.",
-            );
+            .on_hover_text("Switch to the dose named after the new phase");
 
         ui.separator();
         self.phase_memory_row(ui, slot);
@@ -952,10 +933,7 @@ impl ViewerApp {
                         .range(1..=5000)
                         .suffix(" frames"),
                 )
-                .on_hover_text(
-                    "Every frame is held in memory until the run ends, so a loop that \
-                     never stops would fill it. The recording ends by itself here.",
-                );
+                .on_hover_text("Stop recording after this many frames");
             });
         });
         ui.horizontal_wrapped(|ui| {
@@ -963,18 +941,14 @@ impl ViewerApp {
             if recording {
                 if ui
                     .button("⏹ Stop and save")
-                    .on_hover_text("End the recording now and write what has been taken")
+                    .on_hover_text("Stop and save the recording")
                     .clicked()
                 {
                     self.finish_recording(false);
                 }
             } else if ui
                 .button("⏺ Record")
-                .on_hover_text(
-                    "Arm the recorder: you are asked where the file goes, and then the \
-                     next run you start with ▶ is taken, frame by frame, from the pane \
-                     that ▶ belongs to. It ends by itself after one full cycle.",
-                )
+                .on_hover_text("Record the next ▶ run")
                 .clicked()
             {
                 let ctx = ui.ctx().clone();
@@ -1013,28 +987,18 @@ impl ViewerApp {
         let playing = self.is_playing(target);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            if tip_widget(
-                ui,
-                n > 1,
-                egui::Button::new("⏮").small(),
-                "The slice before this one",
-            ) {
+            if tip_widget(ui, n > 1, egui::Button::new("⏮").small(), "Previous slice") {
                 step = -1;
             }
             if tip_widget(
                 ui,
                 n > 1,
                 egui::Button::new(if playing { "⏸" } else { "▶" }).small(),
-                "Play through the slices of this view",
+                "Play the slices",
             ) {
                 toggle = true;
             }
-            if tip_widget(
-                ui,
-                n > 1,
-                egui::Button::new("⏭").small(),
-                "The slice after this one",
-            ) {
+            if tip_widget(ui, n > 1, egui::Button::new("⏭").small(), "Next slice") {
                 step = 1;
             }
             let cur = self.slots[slot].views.get(view).map_or(0, |v| v.slice);
@@ -1093,7 +1057,7 @@ impl ViewerApp {
                 ui,
                 at.is_some_and(|a| a > 0) || (at.is_none() && n > 0),
                 egui::Button::new("⏮").small(),
-                "The phase before this one",
+                "Previous phase",
             ) {
                 goto = Some(at.map_or(0, |a| a.saturating_sub(1)));
             }
@@ -1101,7 +1065,7 @@ impl ViewerApp {
                 ui,
                 !busy,
                 egui::Button::new(if playing { "⏸" } else { "▶" }).small(),
-                "Play through the phases. The first press reads them into memory.",
+                "Play the phases",
             ) {
                 toggle = true;
             }
@@ -1109,7 +1073,7 @@ impl ViewerApp {
                 ui,
                 at.is_some_and(|a| a + 1 < n) || at.is_none(),
                 egui::Button::new("⏭").small(),
-                "The phase after this one",
+                "Next phase",
             ) {
                 goto = Some(at.map_or(0, |a| (a + 1).min(n - 1)));
             }
@@ -1219,17 +1183,11 @@ impl ViewerApp {
                     ui,
                     est.is_some() && !ready,
                     "Read phases",
-                    "Read every phase of this workspace's 4D group into memory, so that \
-                     playing them is smooth",
+                    "Load every phase into memory",
                 ) {
                     self.start_phase_cache(slot);
                 }
-                if enabled_tip_button(
-                    ui,
-                    anything_held,
-                    "Free",
-                    "Give the memory back. Playing reads the phases again.",
-                ) {
+                if enabled_tip_button(ui, anything_held, "Free", "Free the phase memory") {
                     self.drop_phase_cache(slot);
                 }
             });
@@ -1242,11 +1200,7 @@ impl ViewerApp {
                     .range(256..=65536)
                     .suffix(" MB"),
             )
-            .on_hover_text(
-                "A group whose phases would need more than this is refused rather than \
-                 read: ten phases of a large CT run to about a gigabyte, and the machine \
-                 has other work to do.",
-            );
+            .on_hover_text("Memory limit for the phases");
         });
     }
 }

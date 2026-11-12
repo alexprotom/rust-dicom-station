@@ -402,13 +402,7 @@ impl ViewerApp {
                                     None
                                 };
                                 match which.and_then(|w| d.centroids[w]) {
-                                    Some(c)
-                                        if small_tip_button(
-                                            ui,
-                                            "⌖",
-                                            "Put the crosshair on this point",
-                                        ) =>
-                                    {
+                                    Some(c) if small_tip_button(ui, "⌖", "Go to this point") => {
                                         jump = Some(c);
                                     }
                                     Some(_) => {}

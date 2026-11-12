@@ -923,16 +923,11 @@ impl ViewerApp {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Region");
                 for (t, glyph, tip) in [
-                    (
-                        RegionTool::Rect,
-                        "⬚",
-                        "A rectangle on the fixed image: drag corner to corner",
-                    ),
+                    (RegionTool::Rect, "⬚", "Rectangle: drag on the fixed image"),
                     (
                         RegionTool::Polygon,
                         "✏",
-                        "A polygon on the fixed image: click the corners, right click or \
-                         double click to close",
+                        "Polygon: click the corners, double-click to close",
                     ),
                 ] {
                     if ui
@@ -966,9 +961,7 @@ impl ViewerApp {
                 let on = st.placing;
                 if ui
                     .selectable_label(on, "📌 Place")
-                    .on_hover_text(
-                        "A click on the fixed image, then one on the moving image, is one pair",
-                    )
+                    .on_hover_text("Click fixed, then moving, for each pair")
                     .clicked()
                 {
                     st.placing = !on;
@@ -1051,8 +1044,8 @@ impl ViewerApp {
                     let mut on = st.for_setup.contains(&k);
                     if ui
                         .add_enabled(placed, egui::Checkbox::new(&mut on, ""))
-                        .on_hover_text("Take part in ⌖ As setup")
-                        .on_disabled_hover_text("its fixed image has no geometry")
+                        .on_hover_text("Use in ⌖ As setup")
+                        .on_disabled_hover_text("Its fixed image has no geometry")
                         .changed()
                     {
                         if on {
@@ -1090,9 +1083,8 @@ impl ViewerApp {
                     ));
                 }
                 if r.result.transform.warp.is_some() {
-                    ui.checkbox(&mut st.show_field, "Field").on_hover_text(
-                        "The warp over the fixed image: arrows and the deformed grid",
-                    );
+                    ui.checkbox(&mut st.show_field, "Field")
+                        .on_hover_text("Show the warp on the fixed image");
                 }
                 if let Some(w) = &r.result.warp_stats {
                     ui.weak(format!(
@@ -1107,17 +1099,14 @@ impl ViewerApp {
                 ui.horizontal_wrapped(|ui| {
                     if ui
                         .button("⇥ Carry contours")
-                        .on_hover_text("The moving image's planar structures onto the fixed image")
+                        .on_hover_text("Copy the moving contours onto the fixed image")
                         .clicked()
                     {
                         carry = Some(k);
                     }
                     if ui
                         .add_enabled(st.for_setup.len() >= 2, egui::Button::new("⌖ As setup"))
-                        .on_hover_text(
-                            "The ticked matches of two views read as one 3D correction, filed \
-                             under Setups",
-                        )
+                        .on_hover_text("Make a 3D setup from the ticked matches")
                         .clicked()
                     {
                         as_setup = true;
@@ -1129,7 +1118,7 @@ impl ViewerApp {
                     }
                     if ui
                         .button("📋 Copy")
-                        .on_hover_text("The transform as text")
+                        .on_hover_text("Copy the transform as text")
                         .clicked()
                     {
                         ui.ctx().copy_text(r.result.line());

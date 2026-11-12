@@ -1294,33 +1294,23 @@ impl ViewerApp {
         // rows that apply change, the left edge does not.
         form::form(ui, "reg_params_form", |f| {
             if method.is_intensity_based() {
-                f.row_tip(
-                    "Resolutions",
-                    "Pyramid levels, coarse to fine (elastix NumberOfResolutions)",
-                    |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.reg_levels)
-                                .speed(0.1)
-                                .range(1..=5),
-                        );
-                    },
-                );
-                f.row_tip(
-                    "Iterations/level",
-                    "The stochastic engine wants hundreds of cheap iterations; the dense \
-                     one converges in tens of expensive ones",
-                    |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.reg_iterations)
-                                .speed(10)
-                                .range(10..=5000),
-                        );
-                    },
-                );
+                f.row_tip("Resolutions", "Pyramid levels, coarse to fine", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.reg_levels)
+                            .speed(0.1)
+                            .range(1..=5),
+                    );
+                });
+                f.row_tip("Iterations/level", "Iterations per pyramid level", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.reg_iterations)
+                            .speed(10)
+                            .range(10..=5000),
+                    );
+                });
                 f.row_tip(
                     "Body threshold",
-                    "Only fixed-image voxels above this drive the metric - a crude body \
-                     mask that keeps air out of the cost",
+                    "Ignore fixed-image voxels below this",
                     |ui| {
                         ui.add(
                             egui::DragValue::new(&mut self.reg_threshold)
@@ -1336,17 +1326,13 @@ impl ViewerApp {
                 // 2D/3D pose is tuned where it is run.
                 RegMethod::Given | RegMethod::Projective => {}
                 RegMethod::ElastixRigid | RegMethod::ElastixBSpline => {
-                    f.row_tip(
-                        "Samples/iter",
-                        "elastix NumberOfSpatialSamples, redrawn every iteration",
-                        |ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut self.reg_samples)
-                                    .speed(100)
-                                    .range(500..=50000),
-                            );
-                        },
-                    );
+                    f.row_tip("Samples/iter", "Random samples per iteration", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.reg_samples)
+                                .speed(100)
+                                .range(500..=50000),
+                        );
+                    });
                 }
                 RegMethod::PlastimatchBSpline => {
                     f.row("Metric", |ui| {
@@ -1357,9 +1343,7 @@ impl ViewerApp {
                     });
                     f.row_tip(
                         "Regularization",
-                        "plastimatch young_modulus: the weight of the bending-energy \
-                         penalty on the control lattice. Higher is smoother and less \
-                         likely to fold; 0 turns it off.",
+                        "Smoothness penalty. 0 turns it off.",
                         |ui| {
                             ui.add(
                                 egui::DragValue::new(&mut self.reg_regularization)
@@ -1378,19 +1362,14 @@ impl ViewerApp {
                 method,
                 RegMethod::ElastixBSpline | RegMethod::PlastimatchBSpline
             ) {
-                f.row_tip(
-                    "B-spline grid",
-                    "Control-point spacing (elastix FinalGridSpacingInPhysicalUnits, \
-                     plastimatch grid_spacing). Finer resolves more detail and costs more.",
-                    |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.reg_grid_mm)
-                                .speed(1.0)
-                                .range(4.0..=128.0)
-                                .suffix(" mm"),
-                        );
-                    },
-                );
+                f.row_tip("B-spline grid", "Control-point spacing", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.reg_grid_mm)
+                            .speed(1.0)
+                            .range(4.0..=128.0)
+                            .suffix(" mm"),
+                    );
+                });
             }
             if method == RegMethod::PlastimatchLandmark {
                 f.row("Kernel", |ui| {
@@ -1419,8 +1398,7 @@ impl ViewerApp {
                 }
                 f.row_tip(
                     "Stiffness",
-                    "0 passes exactly through every landmark. Larger values smooth the \
-                     field instead - which is what inconsistent pairs need.",
+                    "0 fits every landmark exactly; higher is smoother",
                     |ui| {
                         ui.add(
                             egui::DragValue::new(&mut self.reg_landmark.stiffness)
@@ -1468,12 +1446,7 @@ fn analysis_rows(
         })
         .response
         .on_hover_text(format!(
-            "Dice of the tissue of the two images: every voxel above {:.0} HU \
-             counts as tissue, and the score is the overlap of the fixed \
-             image's tissue with the moving image's, before the transform and \
-             after it. {} probes.\n\nIt is an image score, not an anatomical \
-             one - it says the two workspaces now cover the same space. For \
-             anatomy, score the structures below.",
+            "Tissue overlap (above {:.0} HU), {} probes",
             ov.threshold, ov.samples
         ));
         ui.add_space(2.0);
@@ -1542,7 +1515,7 @@ fn analysis_rows(
                             ui.monospace(format!("{:.2}", stats.mean));
                             ui.monospace(format!("{:.2}", stats.max))
                                 .on_hover_text(format!(
-                                    "{}\nmean ({:.2}, {:.2}, {:.2}) mm over {} contour points",
+                                    "{}\nmean ({:.2}, {:.2}, {:.2}) mm, {} points",
                                     stats.line(),
                                     mean.x,
                                     mean.y,
@@ -1567,9 +1540,7 @@ fn analysis_rows(
                     if tip_button(
                         ui,
                         "Score structures (Dice)",
-                        "Pair every structure of the fixed workspace with the one of \
-                         the same name on the moving workspace, warp the moving one \
-                         through this registration, and score the overlap",
+                        "Score same-named structures after warping",
                     ) {
                         score = true;
                     }
@@ -1605,17 +1576,13 @@ fn analysis_rows(
                                 ui.weak(format!("{:.3}", d.before));
                                 ui.monospace(format!("{:+.3}", d.after - d.before))
                                     .on_hover_text(format!(
-                                        "fixed {:.2} cm³, warped moving {:.2} cm³",
+                                        "fixed {:.2} cm³, moving {:.2} cm³",
                                         d.fixed_cm3, d.moving_cm3
                                     ));
                                 ui.end_row();
                             }
                         });
-                    if tip_button(
-                        ui,
-                        "Score again",
-                        "Recompute after editing a structure or refining the fit",
-                    ) {
+                    if tip_button(ui, "Score again", "Recompute the scores") {
                         score = true;
                     }
                 }
@@ -1652,69 +1619,59 @@ impl ViewerApp {
         // images, the method, the region and where the search
         // starts.
         form::form(ui, "reg_setup", |f| {
-            f.row_tip(
-                "Fixed image",
-                "The image the other is aligned onto; the transform maps its \
-                 coordinates into the moving image's. A series that is not on \
-                 display is loaded for the run.",
-                |ui| {
-                    let current = match self.reg_group {
-                        None => label_of(self.reg_fixed),
-                        Some(k) => group_choices
-                            .iter()
-                            .find(|(g, _)| *g == k)
-                            .map(|(_, l)| l.clone())
-                            .unwrap_or_default(),
-                    };
-                    egui::ComboBox::from_id_salt("reg_fixed_image")
-                        .selected_text(current)
-                        .width(230.0)
-                        .show_ui(ui, |ui| {
-                            for c in &choices {
-                                let mark = if c.displayed { " (displayed)" } else { "" };
-                                if ui
-                                    .selectable_label(
-                                        self.reg_group.is_none() && self.reg_fixed == c.pick,
-                                        format!("{}{mark}", c.label),
-                                    )
-                                    .clicked()
-                                {
-                                    self.reg_fixed = c.pick;
-                                    self.reg_group = None;
-                                }
-                            }
-                            if !group_choices.is_empty() {
-                                ui.separator();
-                                for (key, label) in group_choices {
-                                    ui.selectable_value(
-                                        &mut self.reg_group,
-                                        Some(*key),
-                                        format!("every phase of {label}"),
-                                    );
-                                }
-                            }
-                        });
-                },
-            );
-            f.row_tip(
-                "Moving image",
-                "The image that is moved and deformed onto the fixed one",
-                |ui| {
-                    egui::ComboBox::from_id_salt("reg_moving_image")
-                        .selected_text(label_of(self.reg_moving))
-                        .width(230.0)
-                        .show_ui(ui, |ui| {
-                            for c in &choices {
-                                let mark = if c.displayed { " (displayed)" } else { "" };
-                                ui.selectable_value(
-                                    &mut self.reg_moving,
-                                    c.pick,
+            f.row_tip("Fixed image", "The image the other is aligned onto", |ui| {
+                let current = match self.reg_group {
+                    None => label_of(self.reg_fixed),
+                    Some(k) => group_choices
+                        .iter()
+                        .find(|(g, _)| *g == k)
+                        .map(|(_, l)| l.clone())
+                        .unwrap_or_default(),
+                };
+                egui::ComboBox::from_id_salt("reg_fixed_image")
+                    .selected_text(current)
+                    .width(230.0)
+                    .show_ui(ui, |ui| {
+                        for c in &choices {
+                            let mark = if c.displayed { " (displayed)" } else { "" };
+                            if ui
+                                .selectable_label(
+                                    self.reg_group.is_none() && self.reg_fixed == c.pick,
                                     format!("{}{mark}", c.label),
+                                )
+                                .clicked()
+                            {
+                                self.reg_fixed = c.pick;
+                                self.reg_group = None;
+                            }
+                        }
+                        if !group_choices.is_empty() {
+                            ui.separator();
+                            for (key, label) in group_choices {
+                                ui.selectable_value(
+                                    &mut self.reg_group,
+                                    Some(*key),
+                                    format!("every phase of {label}"),
                                 );
                             }
-                        });
-                },
-            );
+                        }
+                    });
+            });
+            f.row_tip("Moving image", "The image moved onto the fixed one", |ui| {
+                egui::ComboBox::from_id_salt("reg_moving_image")
+                    .selected_text(label_of(self.reg_moving))
+                    .width(230.0)
+                    .show_ui(ui, |ui| {
+                        for c in &choices {
+                            let mark = if c.displayed { " (displayed)" } else { "" };
+                            ui.selectable_value(
+                                &mut self.reg_moving,
+                                c.pick,
+                                format!("{}{mark}", c.label),
+                            );
+                        }
+                    });
+            });
             if self.reg_group.is_some() {
                 f.wide(|ui| {
                     ui.weak(
@@ -1755,42 +1712,28 @@ impl ViewerApp {
             if self.region_label(fixed_slot).is_none() {
                 self.reg_roi = RegRoi::Whole;
             }
-            f.row_tip(
-                "Region",
-                "Restrict the registration to one structure of the fixed \
-                 workspace. Samples come from inside it only and the B-spline \
-                 lattice covers it alone, so a small structure can be aligned at a \
-                 fine grid - and, when it refines an existing result, the rest of \
-                 the patient keeps that result untouched.",
-                |ui| {
-                    let current = self
-                        .region_label(fixed_slot)
-                        .unwrap_or_else(|| "Whole image".into());
-                    egui::ComboBox::from_id_salt("reg_roi")
-                        .selected_text(current)
-                        .width(190.0)
-                        .show_ui(ui, |ui| {
-                            for (choice, label) in &region_choices {
-                                ui.selectable_value(&mut self.reg_roi, *choice, label);
-                            }
-                        });
-                },
-            );
+            f.row_tip("Region", "Register only inside this structure", |ui| {
+                let current = self
+                    .region_label(fixed_slot)
+                    .unwrap_or_else(|| "Whole image".into());
+                egui::ComboBox::from_id_salt("reg_roi")
+                    .selected_text(current)
+                    .width(190.0)
+                    .show_ui(ui, |ui| {
+                        for (choice, label) in &region_choices {
+                            ui.selectable_value(&mut self.reg_roi, *choice, label);
+                        }
+                    });
+            });
             if self.reg_roi != RegRoi::Whole {
-                f.row_tip(
-                    "Margin",
-                    "The structure is grown by this much before sampling. Without a \
-                     margin nothing outside the structure constrains its boundary, \
-                     and the boundary is what you are aligning.",
-                    |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.reg_margin_mm)
-                                .speed(1.0)
-                                .range(0.0..=60.0)
-                                .suffix(" mm"),
-                        );
-                    },
-                );
+                f.row_tip("Margin", "Grow the region by this much", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.reg_margin_mm)
+                            .speed(1.0)
+                            .range(0.0..=60.0)
+                            .suffix(" mm"),
+                    );
+                });
             }
 
             // ---- initialisation ----
@@ -1798,31 +1741,21 @@ impl ViewerApp {
             if !init_choices.iter().any(|(c, _)| *c == self.reg_init) {
                 self.reg_init = RegInit::Auto;
             }
-            f.row_tip(
-                "Start from",
-                "Where the search begins. The engines take steps of a few \
-                 millimetres, so two images that do not overlap at the identity \
-                 (different frames of reference: a cardiac CT and a 4DCT) never \
-                 find each other. Automatic keeps the identity when they overlap \
-                 and matches the centres of gravity when they do not; a structure \
-                 contoured on both workspaces matches its centroids, which is the \
-                 surest start for an organ.",
-                |ui| {
-                    let current = init_choices
-                        .iter()
-                        .find(|(c, _)| *c == self.reg_init)
-                        .map(|(_, l)| l.clone())
-                        .unwrap_or_default();
-                    egui::ComboBox::from_id_salt("reg_init")
-                        .selected_text(current)
-                        .width(190.0)
-                        .show_ui(ui, |ui| {
-                            for (choice, label) in &init_choices {
-                                ui.selectable_value(&mut self.reg_init, *choice, label);
-                            }
-                        });
-                },
-            );
+            f.row_tip("Start from", "Where the search begins", |ui| {
+                let current = init_choices
+                    .iter()
+                    .find(|(c, _)| *c == self.reg_init)
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_default();
+                egui::ComboBox::from_id_salt("reg_init")
+                    .selected_text(current)
+                    .width(190.0)
+                    .show_ui(ui, |ui| {
+                        for (choice, label) in &init_choices {
+                            ui.selectable_value(&mut self.reg_init, *choice, label);
+                        }
+                    });
+            });
         });
         rf.fixed_slot = fixed_slot;
     }
@@ -1854,9 +1787,7 @@ impl ViewerApp {
                         if tip_button(
                             ui,
                             "➕ Add pair",
-                            "Take the crosshair of each workspace as one pair. Put \
-                         both crosshairs on the same anatomy first - and turn \
-                         off View ▶ Sync crosshairs, or they move together.",
+                            "Add the two crosshairs as a pair. Turn off Sync crosshairs first.",
                         ) {
                             add_landmark = true;
                         }
@@ -1928,7 +1859,7 @@ impl ViewerApp {
                         n >= 2 && moving_ok && self.propagate_job.is_none(),
                         egui::Button::new(format!("▶ Register {n} phases")),
                     )
-                    .on_hover_text("One registration per phase, against the moving image")
+                    .on_hover_text("Register each phase to the moving image")
                     .clicked()
                 {
                     run_group = Some((self.reg_moving, gslot, group));
@@ -1946,17 +1877,14 @@ impl ViewerApp {
                 .is_some_and(|r| r.fixed_slot == fixed_slot)
                 && self.reg_method.is_deformable();
             ui.horizontal(|ui| {
-                if enabled_tip_button(ui, both, "▶ Register", "Recover the transform from scratch")
-                {
+                if enabled_tip_button(ui, both, "▶ Register", "Register from scratch") {
                     run = Some(false);
                 }
                 if enabled_tip_button(
                     ui,
                     both && can_refine,
                     "▶ Refine",
-                    "Recover a correction on top of the active registration and \
-                     add the two together - how a local registration is meant to \
-                     be used after a global one",
+                    "Refine the active registration",
                 ) {
                     run = Some(true);
                 }
@@ -2024,9 +1952,7 @@ impl ViewerApp {
                         ui,
                         both && self.reg_matrix.use_it,
                         egui::Button::new("▶ Apply as the registration"),
-                        "Install these numbers as the active registration of the \
-                         two workspaces, without running anything. It replaces \
-                         whatever registration is active.",
+                        "Use this matrix as the registration. Replaces the active one.",
                     ) {
                         apply_matrix = true;
                     }
@@ -2117,14 +2043,7 @@ impl ViewerApp {
                                             "👁 show"
                                         },
                                     )
-                                    .on_hover_text(
-                                        "Draw this phase's deformation field on the views \
-                                         (and in 3D): its transform becomes the active \
-                                         registration, with the fusion overlay and the \
-                                         Vector field settings below, and the phase is put \
-                                         on display if it is not. Click again to hide the \
-                                         field. The group registration stays as it is.",
-                                    )
+                                    .on_hover_text("Show this phase's deformation field")
                                     .clicked()
                                 {
                                     if field_shown {
@@ -2141,7 +2060,7 @@ impl ViewerApp {
             if tip_button(
                 ui,
                 "Clear group registration",
-                "The next run against this group registers again",
+                "Forget the phase registrations",
             ) {
                 clear_group = true;
             }
@@ -2239,13 +2158,13 @@ impl ViewerApp {
                     FusionSide::Fixed,
                     format!("fixed ({fixed})"),
                 )
-                .on_hover_text("The moving image warped onto the fixed one");
+                .on_hover_text("Moving image on the fixed one");
                 ui.selectable_value(
                     &mut self.fusion_side,
                     FusionSide::Moving,
                     format!("moving ({moving})"),
                 )
-                .on_hover_text("The fixed image carried back onto the moving one");
+                .on_hover_text("Fixed image on the moving one");
             });
             let shown = match self.fusion_side {
                 FusionSide::Fixed => reg.shows_fixed(reg.fixed_slot, &self.slots),
@@ -2264,11 +2183,7 @@ impl ViewerApp {
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.checkbox(&mut self.field_on, "Show the deformation field")
-                        .on_hover_text(
-                            "Draw the recovered displacement in every view - and \
-                             in the 3D window - instead of leaving it implicit in \
-                             the fusion colours",
-                        );
+                        .on_hover_text("Draw the displacement on the views and in 3D");
                     if ui
                         .add_enabled(
                             !res.transform.warp.is_none(),
@@ -2277,14 +2192,7 @@ impl ViewerApp {
                                 "Deformation only (leave the rigid part out)",
                             ),
                         )
-                        .on_hover_text(
-                            "Draw what the B-spline adds on top of the rigid \
-                             alignment rather than the whole displacement. A \
-                             registration between two frames of reference - a \
-                             cardiac CT onto a 4DCT phase - moves every point by the \
-                             same hundreds of millimetres, and drawn whole the field \
-                             shows that jump and hides the deformation.",
-                        )
+                        .on_hover_text("Draw only what the B-spline adds")
                         .changed()
                     {
                         resample = true;
@@ -2304,7 +2212,7 @@ impl ViewerApp {
                                     .range(2.0..=60.0)
                                     .suffix(" mm"),
                             )
-                            .on_hover_text("Lattice the field is sampled on")
+                            .on_hover_text("Arrow spacing")
                             .changed()
                         {
                             resample = true;
@@ -2315,16 +2223,10 @@ impl ViewerApp {
                         ui.add(
                             egui::Slider::new(&mut self.field_scale, 0.5..=20.0).logarithmic(true),
                         )
-                        .tip(
-                            "Arrows are drawn this many times their true length; \
-                             millimetre motion is invisible at 1×",
-                        );
+                        .tip("Arrow length, times the true length");
                     });
                     ui.checkbox(&mut self.field_color, "Colour by magnitude")
-                        .on_hover_text(
-                            "Blue → red over the field's own range, so where the \
-                             deformation is largest reads at a glance",
-                        );
+                        .on_hover_text("Blue → red by magnitude");
                     if let Some(job) = &self.field_job {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -2336,10 +2238,7 @@ impl ViewerApp {
                     if tip_button(
                         ui,
                         "💾 Save as DICOM",
-                        "Write the field as a Deformable Spatial Registration \
-                         object: the whole mapping in one grid, with identity \
-                         pre- and post-matrices, so another system has no \
-                         composition rule to get wrong",
+                        "Save the field as a Deformable Spatial Registration",
                     ) {
                         save_field = true;
                     }
@@ -2349,8 +2248,7 @@ impl ViewerApp {
                 if tip_button(
                     ui,
                     "⇄ Propagate structures",
-                    "Open the structures propagation module, aimed at this \
-                     registration",
+                    "Propagate structures with this registration",
                 ) {
                     propagate_from = Some(reg.moving_slot);
                 }

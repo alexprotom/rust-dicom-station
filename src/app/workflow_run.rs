@@ -809,21 +809,16 @@ impl ViewerApp {
                     });
                 })
                 .response
-                .on_hover_text("Pick the workflow to run: a file, a last saved one or an example");
+                .on_hover_text("Pick the workflow to run");
             });
-            if tip_button(
-                ui,
-                "🔀 New",
-                "Open the workflow editor on an empty canvas: add steps from the palette, \
-                 wire what one makes into the next",
-            ) {
+            if tip_button(ui, "🔀 New", "New workflow in the editor") {
                 pick = Some(WfPick::New);
             }
             if enabled_tip_button(
                 ui,
                 self.wf_run.is_some() || self.wf_editor.is_some(),
                 "✏ Edit",
-                "Open the workflow in the editor, to change it",
+                "Edit the workflow",
             ) {
                 edit = true;
             }
@@ -968,7 +963,7 @@ fn setup_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunActio
         }
         f.row_tip(
             "Results go to",
-            "The run makes a folder of its own here, named after the workflow and the time",
+            "The run makes a folder of its own here",
             |ui| {
                 ui.add(egui::TextEdit::singleline(&mut run.out_root).desired_width(330.0));
                 if ui.small_button("📂").tip("Choose the folder").clicked() {
@@ -998,18 +993,11 @@ fn setup_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunActio
             RunMode::Viewer,
             "Show every step in the viewer",
         )
-        .on_hover_text(
-            "Each study is put in a workspace and every step's result is shown there before \
-             the next step starts: the image it worked on, the structures it filed, each \
-             phase in turn, the motion results.",
-        )
+        .on_hover_text("Show each step's result before the next one")
         .on_disabled_hover_text("A batch runs in the background");
     });
     ui.radio_value(&mut run.mode, RunMode::Background, "In the background")
-        .on_hover_text(
-            "The workspaces are left alone. When the run is done its studies can be put in \
-             the workspaces with one click.",
-        );
+        .on_hover_text("Leave the workspaces alone");
     if run.mode == RunMode::Viewer && !batch {
         ui.indent("wf_viewer_opts", |ui| {
             ui.horizontal(|ui| {
@@ -1064,32 +1052,20 @@ fn setup_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunActio
     let shows = run.mode == RunMode::Viewer && !batch;
     ui.add_enabled_ui(!shows, |ui| {
         ui.checkbox(&mut run.parallel, "Run independent rows side by side")
-            .on_hover_text(
-                "Rows of the canvas that share nothing at the start (two studies loaded and \
-                 segmented apart, say) run at the same time. Faster on a machine with cores \
-                 and memory to spare; the results are the same. When the last run's steps \
-                 can be taken over, they are, and the rows do not run at all; a run whose \
-                 rows ran side by side leaves nothing to take over.",
-            )
-            .on_disabled_hover_text("A run that shows its steps takes them one at a time");
+            .on_hover_text("Run unconnected rows at the same time; same results")
+            .on_disabled_hover_text("Not when showing every step");
     });
     ui.horizontal(|ui| {
         ui.checkbox(
             &mut run.reuse,
             "Take over unchanged steps from the last run",
         )
-        .on_hover_text(
-            "A step whose settings, inputs and files are as they were in the last run of \
-                 this window, after steps that are too, is not run again: its result is taken \
-                 over (marked ♻). Change a late step and only the steps from there on run.",
-        );
+        .on_hover_text("Reuse results of unchanged steps (marked ♻)");
         let kept = run.cache.len();
         if kept > 0
             && ui
                 .small_button("Forget")
-                .on_hover_text(format!(
-                    "Let go of what the last run's {kept} steps left, and the memory it holds"
-                ))
+                .on_hover_text(format!("Forget the last run's {kept} steps"))
                 .clicked()
         {
             actions.push(RunAction::Forget);
@@ -1106,10 +1082,7 @@ fn setup_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunActio
         ui.label("of image volumes between steps");
     })
     .response
-    .on_hover_text(
-        "Steps that read the same image again take it from memory while it fits here; \
-         past that the least used are let go and read again when needed.",
-    );
+    .on_hover_text("Memory for images reused between steps");
     ui.add_space(6.0);
     let wf = run.effective();
     let f = wf.check();
@@ -1220,9 +1193,7 @@ fn running_ui(
             if run.step {
                 if ui
                     .button("⏭ Next step")
-                    .on_hover_text(
-                        "The viewer shows what this step did; go on when you have looked",
-                    )
+                    .on_hover_text("Go on to the next step")
                     .clicked()
                 {
                     run.next = true;
@@ -1282,9 +1253,7 @@ fn finished_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunAc
             && (run.started_mode == RunMode::Background || run.shown_after)
             && ui
                 .button("Show the studies in the viewer")
-                .on_hover_text(
-                    "Put every study the run read, with what it filed, in the workspaces",
-                )
+                .on_hover_text("Put the run's studies in the workspaces")
                 .clicked()
         {
             actions.push(RunAction::ShowResults);
@@ -1300,10 +1269,7 @@ fn finished_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunAc
             let letters: Vec<&str> = run.parked.keys().map(|s| SLOT_NAMES[*s]).collect();
             if ui
                 .button(format!("Put back {}", letters.join(" and ")))
-                .on_hover_text(
-                    "Put the studies the run took these workspaces from back where they \
-                     were, replacing what the run left there",
-                )
+                .on_hover_text("Restore the studies the run replaced")
                 .clicked()
             {
                 actions.push(RunAction::PutBack);
@@ -1353,7 +1319,7 @@ fn finished_ui(ui: &mut egui::Ui, run: &mut WorkflowRun, actions: &mut Vec<RunAc
                     if r.motion.is_some()
                         && ui
                             .button("📈 Open in Structure motion")
-                            .on_hover_text("The charts, tables and comparison of this motion run")
+                            .on_hover_text("Charts and tables of this motion run")
                             .clicked()
                     {
                         actions.push(RunAction::OpenMotion(i));

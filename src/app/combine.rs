@@ -445,11 +445,7 @@ impl ViewerApp {
                     }
                 })
                 .response
-                .on_hover_text(
-                    "Union, intersection, subtraction or symmetric difference, with a \
-                     margin on any operand. Contours and segmentations mix freely - each \
-                     is rasterized onto the displayed series first.",
-                );
+                .on_hover_text("How the operands are combined");
             if d.op == BoolOp::Subtract {
                 ui.weak("the first row is what the rest are taken out of");
             }
@@ -485,10 +481,7 @@ impl ViewerApp {
                                     .prefix("margin ")
                                     .suffix(" mm"),
                             )
-                            .on_hover_text(
-                                "Grow (+) or shrink (−) this operand before it is combined. A \
-                                 crop is an intersection whose second operand was shrunk.",
-                            )
+                            .on_hover_text("Grow (+) or shrink (−) this operand")
                             .changed()
                         {
                             row.margin = Margin::uniform(mm);
@@ -498,7 +491,7 @@ impl ViewerApp {
                     }
                     if ui
                         .add(egui::Button::selectable(row.per_direction, "R/L/A/P/S/I").small())
-                        .on_hover_text("Give the margin a value per patient direction")
+                        .on_hover_text("Margin per direction")
                         .clicked()
                     {
                         row.per_direction = !row.per_direction;
@@ -565,9 +558,7 @@ impl ViewerApp {
                 directional_margin(ui, &mut d.margin);
             }
             ui.checkbox(&mut d.cleanup.fill_holes, "Fill interior cavities")
-                .on_hover_text(
-                    "Slice by slice, so a lung that drains through the trachea still closes.",
-                );
+                .on_hover_text("Fill holes slice by slice");
             ui.horizontal_wrapped(|ui| {
                 ui.label("Smooth:");
                 ui.add(
@@ -575,13 +566,10 @@ impl ViewerApp {
                         .suffix(" mm")
                         .fixed_decimals(1),
                 )
-                .tip("A closing, to take the staircase off the surface.");
+                .tip("Smooth the surface");
             });
             ui.checkbox(&mut d.cleanup.keep_largest, "Keep only the largest piece")
-                .on_hover_text(
-                    "Useful after a subtraction that leaves slivers; destructive on anything \
-                     genuinely paired, like two lungs.",
-                );
+                .on_hover_text("Drops slivers, and also a second lung");
             ui.add_enabled_ui(!d.cleanup.keep_largest, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("or drop pieces under:");
@@ -608,10 +596,8 @@ impl ViewerApp {
                     }
                 });
             if d.output == Output::Structure {
-                ui.checkbox(&mut d.derived, "Derived").on_hover_text(
-                    "Keep this recipe on the result: it can be re-run when an operand \
-                     changes, and the structure list says when it is out of date",
-                );
+                ui.checkbox(&mut d.derived, "Derived")
+                    .on_hover_text("Keep the recipe to re-run later");
                 egui::ComboBox::from_id_salt("combine_roi_type")
                     .selected_text(&d.roi_type)
                     .width(100.0)
@@ -633,12 +619,7 @@ impl ViewerApp {
             Some(job) => cancel = progress_row(ui, &job.progress),
             None => {
                 let ready = d.rows.len() > usize::from(d.op != BoolOp::Union);
-                run = enabled_tip_button(
-                    ui,
-                    ready,
-                    "▶ Combine",
-                    "Evaluate the recipe on the displayed series",
-                );
+                run = enabled_tip_button(ui, ready, "▶ Combine", "Run the recipe");
             }
         }
         if let Some(status) = &d.status {
@@ -705,8 +686,8 @@ fn directional_margin(ui: &mut egui::Ui, m: &mut Margin) {
     ui.horizontal(|ui| {
         ui.add_space(18.0);
         for (label, value, hint) in [
-            ("R", &mut m.right, "toward the patient's right"),
-            ("L", &mut m.left, "toward the patient's left"),
+            ("R", &mut m.right, "right"),
+            ("L", &mut m.left, "left"),
             ("A", &mut m.anterior, "anterior"),
             ("P", &mut m.posterior, "posterior"),
             ("S", &mut m.superior, "superior"),

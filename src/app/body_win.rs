@@ -257,17 +257,8 @@ impl ViewerApp {
         ui.label("Method:");
         for m in Method::ALL {
             let hint = match m {
-                Method::Classical => {
-                    "Threshold and morphology only. Nothing to download, a few \
-                     seconds, and the same answer every time. Equipment is found \
-                     by being thin and repeating slice after slice."
-                }
-                Method::ModelAssisted => {
-                    "A body-outline network decides what is patient, the threshold \
-                     still places the skin. Slower and needs a one-off download, \
-                     but it is the only thing that removes a mask or a couch \
-                     touching the skin with no gap."
-                }
+                Method::Classical => "Threshold only: fast, nothing to download",
+                Method::ModelAssisted => "Network-guided: slower, one-off download",
             };
             ui.radio_value(&mut d.params.method, m, m.label())
                 .on_hover_text(hint);
@@ -322,21 +313,13 @@ impl ViewerApp {
                         .suffix(" mm")
                         .fixed_decimals(1),
                 )
-                .tip(
-                    "The opening that decides what is solid enough to be a body. \
-                     Anything thicker than twice this keeps its exact surface; \
-                     anything thinner is left to the thin-anatomy step below.",
-                );
+                .tip("Smallest solid part counted as body");
             });
             ui.checkbox(
                 &mut d.params.remove_devices,
                 "Remove equipment that repeats slice after slice",
             )
-            .on_hover_text(
-                "A couch, a backrest, a seat pan and an arm rest are surfaces swept \
-                 along one axis, so their footprint repeats. An ear or a finger \
-                 never does.",
-            );
+            .on_hover_text("Remove couch, backrest and similar");
             ui.add_enabled_ui(d.params.remove_devices, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("    shells up to:");
@@ -346,13 +329,7 @@ impl ViewerApp {
                             .speed(0.1)
                             .suffix(" mm"),
                     )
-                    .on_hover_text(
-                        "Half the thickness a shell may have to count as equipment. \
-                         A couch skin is one or two millimetres of carbon, a mask \
-                         two or three; the thinnest tissue you would miss is a good \
-                         deal thicker. Raising this is how you start deleting \
-                         patients.",
-                    );
+                    .on_hover_text("Equipment shell half-thickness. Too high cuts tissue");
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("    repeating over:");
@@ -378,21 +355,13 @@ impl ViewerApp {
                         .range(1.0..=5000.0)
                         .suffix(" cm³"),
                 )
-                .on_hover_text(
-                    "Kept as a volume, not as 'the largest object', so a leg scan \
-                     comes out as two bodies rather than one.",
-                );
+                .on_hover_text("Smaller pieces are dropped");
             });
             ui.checkbox(
                 &mut d.params.recover_thin,
                 "Keep thin anatomy (skin, ears, fingers)",
             )
-            .on_hover_text(
-                "What the opening shaved off the body's own surface is always \
-                     given back. What stands clear of it - an ear, a nose, a \
-                     fingertip - is given back if it is small enough; a pad, a \
-                     blanket or a bolus is not.",
-            );
+            .on_hover_text("Keep small parts like ears and fingers");
             ui.add_enabled_ui(d.params.recover_thin, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("    standing clear, up to:");
@@ -408,10 +377,7 @@ impl ViewerApp {
                 &mut d.params.fill_interior,
                 "Solid body (fill lungs and gas)",
             )
-            .on_hover_text(
-                "Lungs and bowel gas belong inside the body. Unticked gives \
-                     the tissue shell the threshold sees instead, cavities open.",
-            );
+            .on_hover_text("Fill lungs and bowel gas");
             ui.horizontal_wrapped(|ui| {
                 ui.label("Surface smoothing:");
                 ui.add(
@@ -419,7 +385,7 @@ impl ViewerApp {
                         .suffix(" mm")
                         .fixed_decimals(1),
                 )
-                .tip("A closing applied last, to take the staircase off the contour.");
+                .tip("Smooth the contour's steps");
             });
             if d.params.method == Method::ModelAssisted {
                 ui.separator();
@@ -430,11 +396,7 @@ impl ViewerApp {
                             .suffix(" mm")
                             .fixed_decimals(1),
                     )
-                    .tip(
-                        "How far the network's answer is grown before it is used as \
-                         a mask. It is planned at 6 mm or 1.5 mm, so it needs room \
-                         not to clip the skin the threshold found.",
-                    );
+                    .tip("Margin added to the network's mask");
                 });
                 device_row(ui, &mut d.params.device);
                 browse = models_dir_row(ui, &mut self.models_dir, ModelsEngine::TotalSegmentator);
@@ -463,9 +425,9 @@ impl ViewerApp {
                         ui,
                         "▶ Contour",
                         if d.output.phases {
-                            "Find the patient surface on every phase of the group"
+                            "Contour the body on every phase"
                         } else {
-                            "Find the patient surface in the displayed series"
+                            "Contour the body"
                         },
                     ) {
                         run = true;
@@ -501,12 +463,7 @@ fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Tissue above:");
                 ui.add(egui::Slider::new(t, -900.0..=200.0).suffix(" HU"))
-                    .tip(
-                        "−300 HU sits in the gap between air and fat. The skin edge moves \
-                         about half a millimetre per 100 HU through the partial-volume ramp, \
-                         so this is the one number worth agreeing on with your planning \
-                         system.",
-                    );
+                    .tip("Skin threshold (−300 HU is typical)");
             });
         }
         _ => {
@@ -524,14 +481,9 @@ fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Tissue above:");
                 ui.radio_value(&mut otsu, false, "a fraction of the signal")
-                    .on_hover_text(
-                        "A low fraction of the 99th percentile. Robust, because the \
-                         boundary being looked for is the largest step in the image.",
-                    );
-                ui.radio_value(&mut otsu, true, "Otsu").on_hover_text(
-                    "No constant to pick, but Otsu splits bright from dark rather than \
-                         tissue from air, so it runs high on fat-suppressed series.",
-                );
+                    .on_hover_text("Fraction of the 99th percentile");
+                ui.radio_value(&mut otsu, true, "Otsu")
+                    .on_hover_text("Automatic; runs high on fat-suppressed series");
             });
             ui.horizontal_wrapped(|ui| {
                 ui.add_enabled(
@@ -547,11 +499,7 @@ fn foreground_row(ui: &mut egui::Ui, fg: &mut Foreground) {
                         .range(0.0..=200.0)
                         .suffix(" mm"),
                 )
-                .on_hover_text(
-                    "The receive coils shade the image, so one threshold cannot hold across \
-                     it. Dividing by the image blurred far beyond any anatomy flattens the \
-                     shading and leaves every edge intact.",
-                );
+                .on_hover_text("Blur that removes coil shading");
             });
             ui.data_mut(|d| d.insert_temp(id, fraction));
             *fg = if otsu {

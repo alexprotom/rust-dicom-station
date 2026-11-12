@@ -135,6 +135,7 @@ impl ViewerApp {
                     *active -= 1;
                 }
                 *active = (*active).min(n.saturating_sub(1));
+                self.object_removed(slot, super::object_view::PaneObject::Plan(r.idx));
             }
             ObjKind::Planar => {
                 if r.idx >= study.planar_images.len() {
@@ -148,14 +149,14 @@ impl ViewerApp {
                     return;
                 }
                 study.registrations.remove(r.idx);
-                self.object_removed(slot, true, r.idx);
+                self.object_removed(slot, super::object_view::PaneObject::Registration(r.idx));
             }
             ObjKind::Record => {
                 if r.idx >= study.treat_records.len() {
                     return;
                 }
                 study.treat_records.remove(r.idx);
-                self.object_removed(slot, false, r.idx);
+                self.object_removed(slot, super::object_view::PaneObject::Record(r.idx));
             }
             ObjKind::Report => {
                 if r.idx >= study.reports.len() {

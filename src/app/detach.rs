@@ -25,6 +25,15 @@
 //!   with its id; a window that is already there, hidden behind the main
 //!   one or minimized, is restored and focused instead of staying where
 //!   the user cannot see it. A window being created gets the focus anyway.
+//! * **A window fits what it shows.** A scrolling tool window measures its
+//!   contents every pass and takes their height - smaller when rows fold,
+//!   taller when they unfold - and widens when something in it is wider
+//!   than the window, never past the monitor it is on (and moved up when
+//!   growing would take its bottom off the screen). Lists that would rather
+//!   scroll than end at the window's edge size themselves by
+//!   [`room_height`], the height the window could still grow by included.
+//!   Resizing the window by hand ends the fitting until it is opened again:
+//!   from then on its size is the user's.
 //!
 //! If a backend cannot make native windows at all - Android is one, with
 //! its single window per process - the tool is drawn as an [`egui::Window`]
@@ -46,6 +55,14 @@ const ON_TOP: &str = "tool_window_on_top";
 /// set by [`raise_window`](super::ViewerApp::raise_window) and taken by the
 /// window's next draw.
 const RAISE: &str = "tool_window_raise";
+/// egui-memory key prefix of one window's fitting ([`Fit`]).
+const FIT: &str = "tool_window_fit";
+/// egui-memory key prefix of how much taller the window being drawn could
+/// still get, by viewport: read by [`room_height`].
+const ROOM: &str = "tool_window_room";
+/// What a fitted window leaves of the monitor: a margin at the sides, the
+/// task bar and the title bar in the height.
+const SCREEN_MARGIN: [f32; 2] = [40.0, 90.0];
 
 /// A window with no height of its own opens this tall.
 const DEFAULT_TALL: f32 = 620.0;
@@ -109,6 +126,108 @@ fn geometry(ctx: &egui::Context, id: &str) -> Geometry {
 
 fn set_geometry(ctx: &egui::Context, id: &str, g: Geometry) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new((GEOM, id)), g));
+}
+
+/// One window's fitting to its contents, kept from pass to pass.
+#[derive(Clone, Copy)]
+struct Fit {
+    /// Still fitting: no resize by hand since the window opened.
+    auto: bool,
+    /// When the last size was asked for (egui time, seconds): a change of
+    /// size soon after is that answer, not the user's hand.
+    asked_at: f64,
+    /// The inner size seen on the pass before.
+    last: Option<egui::Vec2>,
+}
+
+impl Default for Fit {
+    fn default() -> Self {
+        Fit {
+            auto: true,
+            asked_at: f64::NEG_INFINITY,
+            last: None,
+        }
+    }
+}
+
+/// The height a list in a tool window may take: what is left below it, plus
+/// what the window could still grow by on its monitor while it fits its
+/// contents. A list sized by this grows the window until the screen ends,
+/// and only then scrolls. Outside a fitting window it is the height left.
+pub(super) fn room_height(ui: &egui::Ui) -> f32 {
+    let extra = ui
+        .ctx()
+        .data(|d| d.get_temp::<f32>(egui::Id::new((ROOM, ui.ctx().viewport_id()))))
+        .unwrap_or(0.0);
+    ui.available_height() + extra.max(0.0)
+}
+
+/// The largest inner size a fitted window may take on its monitor.
+fn screen_limit(info: &egui::ViewportInfo) -> Option<egui::Vec2> {
+    let m = info.monitor_size?;
+    Some(egui::vec2(
+        (m.x - SCREEN_MARGIN[0]).max(MIN_SIZE[0]),
+        (m.y - SCREEN_MARGIN[1]).max(MIN_SIZE[1]),
+    ))
+}
+
+/// Ask for the size the contents measured this pass, unless the user has
+/// taken the size over: `cur` is the window's inner size, `out` what the
+/// scroll area holding the contents reported.
+fn fit_to_contents<R>(
+    ctx: &egui::Context,
+    fit: &mut Fit,
+    info: &egui::ViewportInfo,
+    cur: egui::Vec2,
+    out: &egui::scroll_area::ScrollAreaOutput<R>,
+) {
+    let now = ctx.input(|i| i.time);
+    // A size that changed long after the last one asked for is the user's
+    // hand (or a maximize): the window is theirs from now on.
+    if let Some(prev) = fit.last {
+        if (cur - prev).abs().max_elem() > 2.0 && now - fit.asked_at > 0.6 {
+            fit.auto = false;
+        }
+    }
+    fit.last = Some(cur);
+    if !fit.auto || info.maximized == Some(true) || info.minimized == Some(true) {
+        return;
+    }
+    // What the window spends outside the scroll area (the *Keep on top*
+    // bar, the margins) plus what the contents measure. Height both ways;
+    // width only up, since text wraps to whatever width it is given and
+    // would shrink the window step by step.
+    let overhead = cur - out.inner_rect.size();
+    let mut want = egui::vec2(
+        cur.x.max(overhead.x + out.content_size.x),
+        overhead.y + out.content_size.y,
+    )
+    .max(egui::vec2(MIN_SIZE[0], MIN_SIZE[1]));
+    if let Some(l) = screen_limit(info) {
+        want = want.min(l.max(egui::vec2(MIN_SIZE[0], MIN_SIZE[1])));
+    }
+    let want = want.round();
+    if (want - cur).abs().max_elem() <= 2.0 {
+        return;
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(want));
+    fit.asked_at = now;
+    // Growing past the bottom of the screen: up, as far as it needs to.
+    // Only for a window whose top is on a monitor that starts at the top
+    // of the desktop (side by side, the usual case); anything else is left
+    // where the user put it.
+    if let (Some(outer), Some(m)) = (info.outer_rect, info.monitor_size) {
+        let chrome = (outer.height() - cur.y).max(0.0);
+        let screen_bottom = m.y - (SCREEN_MARGIN[1] - chrome).max(40.0);
+        let bottom = outer.min.y + chrome + want.y;
+        if want.y > cur.y && (0.0..m.y).contains(&outer.min.y) && bottom > screen_bottom {
+            let y = (screen_bottom - chrome - want.y).max(0.0);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                outer.min.x,
+                y,
+            )));
+        }
+    }
 }
 
 impl super::ViewerApp {
@@ -206,8 +325,12 @@ fn tool_window_body(
         .is_none_or(|last| pass.saturating_sub(last) > 1);
     ctx.data_mut(|d| d.insert_temp(seen_key, pass));
     let on_top_key = egui::Id::new((ON_TOP, id));
+    let fit_key = egui::Id::new((FIT, id));
     if fresh {
-        ctx.data_mut(|d| d.insert_temp(on_top_key, false));
+        ctx.data_mut(|d| {
+            d.insert_temp(on_top_key, false);
+            d.insert_temp(fit_key, Fit::default());
+        });
     }
     // Taken either way, so an ask made while the window is being created
     // does not linger; a new window is focused by the system already.
@@ -280,9 +403,27 @@ fn tool_window_body(
                     });
                 });
             if opts.scroll {
-                egui::ScrollArea::both()
+                let info = ui.ctx().input(|i| i.viewport().clone());
+                let mut fit = ui
+                    .ctx()
+                    .data(|d| d.get_temp::<Fit>(fit_key))
+                    .unwrap_or_default();
+                let cur = info.inner_rect.map(|r| r.size());
+                // What the lists may count on, set before they are drawn.
+                let room = match (fit.auto, cur, screen_limit(&info)) {
+                    (true, Some(c), Some(l)) => (l.y - c.y).max(0.0),
+                    _ => 0.0,
+                };
+                let vp = ui.ctx().viewport_id();
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new((ROOM, vp)), room));
+                let out = egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| contents(ui));
+                if let Some(c) = cur {
+                    fit_to_contents(ui.ctx(), &mut fit, &info, c, &out);
+                }
+                ui.ctx().data_mut(|d| d.insert_temp(fit_key, fit));
             } else {
                 contents(ui);
             }

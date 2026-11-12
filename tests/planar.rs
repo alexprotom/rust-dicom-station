@@ -1285,6 +1285,106 @@ fn one_planar_image_goes_out_with_its_contours_and_a_burned_in_copy() {
     assert!(mid[0] == mid[1] && mid[1] == mid[2], "{mid:?}");
     assert_eq!(back.planar_structs.len(), 1, "the contours as a state too");
     let _ = std::fs::remove_dir_all(dir);
+
+    // The window the export is handed, by workspace and index, is the one
+    // the copy is burned in with: a narrow one turns its grey white.
+    plan.planar_windows.insert((0, 0), (10.0, 4.0));
+    let dir = scratch("burn_in_window");
+    let sum = export::run(&plan, export::one_study(&study), &dir, &p).unwrap();
+    assert_eq!(sum.files, 3);
+    let back = rust_dicom_station::loader::load_directory(&dir, &p).unwrap();
+    let copy = back
+        .planar_images
+        .iter()
+        .find(|p| p.sop_class_uid == rust_dicom_station::sop::SOP_SECONDARY_CAPTURE)
+        .expect("the burned-in copy");
+    let rgb = copy.rgb.as_ref().expect("in colour");
+    let i = (20 * img.cols + 30) * 3;
+    let narrow = [rgb[i], rgb[i + 1], rgb[i + 2]];
+    assert_ne!(narrow, mid, "the window handed in, not the image's own");
+    assert_eq!(narrow, [255, 255, 255]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A setup's export writes each radiograph made here once, whatever the
+/// number of planar sets drawn on it, and each set's state references the
+/// setup's radiographs and nothing else.
+#[test]
+fn a_setup_export_writes_each_image_once_and_states_of_its_own_radiographs() {
+    use rust_dicom_station::iec::{PatientFrame, PatientPosition};
+    use rust_dicom_station::setup::{self, SetupOptions};
+    let truth = RigidTransform::new([0.0, 0.0, 0.0, 4.0, -3.0, 5.0], Vec3::ZERO);
+    let mut study = setup_study(&truth);
+    let regs = matches(&study);
+    let refs: Vec<&p2::PlanarReg> = regs.iter().collect();
+    let opts = SetupOptions {
+        patient: Some(PatientFrame::Position(PatientPosition::Hfs)),
+        max_pixels: 128,
+        ..Default::default()
+    };
+    let s = setup::from_planar(&study, &refs, &opts, &rust_dicom_station::progress::Quiet).unwrap();
+    let mine: Vec<String> = s
+        .images
+        .iter()
+        .map(|i| study.planar_images[*i].sop_instance_uid.clone())
+        .collect();
+    assert_eq!(mine.len(), 2);
+    // An image of the study that is not the setup's.
+    let extra = (0..study.planar_images.len())
+        .find(|i| !s.images.contains(i))
+        .map(|i| study.planar_images[i].sop_instance_uid.clone())
+        .expect("a reference image");
+    for (label, with_extra) in [("First", true), ("Second", false)] {
+        let mut set = PlanarStructureSet::new(label, "", "drawn");
+        for (n, uid) in mine.iter().enumerate() {
+            set.structure_entry("PTV", Some([230, 60, 60]))
+                .contour_entry(uid)
+                .region = Region::from_ring(square([60.0 + n as f64, 60.0], 8.0));
+        }
+        if with_extra {
+            set.structure_entry("ELSEWHERE", Some([60, 200, 90]))
+                .contour_entry(&extra)
+                .region = Region::from_ring(square([30.0, 30.0], 5.0));
+        }
+        set.refresh_images();
+        study.planar_structs.push(set);
+    }
+    let dir = scratch("setup_export_once");
+    let files = setup::write_files(&study, &s, &dir).unwrap();
+    let mut seen: std::collections::HashMap<String, usize> = Default::default();
+    for f in files
+        .iter()
+        .filter(|f| f.extension().is_some_and(|x| x == "dcm"))
+    {
+        let obj = rust_dicom_station::dicomfile::open_full(f).unwrap();
+        let sop =
+            rust_dicom_station::loader::str_of(&obj, dicom_dictionary_std::tags::SOP_INSTANCE_UID)
+                .unwrap();
+        *seen.entry(sop).or_default() += 1;
+    }
+    assert!(
+        seen.values().all(|n| *n == 1),
+        "every SOP Instance UID in one file: {seen:?}"
+    );
+    for uid in &mine {
+        assert!(seen.contains_key(uid), "the setup's radiograph {uid}");
+    }
+    assert!(!seen.contains_key(&extra), "the other image stays out");
+    let p = rust_dicom_station::progress::Progress::default();
+    let back = rust_dicom_station::loader::load_directory(&dir, &p).unwrap();
+    assert_eq!(back.planar_structs.len(), 2, "both states");
+    for set in &back.planar_structs {
+        let mut images = set.images.clone();
+        images.sort();
+        let mut want = mine.clone();
+        want.sort();
+        assert_eq!(images, want, "{}: the setup's radiographs alone", set.label);
+        assert!(
+            set.structures.iter().all(|s| s.name != "ELSEWHERE"),
+            "a structure with nothing on them is left out"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 // ---------------------------------------------------------------------------

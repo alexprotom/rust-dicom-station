@@ -253,7 +253,7 @@ impl ViewerApp {
                 }
                 if ui
                     .button("➕ Compare in Planar 1 and 2")
-                    .on_hover_text("Put them on top of what the panes show")
+                    .on_hover_text("Stack them on the panes")
                     .clicked()
                 {
                     show = Some(true);

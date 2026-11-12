@@ -123,6 +123,14 @@ pub(super) struct PacsWindow {
     pub stats_for: Option<(u64, Vec<NodeId>)>,
 }
 
+/// What the PACS window keeps of itself between a closing and the next
+/// opening in the same session: which rows were unfolded, and whether the
+/// analytics were out. Not written to the settings.
+pub(super) struct PacsMemo {
+    pub expanded: HashSet<NodeId>,
+    pub stats_open: bool,
+}
+
 /// One thing a study can be picked by in the list beside 🔍: a 4D set, a
 /// word of its patient's row (`Adult`, `Phantom`, `Female`: what the name
 /// given says in brackets) under its [`WordKind`], or a modality one of
@@ -383,7 +391,8 @@ impl PacsWindow {
             facets: Vec::new(),
             shown: Tree::default(),
             tree_gen: 0,
-            stats_open: true,
+            // Folded at first: the studies are what the window opens for.
+            stats_open: false,
             stats: None,
             stats_for: None,
         }
@@ -399,13 +408,10 @@ impl PacsWindow {
         self.shown = filtered(&tree, &self.study_filter);
         self.nodes = local_nodes(&self.shown);
         self.tree_gen += 1;
+        // Every cohort folded at first, so the window opens small and grows
+        // with what is unfolded (`detach`'s fitting); what was unfolded
+        // since is kept where its rows are still there.
         self.view.retain_known(&self.nodes);
-        if self.view.expanded.is_empty() {
-            // Cohorts open at first: the patients are what one looks for.
-            for c in &self.nodes {
-                self.view.expanded.insert(vec![c.key.clone()]);
-            }
-        }
         self.tree = Some(tree);
     }
 }
@@ -626,7 +632,14 @@ impl ViewerApp {
         self.raise_window("pacs");
         if self.pacs.is_none() {
             let servers = self.reload_servers();
-            self.pacs = Some(PacsWindow::new(servers));
+            let mut w = PacsWindow::new(servers);
+            // Reopened in the same session: folded and unfolded as it was
+            // left. The first opening of a session has everything folded.
+            if let Some(m) = &self.pacs_memo {
+                w.view.expanded = m.expanded.clone();
+                w.stats_open = m.stats_open;
+            }
+            self.pacs = Some(w);
             if self.pacs_scan_on_open {
                 self.start_pacs_scan();
             } else {
@@ -756,29 +769,22 @@ impl ViewerApp {
             |ui| {
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button("⚙ Settings", |ui| {
-                        if tip_button(
-                            ui,
-                            "📁 Storage folders",
-                            "The folders the PACS reads; new data goes into the first",
-                        ) {
+                        if tip_button(ui, "📁 Storage folders", "The folders the PACS reads") {
                             acts.push(Act::Page(Page::Storage));
                             ui.close();
                         }
                         ui.checkbox(&mut scan_on_open, "⟲ Rescan the folders on opening")
-                            .on_hover_text(
-                                "Look through the storage folders for new and changed files                                  each time this window is first opened. Off: the PACS is listed                                  at once as the catalog last saw it, and the folders are read                                  only on ⟲ Rescan (and when there is no catalog yet).",
-                            );
-                        ui.checkbox(&mut stats_auto, "📊 Recalculate the analytics on every click")
-                            .on_hover_text(
-                                "Work the analytics panel out again each time the selection \
-                                 in the tree changes. Off: only on its ⟳ button, the figures \
-                                 marked stale meanwhile.",
-                            );
+                            .on_hover_text("Off: read the folders only on ⟲ Rescan");
+                        ui.checkbox(
+                            &mut stats_auto,
+                            "📊 Recalculate the analytics on every click",
+                        )
+                        .on_hover_text("Off: only on the analytics' ⟳ button");
                         ui.separator();
                         if tip_button(
                             ui,
                             "📤 Export tags…",
-                            "Write the names given to patients, studies and series, the cohorts and who is in which, and the 4D groups decided by hand into a JSON file, to take them to another station",
+                            "Save names, cohorts and 4D groups to a JSON file",
                         ) {
                             acts.push(Act::TagsExport);
                             ui.close();
@@ -786,7 +792,7 @@ impl ViewerApp {
                         if tip_button(
                             ui,
                             "📥 Import tags…",
-                            "Merge a file of tags from another station into this PACS: names go to the patients, studies and series held here, cohorts are found by name or made, 4D decisions kept; what is not held here is counted and left",
+                            "Merge a tags file from another station",
                         ) {
                             acts.push(Act::TagsImport);
                             ui.close();
@@ -795,12 +801,7 @@ impl ViewerApp {
                         // The server runs on a PC or a Mac; a tablet or a
                         // phone is always a client.
                         if cfg!(not(any(target_os = "android", target_os = "ios")))
-                            && tip_button(
-                                ui,
-                                "🖥 PACS server",
-                                "Serve this station's PACS to other stations: start and \
-                                 stop, connection details, pairing codes, its settings",
-                            )
+                            && tip_button(ui, "🖥 PACS server", "Serve this PACS to other stations")
                         {
                             acts.push(Act::Page(Page::Server));
                             ui.close();
@@ -857,30 +858,81 @@ impl ViewerApp {
                     Page::Studies => {}
                 }
 
+                let mut studies = |ui: &mut egui::Ui, w: &mut PacsWindow| {
+                    let rctx = pacs_remote::Ctx {
+                        servers: &w.servers,
+                        busy: rbusy,
+                        progress: rprogress.as_deref(),
+                        loaded,
+                        targets: targets.clone(),
+                    };
+                    pacs_remote::source_row(ui, w, &rctx, &mut ractions);
+                    ui.separator();
+                    if let Some(d) = w.pairing.as_mut() {
+                        pacs_remote::pairing_ui(ui, d, &rctx, &mut ractions);
+                        return;
+                    }
+                    if let Source::Remote(id) = &w.source {
+                        match (w.servers.get(id), w.remote.as_mut()) {
+                            (Some(entry), Some(v)) => {
+                                pacs_remote::remote_ui(ui, v, entry, &rctx, &mut ractions)
+                            }
+                            _ => {
+                                ui.weak("This server is no longer paired.");
+                            }
+                        }
+                        return;
+                    }
+                    local_body(ui, w, busy, &job_progress, loaded, &targets, &mut acts);
+                };
+
                 // The analytics, on the right of everything below the menu,
-                // for this station's PACS.
-                if matches!(w.source, Source::Local) && w.pairing.is_none() {
-                    let mut clicked = None;
-                    let open = w.stats_open;
-                    w.stats_open = ViewerApp::edge_panel(
-                        ui,
-                        super::panels::EdgePanel {
-                            id: "pacs_stats",
-                            left: false,
-                            width: 260.0,
-                            name: "analytics",
-                            key: "",
-                        },
-                        open,
-                        |ui| {
+                // for this station's PACS. A column beside the studies, not
+                // a side panel: a panel takes the whole height it is given,
+                // and the window could then never fit the rows it shows.
+                if !(matches!(w.source, Source::Local) && w.pairing.is_none()) {
+                    studies(ui, &mut w);
+                    return;
+                }
+                const STATS_W: f32 = 260.0;
+                let mut clicked = None;
+                ui.horizontal_top(|ui| {
+                    let gap = ui.spacing().item_spacing.x;
+                    let right = 22.0 + gap + if w.stats_open { STATS_W + gap } else { 0.0 };
+                    let main_w = (ui.available_width() - right).max(240.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(main_w);
+                        studies(ui, &mut w);
+                    });
+                    let glyph = if w.stats_open { "▶" } else { "◀" };
+                    if ui
+                        .add(
+                            egui::Button::new(glyph)
+                                .frame(false)
+                                .min_size(egui::vec2(20.0, 22.0)),
+                        )
+                        .tip(if w.stats_open {
+                            "Hide the analytics"
+                        } else {
+                            "Show the analytics"
+                        })
+                        .clicked()
+                    {
+                        w.stats_open = !w.stats_open;
+                    }
+                    if w.stats_open {
+                        ui.vertical(|ui| {
+                            ui.set_width(STATS_W);
                             clicked = super::pacs_stats::panel_body(
                                 ui,
                                 &mut w,
                                 stats_auto,
                                 &mut stats_pie,
                             );
-                        },
-                    );
+                        });
+                    }
+                });
+                {
                     use super::pacs_stats::PanelClick;
                     if let Some(PanelClick::Reset) = clicked {
                         reset_filters(&mut w, &mut acts);
@@ -907,32 +959,6 @@ impl ViewerApp {
                         acts.push(Act::Filter(sf));
                     }
                 }
-
-                let rctx = pacs_remote::Ctx {
-                    servers: &w.servers,
-                    busy: rbusy,
-                    progress: rprogress.as_deref(),
-                    loaded,
-                    targets: targets.clone(),
-                };
-                pacs_remote::source_row(ui, &w, &rctx, &mut ractions);
-                ui.separator();
-                if let Some(d) = w.pairing.as_mut() {
-                    pacs_remote::pairing_ui(ui, d, &rctx, &mut ractions);
-                    return;
-                }
-                if let Source::Remote(id) = &w.source {
-                    match (w.servers.get(id), w.remote.as_mut()) {
-                        (Some(entry), Some(v)) => {
-                            pacs_remote::remote_ui(ui, v, entry, &rctx, &mut ractions)
-                        }
-                        _ => {
-                            ui.weak("This server is no longer paired.");
-                        }
-                    }
-                    return;
-                }
-                local_body(ui, &mut w, busy, &job_progress, loaded, &targets, &mut acts);
             },
         );
 
@@ -951,6 +977,10 @@ impl ViewerApp {
         if !open {
             // Closing the window stops asking the server how it is.
             self.pacs_server = None;
+            self.pacs_memo = Some(PacsMemo {
+                expanded: w.view.expanded.clone(),
+                stats_open: w.stats_open,
+            });
             return;
         }
         self.pacs_server = server;
@@ -1412,9 +1442,9 @@ fn study_filter_list(ui: &mut egui::Ui, w: &PacsWindow, acts: &mut Vec<Act>) {
             ui.horizontal(|ui| {
                 ui.label("Studies with");
                 ui.selectable_value(&mut f.all, true, "all")
-                    .on_hover_text("Every ticked kind: CT + RTSTRUCT is a study holding both");
+                    .on_hover_text("Every ticked kind");
                 ui.selectable_value(&mut f.all, false, "any")
-                    .on_hover_text("One of the ticked kinds at least: MR or DX");
+                    .on_hover_text("At least one ticked kind");
                 ui.label("of:");
             });
             ui.separator();
@@ -1438,14 +1468,9 @@ fn study_filter_list(ui: &mut egui::Ui, w: &PacsWindow, acts: &mut Vec<Act>) {
                 let mut on = f.picked.contains(x);
                 let r = ui.checkbox(&mut on, format!("{}  ({n})", x.label()));
                 let r = match x {
-                    Facet::FourD => r.on_hover_text("A 4DCT the catalog found from the headers"),
-                    Facet::ProbableFourD => r.on_hover_text(
-                        "One geometry and nothing else says 4D: to confirm or reject",
-                    ),
-                    Facet::Patient(..) => r.on_hover_text(
-                        "Every study of the patients whose row says this in its brackets \
-                         (the count is of patients)",
-                    ),
+                    Facet::FourD => r.on_hover_text("4DCT found from the headers"),
+                    Facet::ProbableFourD => r.on_hover_text("Maybe 4D: to confirm or reject"),
+                    Facet::Patient(..) => r.on_hover_text("Count of patients"),
                     Facet::Modality(_) => r,
                 };
                 if r.changed() {
@@ -1465,12 +1490,7 @@ fn study_filter_list(ui: &mut egui::Ui, w: &PacsWindow, acts: &mut Vec<Act>) {
             }
         })
         .response
-        .on_hover_text(
-            "Only the studies holding what is ticked: a 4DCT as the catalog finds it from the \
-             headers, a word in the brackets of their patient's row (Adult, Phantom, Female, \
-             ...), or a modality one of their series has. The kinds offered are those the last \
-             scan found, with how many hold each.",
-        );
+        .on_hover_text("Filter the studies by kind");
     if f != w.study_filter {
         acts.push(Act::Filter(f));
     }
@@ -1492,7 +1512,7 @@ fn local_body(
             ui,
             !busy,
             "📥 Import folder",
-            "Copy every DICOM file of a folder into the main storage folder",
+            "Copy a DICOM folder into the PACS",
         ) {
             acts.push(Act::Import);
         }
@@ -1502,12 +1522,7 @@ fn local_body(
                     !busy,
                     egui::Button::new(format!("📤 Send workspace {}", SLOT_NAMES[slot])),
                 )
-                .on_hover_text(
-                    "Choose which of this workspace's structure sets and segmentation \
-                     series to write into the PACS, beside the study they belong to (new \
-                     SOP Instance UIDs, original Study and Frame of Reference UIDs). What \
-                     the PACS holds already is not ticked; images are never re-sent.",
-                )
+                .on_hover_text("Save this workspace's structures to the PACS")
                 .clicked()
             {
                 acts.push(Act::Send(slot));
@@ -1517,7 +1532,7 @@ fn local_body(
             ui,
             !busy,
             "⟲ Rescan",
-            "Look through the storage folders again; only new files are read",
+            "Read new files in the storage folders",
         ) {
             acts.push(Act::Rescan);
         }
@@ -1530,7 +1545,7 @@ fn local_body(
         let on = !w.study_filter.is_off() || !w.view.filter.is_empty();
         if ui
             .add_enabled(on, egui::Button::new("✖ Reset filters"))
-            .on_hover_text("Show every study again: clear the search text and untick every kind")
+            .on_hover_text("Show every study")
             .clicked()
         {
             reset_filters(w, acts);
@@ -1561,7 +1576,7 @@ fn local_body(
                 ui,
                 !busy,
                 "✔ Save",
-                "Keep this name (the DICOM files are not changed)",
+                "Keep this name. The files are not changed.",
             ) || (enter && !busy)
             {
                 acts.push(Act::RenameSave(Some(r.text.clone())));
@@ -1570,7 +1585,7 @@ fn local_body(
                 ui,
                 !busy,
                 "The DICOM name",
-                "Drop the name given here and show what the DICOM files (or the folder) say",
+                "Go back to the name in the files",
             ) {
                 acts.push(Act::RenameSave(None));
             }
@@ -1599,14 +1614,14 @@ fn local_body(
                 "✔ Make it",
                 match &n.then {
                     Some((m, true)) => format!(
-                        "Make the cohort and put {} into it too (they stay where they are)",
+                        "Make the cohort and copy {} into it",
                         count(m.len(), "patient", "patients")
                     ),
                     Some((m, false)) => format!(
-                        "Make the cohort and move {} into it (no file moves)",
+                        "Make the cohort and move {} into it",
                         count(m.len(), "patient", "patients")
                     ),
-                    None => "Make an empty cohort; move or copy patients into it".into(),
+                    None => "Make an empty cohort".into(),
                 },
             ) || (enter && ok)
             {
@@ -1627,12 +1642,7 @@ fn local_body(
                     count(*n, "file", "files")
                 ),
             );
-            if enabled_tip_button(
-                ui,
-                !busy,
-                "🗑 Delete",
-                "Delete the files, and the folders left empty",
-            ) {
+            if enabled_tip_button(ui, !busy, "🗑 Delete", "Delete the files. Cannot be undone.") {
                 acts.push(Act::Remove);
             }
             if ui.button("Cancel").clicked() {
@@ -1675,7 +1685,7 @@ fn local_body(
         .flat_map(|s| &s.fourd)
         .map(|g| (g.group.clone(), (g.confirmed, g.custom)))
         .collect();
-    let height = (ui.available_height() - 60.0).max(140.0);
+    let height = (detach::room_height(ui) - 60.0).max(140.0);
     let PacsWindow { nodes, view, .. } = &mut *w;
     let nodes_ref: &[TNode] = nodes;
     let mut menu = |ui: &mut egui::Ui, id: &NodeId, view: &TreeView| {
@@ -1718,10 +1728,7 @@ fn local_body(
                     !busy && any,
                     egui::Button::new(format!("📩 Load into workspace {}", SLOT_NAMES[slot])),
                 )
-                .on_hover_text(
-                    "Read the selection into this workspace, merging it with whatever is \
-                     already there - the same as adding its files",
-                )
+                .on_hover_text("Add the selection to this workspace")
                 .clicked()
             {
                 acts.push(Act::Load(slot));
@@ -1775,7 +1782,7 @@ fn local_menu(
         if !confirmed
             && ui
                 .button("✔ Confirm as a 4DCT")
-                .on_hover_text("Kept in the catalog: the set is a 4DCT from now on")
+                .on_hover_text("Keep this set as a 4DCT")
                 .clicked()
         {
             acts.push(Act::Decide4d(group.to_string(), Some(true)));
@@ -1783,7 +1790,7 @@ fn local_menu(
         }
         if ui
             .button("✖ Not a 4DCT")
-            .on_hover_text("Dissolve the set; it stays dissolved through rescans")
+            .on_hover_text("Dissolve the set")
             .clicked()
         {
             acts.push(Act::Decide4d(group.to_string(), Some(false)));
@@ -1792,7 +1799,7 @@ fn local_menu(
         if custom
             && ui
                 .button("Let the headers decide again")
-                .on_hover_text("Forget what was decided about this set here or by the assistant")
+                .on_hover_text("Forget the decision")
                 .clicked()
         {
             acts.push(Act::Decide4d(group.to_string(), None));
@@ -1816,9 +1823,7 @@ fn local_menu(
         if virtual_cohort
             && ui
                 .button("🗑 Delete this cohort")
-                .on_hover_text(
-                    "Its patients go back to the cohorts of their folders; no file is touched",
-                )
+                .on_hover_text("No file is touched")
                 .clicked()
         {
             acts.push(Act::DeleteCohort(id[0].clone()));
@@ -1867,7 +1872,7 @@ fn local_menu(
         if members.iter().any(|(from, _)| from != UNSORTED)
             && ui
                 .button("Take out of this cohort")
-                .on_hover_text("A patient in no other cohort goes to Unsorted")
+                .on_hover_text("Patients in no other cohort go to Unsorted")
                 .clicked()
         {
             acts.push(Act::TakeOut(members.clone()));
@@ -1875,7 +1880,7 @@ fn local_menu(
         }
         if ui
             .button("Back to the cohort of its folder")
-            .on_hover_text("Forget the moves and copies made here: the folders decide again")
+            .on_hover_text("Undo the cohort moves and copies")
             .clicked()
         {
             acts.push(Act::ResetCohorts(
@@ -1887,10 +1892,7 @@ fn local_menu(
     ui.separator();
     if ui
         .button("📁 Move the files to a folder")
-        .on_hover_text(
-            "Move the DICOM files themselves into another folder of the same storage \
-             folder (a new one if wanted)",
-        )
+        .on_hover_text("Move the DICOM files on the disk")
         .clicked()
     {
         acts.push(Act::MoveStart(picks.clone(), what.clone()));
@@ -1899,7 +1901,7 @@ fn local_menu(
     if id.len() > 1
         && ui
             .button("🗑 Remove from the PACS")
-            .on_hover_text("Delete the files from the disk (asked once more)")
+            .on_hover_text("Delete the files from the disk")
             .clicked()
     {
         acts.push(Act::AskRemove(picks));
@@ -1935,12 +1937,7 @@ fn storage_page(ui: &mut egui::Ui, roots: &[PathBuf], busy: bool, acts: &mut Vec
                 }
                 ui.horizontal(|ui| {
                     if i == 0 {
-                        if enabled_tip_button(
-                            ui,
-                            !busy,
-                            "📂 Change",
-                            "Make another folder the main one (this one leaves the list)",
-                        ) {
+                        if enabled_tip_button(ui, !busy, "📂 Change", "Replace the main folder") {
                             acts.push(Act::StorageChangeMain);
                         }
                     } else {
@@ -1948,8 +1945,7 @@ fn storage_page(ui: &mut egui::Ui, roots: &[PathBuf], busy: bool, acts: &mut Vec
                             ui,
                             !busy,
                             "⬆ Make main",
-                            "New data goes here from now on, and the catalog with it; the \
-                             old main folder stays in the list",
+                            "Put new data and the catalog here",
                         ) {
                             acts.push(Act::StorageMain(i));
                         }
@@ -1957,7 +1953,7 @@ fn storage_page(ui: &mut egui::Ui, roots: &[PathBuf], busy: bool, acts: &mut Vec
                             ui,
                             !busy,
                             "✖ Remove from the list",
-                            "The PACS no longer reads this folder; its files stay on the disk",
+                            "Stop reading this folder. Its files stay.",
                         ) {
                             acts.push(Act::StorageDrop(i));
                         }
@@ -1967,12 +1963,7 @@ fn storage_page(ui: &mut egui::Ui, roots: &[PathBuf], busy: bool, acts: &mut Vec
             }
         });
     ui.add_space(4.0);
-    if enabled_tip_button(
-        ui,
-        !busy,
-        "➕ Add a folder",
-        "A folder that holds DICOM files already, read where it is: nothing is copied",
-    ) {
+    if enabled_tip_button(ui, !busy, "➕ Add a folder", "Read a DICOM folder in place") {
         acts.push(Act::StorageAdd);
     }
     ui.add_space(6.0);
@@ -2008,7 +1999,7 @@ fn move_page(ui: &mut egui::Ui, d: &mut MoveDialog, busy: bool, acts: &mut Vec<A
         ui.weak("reading the folders");
         return;
     };
-    let height = (ui.available_height() - 90.0).max(120.0);
+    let height = (detach::room_height(ui) - 90.0).max(120.0);
     egui::ScrollArea::vertical()
         .id_salt("pacs_move_folders")
         .max_height(height)
@@ -2053,7 +2044,7 @@ fn move_page(ui: &mut egui::Ui, d: &mut MoveDialog, busy: bool, acts: &mut Vec<A
             ui,
             !busy && !d.new_name.trim().is_empty(),
             "📁 Make it",
-            "Make the folder (in the chosen folder, or in the storage folder) and choose it",
+            "Make the folder and choose it",
         ) {
             acts.push(Act::NewFolder);
         }

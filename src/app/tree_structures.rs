@@ -89,13 +89,11 @@ impl ViewerApp {
                         has_volume,
                         egui::Button::new("+").small(),
                         if has_volume {
-                            "New: an empty RT structure set, drawn on the displayed image \
-                             series"
+                            "New empty RT structure set"
                         } else if displayed {
-                            "This workspace has no image volume to draw on"
+                            "No image volume to draw on"
                         } else {
-                            "Display this study's images first - a new set is drawn on \
-                             the series on screen"
+                            "Display this study's images first"
                         },
                     ) {
                         add_set = true;
@@ -159,9 +157,7 @@ impl ViewerApp {
                                 if tip_button(
                                     ui,
                                     "Save this set as a template",
-                                    "The names, types, colours and recipes - not the \
-                                     geometry. Saved under the set's own label, in \
-                                     the templates folder",
+                                    "Save names, types, colours and recipes, not the geometry",
                                 ) {
                                     template_act = Some(TemplateAct::Save(i));
                                     ui.close();
@@ -174,10 +170,7 @@ impl ViewerApp {
                                     if tip_button(
                                         ui,
                                         format!("Apply '{name}'"),
-                                        "Create the structures of this template that \
-                                         are not here yet, with their types, colours \
-                                         and recipes. Nothing already in the set is \
-                                         touched",
+                                        "Add this template's missing structures",
                                     ) {
                                         template_act = Some(TemplateAct::Apply(i, name.clone()));
                                         ui.close();
@@ -188,13 +181,9 @@ impl ViewerApp {
                                 ui,
                                 if locked { "🔓 Unlock" } else { "🔒 Lock" },
                                 if locked {
-                                    "Allow this set to be edited again"
+                                    "Allow editing again"
                                 } else {
-                                    "Make this set read-only: no drawing, no new \
-                                     structures, nothing removed. It is written out as \
-                                 an approved structure set, and it is a guard \
-                                 against a slip of the hand, not a signature - \
-                                 anyone here can unlock it again"
+                                    "Make this set read-only"
                                 },
                             ) {
                                 toggle_lock = Some(i);
@@ -226,7 +215,7 @@ impl ViewerApp {
                             .map(|(i, _)| i)
                             .collect();
                         ui.horizontal_wrapped(|ui| {
-                            if small_tip_button(ui, "All", "Show and select every structure") {
+                            if small_tip_button(ui, "All", "Show every structure") {
                                 vis.iter_mut().for_each(|v| *v = true);
                             }
                             if ui.small_button("None").clicked() {
@@ -241,10 +230,7 @@ impl ViewerApp {
                                         has_volume,
                                         egui::Button::new("Update derived").small(),
                                     )
-                                    .on_hover_text(
-                                        "Re-run the recipe of every derived structure here \
-                                     whose operands have changed",
-                                    )
+                                    .on_hover_text("Update the out-of-date derived structures")
                                     .clicked()
                             {
                                 update_derived = true;
@@ -264,10 +250,7 @@ impl ViewerApp {
                                 let tick = ui
                                     .checkbox(&mut vis[i], "")
                                     .named_with(|| format!("Show {}", roi.name))
-                                    .tip(
-                                        "Show / select this structure\nShift-click: tick or \
-                                     untick the whole range from the last one",
-                                    );
+                                    .tip("Show this structure\nShift-click: tick a range");
                                 if tick.clicked() {
                                     new_anchor =
                                         Some((here, apply_tick(&mut vis, i, shift, anchor)));
@@ -281,8 +264,7 @@ impl ViewerApp {
                                     let c = st.color();
                                     ui.label(egui::RichText::new(st.glyph()).color(theme::rgb(c)))
                                         .on_hover_text(format!(
-                                            "Derived structure: {}\nThe recipe is in the \
-                                             Structure editor",
+                                            "Derived structure: {}",
                                             st.label()
                                         ));
                                 }
@@ -330,7 +312,7 @@ impl ViewerApp {
                                         ui,
                                         has_volume,
                                         "📝 Edit in the Structure editor",
-                                        "Select it and open the editor on it",
+                                        "Open it in the Structure editor",
                                     ) {
                                         open_editor = Some(i);
                                         ui.close();
@@ -339,8 +321,7 @@ impl ViewerApp {
                                         ui,
                                         has_volume,
                                         "⌖ Localize",
-                                        "Put the crosshair on it: on the point, or on \
-                                         the centre of gravity of the structure",
+                                        "Put the crosshair on it",
                                     ) {
                                         poi_act = Some((PoiAct::Localize, i));
                                         ui.close();
@@ -350,7 +331,7 @@ impl ViewerApp {
                                             ui,
                                             has_volume,
                                             "Move to the crosshair",
-                                            "Put the point where the three views cross",
+                                            "Move the point to the crosshair",
                                         ) {
                                             poi_act = Some((PoiAct::MoveHere, i));
                                             ui.close();
@@ -359,9 +340,7 @@ impl ViewerApp {
                                             && ui
                                                 .button("Make the localization point")
                                                 .on_hover_text(
-                                                    "The one point per structure set the \
-                                                     patient is lined up on; any other \
-                                                     falls back to a plain marker",
+                                                    "The point the patient is lined up on",
                                                 )
                                                 .clicked()
                                         {
@@ -372,8 +351,7 @@ impl ViewerApp {
                                         ui,
                                         has_volume,
                                         "+ POI at its centre",
-                                        "A new point of interest at this structure's \
-                                         centre of gravity",
+                                        "New point at the centre of gravity",
                                     ) {
                                         poi_act = Some((PoiAct::AtCentre, i));
                                         ui.close();

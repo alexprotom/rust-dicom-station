@@ -598,7 +598,7 @@ impl ViewerApp {
                 let sel = app.motion_sel;
                 if sel < app.motion_reports.len()
                     && !app.chart_shown(super::chart_pane::ChartSource::Motion(sel))
-                    && small_tip_button(ui, "📈", "Show the run's charts in the row's chart pane")
+                    && small_tip_button(ui, "📈", "Show the run's charts")
                 {
                     let slot = app.motion_report_slot(sel);
                     app.show_chart(slot, super::chart_pane::ChartSource::Motion(sel));
@@ -722,7 +722,7 @@ impl ViewerApp {
             });
             f.row_tip(
                 "Reference phase",
-                "Targets are defined on this phase and carried to the others",
+                "The phase the targets are defined on",
                 |ui| {
                     let sel = phases_for_ref
                         .iter()
@@ -781,11 +781,8 @@ impl ViewerApp {
                             continue;
                         }
                         any = true;
-                        ui.checkbox(&mut d.group_targets[i], &g.name).on_hover_text(
-                            "Contoured on every phase of the group: the reference \
-                             phase's instance is carried by the registration models, \
-                             and the per-phase instances are read as contoured",
-                        );
+                        ui.checkbox(&mut d.group_targets[i], &g.name)
+                            .on_hover_text("Contoured on every phase");
                     }
                     if !any {
                         ui.weak("none");
@@ -797,10 +794,8 @@ impl ViewerApp {
                 .max_height(120.0)
                 .show(&mut cols[1], |ui| {
                     for (i, label) in &single {
-                        ui.checkbox(&mut d.targets[*i], *label).on_hover_text(
-                            "Defined on (or resampled to) the reference phase and \
-                             carried to the others by the registration models",
-                        );
+                        ui.checkbox(&mut d.targets[*i], *label)
+                            .on_hover_text("Carried from the reference phase");
                     }
                     if single.is_empty() {
                         ui.weak("none");
@@ -835,22 +830,15 @@ impl ViewerApp {
                 });
         })
         .response
-        .on_hover_text(
-            "Carried along for target-reference drift and direction-wise \
-             correlation - typically the heart for cardiac targets",
-        );
+        .on_hover_text("Reference structure for drift and correlation");
         ui.separator();
 
         ui.horizontal(|ui| {
             ui.label("Models:");
             ui.checkbox(&mut d.rigid, "rigid");
             ui.add_enabled_ui(d.rigid, |ui| {
-                ui.checkbox(&mut d.local_rigid, "local").on_hover_text(
-                    "One rigid body per structure, fitted on the structure \
-                     dilated by the margin. A whole breathing patient is not a \
-                     rigid body: the global fit finds the couch and reports no \
-                     motion.",
-                );
+                ui.checkbox(&mut d.local_rigid, "local")
+                    .on_hover_text("One rigid fit per structure, with this margin");
                 ui.add_enabled(
                     d.local_rigid,
                     egui::DragValue::new(&mut d.local_rigid_margin_mm)
@@ -860,22 +848,17 @@ impl ViewerApp {
                 );
             });
             ui.checkbox(&mut d.deformable, "deformable")
-                .on_hover_text("B-spline refinement on top of the global rigid result");
+                .on_hover_text("B-spline after the rigid fit");
             let any_group = d.group_targets.iter().any(|&on| on);
             ui.add_enabled(
                 any_group,
                 egui::Checkbox::new(&mut d.contoured, "as contoured"),
             )
-            .on_hover_text(
-                "No registration: the target as it is contoured on each phase \
-                 (targets from the left column only)",
-            );
+            .on_hover_text("Use each phase's own contour");
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut d.build_itv, "Build ITV").on_hover_text(
-                "Union of the target over the selected phases, on the reference \
-                 phase; one per target and model",
-            );
+            ui.checkbox(&mut d.build_itv, "Build ITV")
+                .on_hover_text("Union of the target over the phases");
             ui.add_enabled(
                 d.build_itv,
                 egui::DragValue::new(&mut d.itv_margin_mm)
@@ -884,7 +867,7 @@ impl ViewerApp {
                     .prefix("+ ")
                     .suffix(" mm"),
             )
-            .on_hover_text("Uniform margin added to the union");
+            .on_hover_text("ITV margin");
             ui.separator();
             ui.label("Phases:");
             if ui.small_button("All").clicked() {
@@ -918,10 +901,7 @@ impl ViewerApp {
                 });
             });
         ui.checkbox(&mut d.keep_phase_segs, "Keep per-phase segmentations")
-            .on_hover_text(
-                "Store every propagated mask as a segmentation series on its phase \
-                 - one series per phase",
-            );
+            .on_hover_text("Save each phase's masks as a segmentation");
         egui::CollapsingHeader::new("Registration settings")
             .default_open(false)
             .show(ui, |ui| {
@@ -970,9 +950,7 @@ impl ViewerApp {
                         ui,
                         has_recipe,
                         "Apply last recipe",
-                        "Tick the same targets (matched by name) and re-use the \
-                         options of the previous run - for the other workspace or \
-                         the next study",
+                        "Reuse the previous run's targets and options",
                     ) {
                         apply_recipe = true;
                     }

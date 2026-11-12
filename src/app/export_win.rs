@@ -20,34 +20,69 @@ const UID_W: f32 = 330.0;
 const NAME_W: f32 = 210.0;
 
 impl ViewerApp {
-    /// Open the export window, building a fresh plan from what is loaded.
-    pub(super) fn open_export_dialog(&mut self) {
+    /// A plan built afresh from what is loaded; `None` with nothing loaded.
+    pub(super) fn build_export_plan(&self) -> Option<ExportPlan> {
         let studies: [Option<&LoadedStudy>; MAX_WORKSPACES] =
             std::array::from_fn(|s| self.slots[s].study.as_ref());
-        let Some(first) = studies.iter().flatten().next() else {
-            return;
-        };
+        let first = studies.iter().flatten().next()?;
         let params = dicom_export::ExportParams::for_study(first);
         let mut plan = ExportPlan::build(studies, params);
         // 2D contours go out burned into copies of their images too: many
         // viewers draw no presentation state, and the copy is what they show.
         plan.burn_in_contours = true;
-        // The windows the panes show the planar images with.
+        Some(plan)
+    }
+
+    /// Open the export window. A window already open keeps its plan - the
+    /// pseudonym, the identifier mode, the renames and ticks typed into it -
+    /// while the plan still lists what the workspaces hold
+    /// ([`ExportPlan::matches`]); once they changed (a set added, a study
+    /// replaced), it is rebuilt with what was chosen carried over
+    /// ([`ExportPlan::carried_into`]). A closed window opens on a fresh one;
+    /// its *Reset* builds one from scratch.
+    pub(super) fn open_export_dialog(&mut self) {
+        let studies: [Option<&LoadedStudy>; MAX_WORKSPACES] =
+            std::array::from_fn(|s| self.slots[s].study.as_ref());
+        let kept = self.export_open
+            && self
+                .export_plan
+                .as_ref()
+                .is_some_and(|p| !p.workspaces.is_empty() && p.matches(studies));
+        if !kept {
+            let Some(fresh) = self.build_export_plan() else {
+                return;
+            };
+            let plan = match (self.export_open, self.export_plan.take()) {
+                (true, Some(old)) => old.carried_into(fresh),
+                _ => fresh,
+            };
+            self.export_plan = Some(plan);
+            self.export_result = None;
+            self.export_warnings.clear();
+        }
+        self.export_open = true;
+        self.raise_window("export");
+    }
+
+    /// The window each planar image of every workspace is shown with (a
+    /// pane's, where one shows it), by `(workspace, index)`: what the export
+    /// writes a presentation state's VOI and a burned-in copy's grey with.
+    /// Read when the run starts, so it is what is on screen then.
+    pub(super) fn export_planar_windows(
+        &self,
+    ) -> std::collections::HashMap<(usize, usize), (f32, f32)> {
+        let mut out = std::collections::HashMap::new();
         for slot in 0..MAX_WORKSPACES {
             let Some(study) = self.slots[slot].study.as_ref() else {
                 continue;
             };
-            for (i, img) in study.planar_images.iter().enumerate() {
+            for i in 0..study.planar_images.len() {
                 if let Some(wl) = self.planar_shown_window(slot, i) {
-                    plan.planar_windows.insert(img.sop_instance_uid.clone(), wl);
+                    out.insert((slot, i), wl);
                 }
             }
         }
-        self.export_plan = Some(plan);
-        self.export_result = None;
-        self.export_warnings.clear();
-        self.export_open = true;
-        self.raise_window("export");
+        out
     }
 
     pub(super) fn export_window(&mut self, ctx: &egui::Context) {
@@ -70,6 +105,7 @@ impl ViewerApp {
         let mut open = true;
         let mut browse = false;
         let mut do_export = false;
+        let mut reset = false;
         let job_text = self.export_job.as_ref().map(|j| j.progress.get());
         let result = self.export_result.clone();
         let warnings = self.export_warnings.clone();
@@ -97,7 +133,7 @@ impl ViewerApp {
                 run_options(ui, &mut plan);
                 ui.separator();
 
-                let avail = (ui.available_height() - 108.0).max(160.0);
+                let avail = (detach::room_height(ui) - 108.0).max(160.0);
                 egui::ScrollArea::vertical()
                     .id_salt("export_tree")
                     .max_height(avail)
@@ -126,7 +162,7 @@ impl ViewerApp {
                             !busy && (n_series + n_obj) > 0,
                             egui::Button::new("💾 Export"),
                         )
-                        .on_hover_text("Write the selection into the output folder")
+                        .on_hover_text("Export the selection")
                         .clicked()
                     {
                         do_export = true;
@@ -134,6 +170,13 @@ impl ViewerApp {
                     ui.weak(format!(
                         "{n_series} image series, {n_obj} RT object(s) selected"
                     ));
+                    if ui
+                        .add_enabled(!busy, egui::Button::new("Reset"))
+                        .on_hover_text("Undo every change made here")
+                        .clicked()
+                    {
+                        reset = true;
+                    }
                     if let Some(msg) = &result {
                         ui.label(msg);
                     }
@@ -156,6 +199,13 @@ impl ViewerApp {
         if !open {
             self.export_result = None;
         }
+        if reset && open {
+            if let Some(fresh) = self.build_export_plan() {
+                self.export_plan = Some(fresh);
+                self.export_result = None;
+                self.export_warnings.clear();
+            }
+        }
         if browse {
             self.ask_folder("Select the export output folder", |app, d| {
                 app.export_dir = d.display().to_string();
@@ -173,34 +223,18 @@ fn run_options(ui: &mut egui::Ui, plan: &mut ExportPlan) {
         ui.label(egui::RichText::new("Identifiers").strong());
         let mut mode = plan.uid_mode;
         ui.radio_value(&mut mode, UidMode::Keep, "keep the original UIDs")
-            .on_hover_text(
-                "The export is the same study: re-importing it where it came from updates \
-                 that study, and references from objects outside the export still resolve. \
-                 RT objects are written anew, so they get new UIDs either way and name \
-                 their source.",
-            );
+            .on_hover_text("Same study; RT objects still get new UIDs");
         ui.radio_value(&mut mode, UidMode::New, "generate new UIDs")
-            .on_hover_text(
-                "The export is a new study that happens to look like this one - what you \
-                 want when the edited copy has to live beside its source.",
-            );
+            .on_hover_text("Export as a new study");
         if mode != plan.uid_mode {
             plan.set_uid_mode(mode);
         }
         ui.separator();
         ui.label(egui::RichText::new("Structures").strong());
-        if small_tip_button(
-            ui,
-            "all RTSTRUCT",
-            "Write every set of structures as contours",
-        ) {
+        if small_tip_button(ui, "all RTSTRUCT", "Write every set as contours") {
             plan.set_all_formats(StructFormat::RtStruct);
         }
-        if small_tip_button(
-            ui,
-            "all SEG",
-            "Write every set of structures as binary masks",
-        ) {
+        if small_tip_button(ui, "all SEG", "Write every set as masks") {
             plan.set_all_formats(StructFormat::Seg);
         }
     });
@@ -211,12 +245,7 @@ fn run_options(ui: &mut egui::Ui, plan: &mut ExportPlan) {
         ui.radio_value(&mut plan.layout, Layout::Flat, "flat");
         ui.separator();
         ui.checkbox(&mut plan.rerender_images, "Rewrite images from the voxels")
-            .on_hover_text(
-                "Off (recommended): the source files are copied with only the attributes \
-                 below patched, so private tags, acquisition parameters and the exact pixel \
-                 data survive.\nOn: the images are written afresh from the loaded volume - \
-                 needed only when the voxels themselves were changed.",
-            );
+            .on_hover_text("Only needed when the voxels were changed");
         let planar = plan.studies().any(|st| {
             st.objects
                 .iter()
@@ -225,13 +254,7 @@ fn run_options(ui: &mut egui::Ui, plan: &mut ExportPlan) {
         if planar {
             ui.separator();
             ui.checkbox(&mut plan.burn_in_contours, "2D contours also burned in")
-                .on_hover_text(
-                    "On: beside every planar image that goes out with 2D contours on it (of a \
-                     ticked planar structure set), a copy with the contours drawn into its \
-                     pixels, as a Secondary Capture - what a viewer that draws no \
-                     presentation state shows. The contours still go out as a presentation \
-                     state, which keeps them editable.",
-                );
+                .on_hover_text("Also add a copy with the contours drawn in");
         }
     });
 }
@@ -473,10 +496,7 @@ fn object_node(ui: &mut egui::Ui, o: &mut ObjNode, formats: &mut bool) {
                     .clicked();
                 *formats |= ui
                     .radio_value(&mut o.format, StructFormat::Seg, "SEG")
-                    .on_hover_text(
-                        "Binary masks on the image lattice (Segmentation Storage). \
-                         Contours are rasterised, masks are written as they are.",
-                    )
+                    .on_hover_text("Binary masks (Segmentation Storage)")
                     .clicked();
             }
         })
@@ -513,7 +533,7 @@ fn common_tags(ui: &mut egui::Ui, plan: &mut ExportPlan) {
         .show_header(ui, |ui| {
             ui.label(egui::RichText::new("Common tags").strong());
             ui.weak("written into every exported object");
-            if small_tip_button(ui, "↺ all", "Restore every value to the study's own") {
+            if small_tip_button(ui, "↺ all", "Restore every value") {
                 reset = true;
             }
         })
@@ -536,10 +556,8 @@ fn common_tags(ui: &mut egui::Ui, plan: &mut ExportPlan) {
                     {
                         let label =
                             format!("({:04X},{:04X}) {}", f.tag.group(), f.tag.element(), f.name);
-                        ui.checkbox(&mut f.enabled, label).on_hover_text(format!(
-                            "VR {} - unchecked: the tag is left out of the exported files",
-                            f.vr
-                        ));
+                        ui.checkbox(&mut f.enabled, label)
+                            .on_hover_text(format!("VR {}; unticked leaves the tag out", f.vr));
                         ui.horizontal(|ui| {
                             ui.add_enabled(
                                 f.enabled,
@@ -627,7 +645,7 @@ fn revert_button(ui: &mut egui::Ui, f: &mut Field) {
         && ui
             .add(egui::Button::new("↺").small())
             .tip(format!(
-                "Back to what the data says: “{}”",
+                "Restore “{}”",
                 if f.original.is_empty() {
                     "(empty)"
                 } else {

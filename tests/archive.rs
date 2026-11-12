@@ -1107,13 +1107,13 @@ fn a_new_segmentation_is_saved_beside_its_study_in_the_pacs_layout() {
         loader::load_directory(&study_dir, &Progress::default()).expect("the study loads");
     let study_uid = study.series[study.active_series].study_uid.clone();
     let home = archive
-        .study_home(&study_uid)
+        .study_home(&study_uid, "")
         .expect("the PACS holds the study");
     assert!(
         home.starts_with(&study_dir),
         "the study's own folder: {home:?}"
     );
-    assert!(archive.study_home("1.2.3.4.5.404").is_none());
+    assert!(archive.study_home("1.2.3.4.5.404", "").is_none());
 
     // What came from the PACS is known as such.
     let loaded: Vec<&str> = study
@@ -1192,4 +1192,186 @@ fn a_new_segmentation_is_saved_beside_its_study_in_the_pacs_layout() {
     assert!(archive
         .held_sops([o.sop_instance_uid.as_str()])
         .contains(&o.sop_instance_uid));
+}
+
+/// The names of the cohorts that list patient `key`, sorted.
+fn cohorts_of(archive: &Archive, key: &str) -> Vec<String> {
+    let mut out: Vec<String> = archive
+        .tree()
+        .cohorts
+        .iter()
+        .filter(|c| c.patients.iter().any(|p| p.key == key))
+        .map(|c| c.name.clone())
+        .collect();
+    out.sort();
+    out
+}
+
+/// Where *Save to the PACS* puts a new object, and what its lookup says:
+/// beside the image series the object was drawn on (in the patient's
+/// folder when that series has a folder of its own), never loose in a
+/// storage or a cohort folder, also when a study's series lie under two
+/// cohort folders; and the one-pass lookup the window runs on a job says
+/// what the two separate calls say.
+#[test]
+fn a_new_object_is_filed_beside_its_series_and_never_loose_in_a_cohort() {
+    let root = scratch("test_archive_save_home");
+    let p01 = ("P01", "AB");
+    // One study, its CT in one cohort and its MR in another.
+    tiny(
+        &root.join("Trial/P01/CT/c1"),
+        p01,
+        "7.1",
+        "7.1.1",
+        "7.1.1.1",
+        "CT",
+    );
+    tiny(
+        &root.join("Trial/P01/CT/c2"),
+        p01,
+        "7.1",
+        "7.1.1",
+        "7.1.1.2",
+        "CT",
+    );
+    tiny(
+        &root.join("Imports/P01/MR/m1"),
+        p01,
+        "7.1",
+        "7.1.2",
+        "7.1.2.1",
+        "MR",
+    );
+    // A study of one series.
+    tiny(
+        &root.join("Trial/P02/CT/c3"),
+        ("P02", "CD"),
+        "7.2",
+        "7.2.1",
+        "7.2.1.1",
+        "CT",
+    );
+    let archive = Archive::new(&root);
+    archive.refresh(&Progress::default()).expect("scan");
+    let trial_p01 = root.join("Trial").join("P01");
+    let trial_p02 = root.join("Trial").join("P02");
+
+    // The rule.
+    assert_eq!(archive.study_home("7.1", "7.1.1"), Some(trial_p01.clone()));
+    assert_eq!(
+        archive.study_home("7.1", ""),
+        Some(trial_p01.clone()),
+        "no series named: beside the largest, not the storage folder"
+    );
+    assert_eq!(archive.study_home("7.2", "7.2.1"), Some(trial_p02.clone()));
+    assert_eq!(
+        archive.study_home("7.2", ""),
+        Some(trial_p02.clone()),
+        "out of the series folder"
+    );
+    assert_eq!(archive.study_home("9.9", ""), None);
+
+    // The lookup in one pass says what the two calls say.
+    let keys: Vec<(String, String)> =
+        [("7.1", "7.1.1"), ("7.1", ""), ("7.2", "7.2.1"), ("9.9", "")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+    let sops = vec!["7.1.1.1".to_string(), "8.8".to_string()];
+    let t = archive.save_targets(&keys, &sops);
+    assert!(t.catalog);
+    for (study, series) in &keys {
+        assert_eq!(
+            t.homes[&(study.clone(), series.clone())],
+            archive.study_home(study, series),
+            "{study} {series}"
+        );
+    }
+    assert_eq!(t.held, archive.held_sops(sops.iter().map(String::as_str)));
+    assert_eq!(t.held.len(), 1);
+    // Without a catalog nothing is read, and nothing is scanned.
+    let unscanned = scratch("test_archive_save_unscanned");
+    tiny(
+        &unscanned.join("Trial/P09/x"),
+        ("P09", "EF"),
+        "7.9",
+        "7.9.1",
+        "7.9.1.1",
+        "CT",
+    );
+    let none = Archive::new(&unscanned).save_targets(&keys, &sops);
+    assert!(!none.catalog && none.homes.is_empty());
+    assert!(
+        !rust_dicom_station::archive::catalog::exists(&unscanned),
+        "the lookup made no catalog"
+    );
+
+    let before = cohorts_of(&archive, "P01");
+    // Two new objects, one per study, filed the way a save files them.
+    let src = root.parent().unwrap().join("test_archive_save_home_src");
+    let _ = std::fs::remove_dir_all(&src);
+    let derived = |name: &str, patient: (&str, &str), study: &str, sop: &str, modality: &str| {
+        let path = src.join(name);
+        tiny(&path, patient, study, &format!("{sop}0"), sop, modality);
+        path
+    };
+    use rust_dicom_station::archive::save::file_written;
+    use rust_dicom_station::dicom_export::{DerivedFile, DerivedKind};
+    let a = derived("a.dcm", p01, "7.1", "7.1.9.1", "RTSTRUCT");
+    let b = derived("b.dcm", ("P02", "CD"), "7.2", "7.2.9.1", "SEG");
+    let files = vec![
+        (
+            DerivedFile {
+                kind: DerivedKind::StructureSet,
+                index: 0,
+                path: a.clone(),
+            },
+            "7.1.1".to_string(),
+        ),
+        (
+            DerivedFile {
+                kind: DerivedKind::Segmentation,
+                index: 0,
+                path: b.clone(),
+            },
+            "7.2.1".to_string(),
+        ),
+    ];
+    // The second cannot be put in its place: a folder where its file is
+    // written first.
+    let block = trial_p02.join("7.2.9.1.dcm.tmp");
+    std::fs::create_dir_all(&block).unwrap();
+    let saved = file_written(&archive, &src, &files, &Progress::default())
+        .expect("what was filed is no error");
+    assert_eq!(saved.objects.len(), 1, "the first made it");
+    assert!(saved.failed.is_some(), "the rest is said to have failed");
+    let o = &saved.objects[0];
+    assert_eq!(o.sop_instance_uid, "7.1.9.1");
+    assert_eq!(o.path.parent(), Some(trial_p01.as_path()), "beside its CT");
+    assert!(
+        archive.held_sops(["7.1.9.1"]).contains("7.1.9.1"),
+        "catalogued"
+    );
+    assert_eq!(
+        cohorts_of(&archive, "P01"),
+        before,
+        "the cohorts as they were"
+    );
+
+    // The retry, with the first one's identity taken over: it is the PACS's
+    // own now, so only the second is stored.
+    std::fs::remove_dir_all(&block).unwrap();
+    derived("a.dcm", p01, "7.1", "7.1.9.1", "RTSTRUCT");
+    let again = file_written(&archive, &src, &files, &Progress::default()).expect("the retry");
+    assert!(again.failed.is_none());
+    assert_eq!(again.summary.stored, 1, "{:?}", again.summary);
+    assert_eq!(again.summary.duplicates, 1);
+    let b_saved = again
+        .objects
+        .iter()
+        .find(|o| o.sop_instance_uid == "7.2.9.1")
+        .expect("the second");
+    assert_eq!(b_saved.path.parent(), Some(trial_p02.as_path()));
+    assert_eq!(cohorts_of(&archive, "P01"), before);
+    let _ = std::fs::remove_dir_all(&src);
 }

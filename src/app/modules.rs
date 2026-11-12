@@ -136,86 +136,21 @@ impl ModuleUi for Module {
 
     fn menu_tip(self) -> &'static str {
         match self {
-            Module::ImageInfo => {
-                "What the displayed series is: voxel spacing, slice thickness and the gap \
-                 between slices, the number of slices, the frame of reference and the \
-                 acquisition settings, with whatever wants a second look named."
-            }
-            Module::Playback => {
-                "The ▶ buttons on the viewports: how fast they run, what they do at the end \
-                 of the range, and what a phase change carries with it. Holds the transport \
-                 controls and the phase scrubber too."
-            }
-            Module::Registration => {
-                "Align two workspaces: direction, method, region, parameters, landmarks, \
-                 analysis, fusion and the deformation vector field. Needs two loaded \
-                 workspaces to run."
-            }
-            Module::Simulation => {
-                "Registration QA: apply a known rigid motion and Gaussian deformation to one \
-                 workspace and generate the result into the other - the ground truth a \
-                 registration can be measured against."
-            }
-            Module::Generation => {
-                "Images made from images. Image synthesis: a synthetic CT from an MR or a \
-                 CBCT (TotalSynth), added to the study as a CT series, and its evaluation \
-                 against a CT of the same patient. DRR: digitally reconstructed radiographs \
-                 of a CT, with an exact and an interpolating projector, filed under Planar \
-                 images and shown in the row's planar panes."
-            }
-            Module::StructureEditor => {
-                "Insert, edit and combine structures: empty structures and points, the \
-                 generators, everything that acts on the selected structure (interpolation, \
-                 tidying, moving, the type, the derived recipe), and the structure algebra."
-            }
-            Module::AutoTools => {
-                "The tools that find a structure by themselves: the body contour, automatic \
-                 multi-organ segmentation (TotalSegmentator) with the fold that picks what a \
-                 run keeps, prompt segmentation (SegVol) and slice propagation (MedSAM2). \
-                 Every network runs locally, in Rust."
-            }
-            Module::Propagation => {
-                "Carry contours and segmentations from one workspace to the other through \
-                 the active registration - globally, or refined on an enclosing structure \
-                 first - or by relationship: at the same offset from a reference structure. \
-                 Sits next to the registration that drives it."
-            }
-            Module::Comparison => {
-                "Volumes, centroid offset, Dice, HD95, surface distances and the \
-                 least-squares rigid offset of any two structures - within a workspace or \
-                 across two. The two are drawn thicker in the views while the section is \
-                 unfolded."
-            }
-            Module::Details => {
-                "One row per structure: volume surface-based and voxels-based, the Dice \
-                 against a reference, the grey levels inside it, what the geometry costs in \
-                 slices and points, and whether a derived structure still matches its \
-                 recipe. A click on a row selects the structure and centres the views on \
-                 it. With CSV export."
-            }
-            Module::Motion => {
-                "Register the reference phase of a 4D group to every other phase, carry the \
-                 targets across, and measure their motion - trajectories, drift, \
-                 correlations and the ITV. The finished runs are the section's second half, \
-                 their charts in the row's chart pane."
-            }
-            Module::DoseDisplay => {
-                "How the displayed dose grid is drawn over the images: colorwash, isodose                  lines or both, the opacity, the threshold below which nothing is drawn,                  and the isodose levels. Shared by every workspace; which grid is drawn                  is picked under Dose in the data tree."
-            }
-            Module::DoseAnalysis => {
-                "Dmean, Dmin, Dmax, D_X% and V_X of every ticked structure against one dose, \
-                 in a table that follows every edit of the structures."
-            }
-            Module::Dvh => {
-                "Cumulative and differential DVHs of any structures against any loaded dose \
-                 objects, with the metrics table, protocol constraint checking and CSV \
-                 export. The plot is drawn in the row's chart pane, which can be maximized."
-            }
-            Module::Workflows => {
-                "Run a saved workflow from the panel: pick it, give each folder node its \
-                 folders, run it in the background or step by step in the viewer, and put \
-                 what it leaves into the workspaces. The editor stays a window."
-            }
+            Module::ImageInfo => "Spacing, slices and settings of the series",
+            Module::Playback => "Play speed, looping and phase controls",
+            Module::Registration => "Align two workspaces",
+            Module::Simulation => "Apply a known motion for registration QA",
+            Module::Generation => "Synthetic CT and DRRs",
+            Module::StructureEditor => "Insert, edit and combine structures",
+            Module::AutoTools => "Automatic and prompted segmentation",
+            Module::Propagation => "Carry structures to the other workspace",
+            Module::Comparison => "Compare two structures",
+            Module::Details => "One row per structure, with CSV export",
+            Module::Motion => "Motion of targets over a 4D group",
+            Module::DoseDisplay => "How the dose is drawn",
+            Module::DoseAnalysis => "Dose metrics of the ticked structures",
+            Module::Dvh => "Dose-volume histograms",
+            Module::Workflows => "Run a saved workflow",
         }
     }
 }

@@ -123,26 +123,29 @@ impl ViewerApp {
                 egui::Button::new(if is_max { "⊞" } else { "⛶" }).small(),
             )
             .tip(if is_max {
-                "Restore the multi-view layout"
+                "Restore the layout"
             } else {
-                "Maximize this pane to the whole window"
+                "Maximize this pane"
             });
         let close_resp = ui
             .put(close_rect, egui::Button::new("✖").small())
-            .tip("Take this pane out of the row");
+            .tip("Close this pane");
         let clicked_detach = self.detach_button(ui, detach_rect, slot, kind);
         // The picture is cut from a screenshot of the main window, so a
         // chart in a window of its own is saved from its row.
         let save_resp = ui
-            .put(save_rect, egui::Button::new("💾").small().sense(if out {
-                Sense::hover()
-            } else {
-                Sense::click()
-            }))
+            .put(
+                save_rect,
+                egui::Button::new("💾").small().sense(if out {
+                    Sense::hover()
+                } else {
+                    Sense::click()
+                }),
+            )
             .tip(if out {
-                "Put the chart back into its row to save it as a picture: the picture is                  cut from the main window"
+                "Put the chart back in its row to save it"
             } else {
-                "Save this chart as a picture, as it is on screen"
+                "Save the chart as an image"
             });
 
         // ---- the title ----

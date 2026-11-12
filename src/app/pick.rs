@@ -806,10 +806,7 @@ impl Browser {
         };
         if ui
             .button("+ Folder from Files")
-            .on_hover_text(
-                "Pick a folder in the Files app (iCloud Drive, a USB drive, a file \
-                 server) and add it here. iPadOS remembers the choice.",
-            )
+            .on_hover_text("Add a folder from the Files app")
             .clicked()
         {
             self.awaiting_place = true;

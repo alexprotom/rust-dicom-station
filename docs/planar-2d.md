@@ -151,9 +151,12 @@ MCP tool and the workflow step leave it off.
 *💾 Save as presentation state* (and the MCP `save_planar_structures`)
 writes the state into a folder together with every referenced image that
 has no file of its own (a DRR, a moved copy) as an RT Image under the UIDs
-the set already references, so the folder is self-contained. File names
-carry no label (`gsps_1.dcm`, `rtimage_1_1.dcm`: the set's number, then
-the image's, so two sets saved into one folder keep their images apart).
+the set already references, so the folder is self-contained
+(`gsps::write_made_images`, then `gsps::write_state`). File names carry no
+label: `gsps_1.dcm` (the set's number) and `rtimage_<16 hex digits>.dcm`, a
+hash of the image's SOP Instance UID, so an image saved twice into one
+folder - by two sets, or one set saved again - is one file, and two images
+never share a name.
 
 A planar image's own menu in the tree saves it alone: *💾 Save ▸ As DICOM*
 (the Export window with it and the sets drawn on it ticked), *With contours
@@ -161,8 +164,14 @@ burned in (DICOM)* and *As PNG*, both drawn as the panes draw them (every
 set's structures on that image less the hidden ones, through the pane's
 window). The 2D/3D section's *💾 DICOM* writes, besides the registration,
 the DRRs and the report, every planar structure set with contours on the
-setup's radiographs as a presentation state, and each such radiograph with
-the contours burned in (`setup_contours_1.dcm`, ...).
+setup's radiographs as a presentation state that references those
+radiographs and nothing else (its contours on other images are left out,
+and so is a structure with none on them), the radiographs made here once
+each however many sets are drawn on them, and each such radiograph with
+the contours burned in (`setup_contours_1.dcm`, ...). A burned-in copy
+carries the image's spacing as Imager Pixel Spacing, and Pixel Spacing only
+at the isocentre plane when the geometry gives SID and SAD
+([export-and-tools.md](export-and-tools.md#2d-contours-burned-in)).
 
 `gsps::read` takes what RDS writes and what others write: `POLYLINE` and
 `INTERPOLATED` (as a polyline through its points) become rings, `CIRCLE`

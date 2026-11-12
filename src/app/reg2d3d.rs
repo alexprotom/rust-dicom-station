@@ -1678,8 +1678,7 @@ impl ViewerApp {
                             {
                                 st.iso = Some(crosshair);
                             }
-                            if st.iso.is_some()
-                                && small_tip_button(ui, "↺", "The images' or the plan's isocentre")
+                            if st.iso.is_some() && small_tip_button(ui, "↺", "Reset the isocentre")
                             {
                                 st.iso = None;
                             }
@@ -1713,11 +1712,11 @@ impl ViewerApp {
                                     .range(-360.0..=360.0)
                                     .suffix("°"),
                             )
-                            .on_hover_text("The direction the patient faces, from the nozzle");
+                            .on_hover_text("Facing direction, from the nozzle");
                         }
                         st.opts.patient = Some(frame);
                     });
-                    f.row_tip("Box", "The region that matters: its shadow on each radiograph is what is compared", |ui| {
+                    f.row_tip("Box", "Compare only inside this box", |ui| {
                         ui.checkbox(&mut st.clip_on, "").named("Box");
                         ui.add_enabled_ui(st.clip_on, |ui| {
                             egui::ComboBox::from_id_salt((id, "clipof"))
@@ -1770,45 +1769,43 @@ impl ViewerApp {
                         }
                         if st.clip_on
                             && ui
-                                .add(egui::Button::selectable(st.opts.clip_rays, "Rays inside").small())
-                                .on_hover_text("The DRRs see only what is inside the box")
+                                .add(
+                                    egui::Button::selectable(st.opts.clip_rays, "Rays inside")
+                                        .small(),
+                                )
+                                .on_hover_text("Cast rays only inside the box")
                                 .clicked()
                         {
                             st.opts.clip_rays = !st.opts.clip_rays;
                         }
                     });
-                    f.row_tip(
-                        "Region",
-                        "Drawn on the radiographs in the planar panes: only what is inside \
-                         is compared",
-                        |ui| {
-                            for (t, name, tip) in [
-                                (PaneTool::Rectangle, "Rectangle", "Drag across a radiograph"),
-                                (
-                                    PaneTool::Polygon,
-                                    "Polygon",
-                                    "Click the corners on a radiograph; double-click closes",
-                                ),
-                            ] {
-                                if ui
-                                    .selectable_label(st.tool == t, name)
-                                    .on_hover_text(tip)
-                                    .clicked()
-                                {
-                                    st.tool = if st.tool == t { PaneTool::None } else { t };
-                                    st.drawing = None;
-                                }
+                    f.row_tip("Region", "Compare only inside this region", |ui| {
+                        for (t, name, tip) in [
+                            (PaneTool::Rectangle, "Rectangle", "Drag across a radiograph"),
+                            (
+                                PaneTool::Polygon,
+                                "Polygon",
+                                "Click the corners on a radiograph; double-click closes",
+                            ),
+                        ] {
+                            if ui
+                                .selectable_label(st.tool == t, name)
+                                .on_hover_text(tip)
+                                .clicked()
+                            {
+                                st.tool = if st.tool == t { PaneTool::None } else { t };
+                                st.drawing = None;
                             }
-                            let n: usize = st.views.iter().map(|v| v.region.len()).sum();
-                            if n > 0 {
-                                ui.weak(format!("{n}"));
-                                if ui.small_button("Clear").clicked() {
-                                    st.views.iter_mut().for_each(|v| v.region.clear());
-                                    st.drawing = None;
-                                }
+                        }
+                        let n: usize = st.views.iter().map(|v| v.region.len()).sum();
+                        if n > 0 {
+                            ui.weak(format!("{n}"));
+                            if ui.small_button("Clear").clicked() {
+                                st.views.iter_mut().for_each(|v| v.region.clear());
+                                st.drawing = None;
                             }
-                        },
-                    );
+                        }
+                    });
                     f.row("Threshold", |ui| {
                         ui.add(
                             egui::DragValue::new(&mut st.opts.threshold_hu)
@@ -1886,9 +1883,7 @@ impl ViewerApp {
                                         }
                                     })
                                     .response
-                                    .on_hover_text(
-                                        "Start the search from this setup's pose (Refine in 3D)",
-                                    );
+                                    .on_hover_text("Start from this setup's pose");
                             }
                         });
                         f.row("Levels · pixels", |ui| {
@@ -1925,64 +1920,55 @@ impl ViewerApp {
                                 });
                             ui.weak(format!("{n_markers}"));
                         });
-                        f.row_tip(
-                            "Place",
-                            "Click where the chosen marker is on a radiograph: it stands for \
-                             what detection would find there",
-                            |ui| {
-                                egui::ComboBox::from_id_salt((id, "pick"))
-                                    .selected_text(st.pick_marker.as_deref().unwrap_or("Off"))
-                                    .width(110.0)
-                                    .show_ui(ui, |ui| {
+                        f.row_tip("Place", "Click the marker on a radiograph", |ui| {
+                            egui::ComboBox::from_id_salt((id, "pick"))
+                                .selected_text(st.pick_marker.as_deref().unwrap_or("Off"))
+                                .width(110.0)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(st.pick_marker.is_none(), "Off")
+                                        .clicked()
+                                    {
+                                        st.pick_marker = None;
+                                        if st.tool == PaneTool::Pick {
+                                            st.tool = PaneTool::None;
+                                        }
+                                    }
+                                    for n in marker_names {
                                         if ui
-                                            .selectable_label(st.pick_marker.is_none(), "Off")
+                                            .selectable_label(
+                                                st.pick_marker.as_ref() == Some(n),
+                                                n.as_str(),
+                                            )
                                             .clicked()
                                         {
-                                            st.pick_marker = None;
-                                            if st.tool == PaneTool::Pick {
-                                                st.tool = PaneTool::None;
-                                            }
+                                            st.pick_marker = Some(n.clone());
+                                            st.tool = PaneTool::Pick;
+                                            st.drawing = None;
                                         }
-                                        for n in marker_names {
-                                            if ui
-                                                .selectable_label(
-                                                    st.pick_marker.as_ref() == Some(n),
-                                                    n.as_str(),
-                                                )
-                                                .clicked()
-                                            {
-                                                st.pick_marker = Some(n.clone());
-                                                st.tool = PaneTool::Pick;
-                                                st.drawing = None;
-                                            }
-                                        }
-                                    });
-                                let n: usize = st.views.iter().map(|v| v.picks.len()).sum();
-                                if n > 0 {
-                                    ui.weak(format!("{n}"));
-                                    if ui.small_button("Clear").clicked() {
-                                        st.views.iter_mut().for_each(|v| v.picks.clear());
                                     }
+                                });
+                            let n: usize = st.views.iter().map(|v| v.picks.len()).sum();
+                            if n > 0 {
+                                ui.weak(format!("{n}"));
+                                if ui.small_button("Clear").clicked() {
+                                    st.views.iter_mut().for_each(|v| v.picks.clear());
                                 }
-                            },
-                        );
-                        f.row_tip(
-                            "Search · size",
-                            "Around each marker's projection; the markers' diameter",
-                            |ui| {
-                                ui.add(
-                                    egui::DragValue::new(&mut st.opts.search_mm)
-                                        .range(2.0..=60.0)
-                                        .suffix(" mm"),
-                                );
-                                ui.add(
-                                    egui::DragValue::new(&mut st.opts.marker_mm)
-                                        .speed(0.1)
-                                        .range(0.3..=10.0)
-                                        .suffix(" mm"),
-                                );
-                            },
-                        );
+                            }
+                        });
+                        f.row_tip("Search · size", "Search margin and marker diameter", |ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut st.opts.search_mm)
+                                    .range(2.0..=60.0)
+                                    .suffix(" mm"),
+                            );
+                            ui.add(
+                                egui::DragValue::new(&mut st.opts.marker_mm)
+                                    .speed(0.1)
+                                    .range(0.3..=10.0)
+                                    .suffix(" mm"),
+                            );
+                        });
                     }
                     f.row("Moves", |ui| {
                         let mut six = st.opts.dof == Dof2d3d::Six;
@@ -2037,7 +2023,7 @@ impl ViewerApp {
                 let any = st.views.iter().any(|v| v.on);
                 if ui
                     .add_enabled(any, egui::Button::new("▶ Register"))
-                    .on_hover_text("Register from the start the Start row names")
+                    .on_hover_text("Register from the chosen start")
                     .clicked()
                 {
                     act_run = true;
@@ -2045,17 +2031,14 @@ impl ViewerApp {
                 if has_current
                     && ui
                         .add_enabled(any, egui::Button::new("▶ From here"))
-                        .on_hover_text(
-                            "Register again, starting from the pose on display - the answer, \
-                             with what was adjusted by hand - instead of the plan",
-                        )
+                        .on_hover_text("Register again from the pose on display")
                         .clicked()
                 {
                     act_run_here = true;
                 }
                 if ui
                     .add_enabled(any, egui::Button::new("👁 DRR at the plan"))
-                    .on_hover_text("Each ticked radiograph with the CT's DRR at the plan over it")
+                    .on_hover_text("Preview the DRRs at the plan")
                     .clicked()
                 {
                     act_preview = true;
@@ -2213,10 +2196,7 @@ impl ViewerApp {
                                             .suffix(unit)
                                             .update_while_editing(false),
                                     )
-                                    .on_hover_text(
-                                        "Type the value, or drag it; the DRRs follow when it \
-                                         is applied",
-                                    );
+                                    .on_hover_text("Type or drag the value");
                                 if r.drag_stopped() || (r.changed() && !r.dragged()) {
                                     typed = Some((i, edit[i]));
                                 }
@@ -2290,9 +2270,7 @@ impl ViewerApp {
                                 !st.outlined.is_empty(),
                                 egui::Button::new("⇩ As 2D contours"),
                             )
-                            .on_hover_text(
-                                "File the ticked outlines as planar structures on the                                  radiographs, at this setup's pose",
-                            )
+                            .on_hover_text("File the outlines as 2D contours on the radiographs")
                             .clicked()
                         {
                             act_contours = true;
@@ -2302,7 +2280,7 @@ impl ViewerApp {
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .add_enabled(!busy, egui::Button::new("⇥ Positioned copy"))
-                    .on_hover_text("The study as the patient was found, in a new workspace registered to this one")
+                    .on_hover_text("Copy the study as found, registered to this one")
                     .clicked()
                 {
                     act_copy = true;
@@ -2312,17 +2290,21 @@ impl ViewerApp {
                 }
                 if ui
                     .button("💾 DICOM")
-                    .on_hover_text("The registration object, the DRRs as RT Images and the report, into a folder")
+                    .on_hover_text("Save the registration, DRRs and report as DICOM")
                     .clicked()
                 {
                     act_dicom = true;
                 }
-                if ui.button("📋 Copy").on_hover_text("The report as text").clicked() {
+                if ui
+                    .button("📋 Copy")
+                    .on_hover_text("Copy the report as text")
+                    .clicked()
+                {
                     ui.ctx().copy_text(s.report());
                 }
                 if ui
                     .button("📋 Table")
-                    .on_hover_text("The numbers, tab-separated")
+                    .on_hover_text("Copy the table (tab-separated)")
                     .clicked()
                 {
                     ui.ctx().copy_text(s.table());

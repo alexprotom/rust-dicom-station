@@ -477,7 +477,7 @@ impl ViewerApp {
             |app, ui| {
                 // Recomputing is a header button, so the table can be
                 // refreshed from a folded section too.
-                if app.stats.is_some() && small_tip_button(ui, "⟳", "Compute the table again") {
+                if app.stats.is_some() && small_tip_button(ui, "⟳", "Recompute the table") {
                     if let Some(d) = &mut app.stats {
                         d.stale = true;
                     }
@@ -562,10 +562,7 @@ impl ViewerApp {
         form::form(ui, "stats_form", |f| {
             f.row_tip(
                 "Dice against",
-                "What every row's Dice is measured against: the structure of the same name \
-                 in another workspace (a propagation or a second observer), or one structure \
-                 for all rows (an auto-segmentation against the manual one). Contours are \
-                 rasterized onto this workspace's lattice first.",
+                "What each row's Dice is measured against",
                 |ui| {
                     let text = match d.dice_ref {
                         DiceRef::None => "(nothing)".to_string(),
@@ -629,44 +626,16 @@ impl ViewerApp {
                         // than leaving a reader to guess why one structure
                         // has two numbers that disagree.
                         for (h, tip) in [
-                            (
-                                "Structure",
-                                "Click a name to select the structure, as in the data tree, \
-                                 and put the crosshair on its centre.",
-                            ),
+                            ("Structure", "Click a name to select it and centre on it"),
                             ("Type", ""),
-                            (
-                                "Format",
-                                "What the geometry is kept as: contours (an RT structure), \
-                                 voxels (a segment) or a point.",
-                            ),
+                            ("Format", "Contours, voxels or a point"),
                             (
                                 "Surface-based",
-                                "The volume enclosed by a closed triangle surface \
-                                 reconstructed from the contours: neighbouring slices joined \
-                                 by strips of triangles, the first and last capped half a \
-                                 slice beyond with a shrunken copy of the end contour, and any \
-                                 gap left where a contour splits between slices closed. It \
-                                 owes nothing to this image's lattice. The formulas are in \
-                                 docs/volumes.md. For a point of interest this is its \
-                                 position instead.",
+                                "Volume inside the surface built from the contours",
                             ),
-                            (
-                                "Voxels-based",
-                                "The volume of the mask, once the contours are drawn onto \
-                                 this image's own lattice: the number of voxels whose centre \
-                                 falls inside, times the voxel volume. This is what every tool \
-                                 that works on voxels actually carries - propagation, DVH, the \
-                                 registration regions - so it is the figure those agree \
-                                 with.\n\nIt reads larger than the surface for a small \
-                                 structure, because the voxels run a full half slice past the \
-                                 end contours where the surface tapers to a cap, and for one \
-                                 made of many small pieces; smaller for one thinner than a \
-                                 voxel, which can fall between the centres entirely. On a \
-                                 compact organ the two agree to a fraction of a per cent.",
-                            ),
-                            ("Slices", "How many slices carry contours."),
-                            ("Points", "Contour points in the whole structure."),
+                            ("Voxels-based", "Volume of the mask on this image's voxels"),
+                            ("Slices", "Slices with contours"),
+                            ("Points", "Contour points"),
                             ("Grey (min / mean / max)", ""),
                             ("Dice", ""),
                             ("Derived", ""),

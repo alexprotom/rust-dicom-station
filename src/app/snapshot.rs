@@ -63,15 +63,8 @@ impl ImgFormat {
 
     pub(super) fn hint(self) -> &'static str {
         match self {
-            ImgFormat::Png => {
-                "Lossless, and every pixel is the one that was on screen. What a figure \
-                 of an image with contours and text on it should be."
-            }
-            ImgFormat::Jpeg => {
-                "Smaller, and lossy: the compression puts rings around high-contrast \
-                 edges, which is what a contour line and a slice counter are. For a \
-                 quick look rather than a publication."
-            }
+            ImgFormat::Png => "Lossless; best for figures",
+            ImgFormat::Jpeg => "Smaller but lossy",
         }
     }
 }
@@ -337,11 +330,11 @@ impl ViewerApp {
                             ImgWhat::Row(*slot),
                             format!("Workspace {}", SLOT_NAMES[*slot]),
                         )
-                        .on_hover_text("That row on its own");
+                        .on_hover_text("Only this row");
                     }
                     ui.add_enabled_ui(both, |ui| {
                         ui.selectable_value(&mut d.what, ImgWhat::Both, "All")
-                            .on_hover_text("Every row together, one above the other");
+                            .on_hover_text("Every row, stacked");
                     });
                     if !both {
                         ui.weak("one workspace on screen");
@@ -352,10 +345,7 @@ impl ViewerApp {
                     ui.label("Pane");
                     for ((slot, kind, _), caption) in panes.iter().zip(&captions) {
                         ui.selectable_value(&mut d.what, ImgWhat::Pane(*slot, *kind), caption)
-                            .on_hover_text(
-                                "That pane on its own, with its bar, contours, labels and \
-                                 overlays as they are on screen",
-                            );
+                            .on_hover_text("Only this pane");
                     }
                     if panes.is_empty() {
                         ui.weak("no pane on screen");
@@ -387,10 +377,7 @@ impl ViewerApp {
                             .range(48..=1200)
                             .suffix(" DPI"),
                     )
-                    .on_hover_text(
-                        "Written into the file, so the figure is placed at its intended \
-                         physical size, and the image is resampled to match.",
-                    );
+                    .on_hover_text("Print resolution, stored in the file");
                     for p in [150u32, 300, 600] {
                         if ui.selectable_label(d.dpi == p, format!("{p}")).clicked() {
                             d.dpi = p;
@@ -421,7 +408,7 @@ impl ViewerApp {
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(size.is_some(), egui::Button::new("💾 Save"))
-                        .on_hover_text("Choose a file, then take the picture")
+                        .on_hover_text("Choose a file and save")
                         .clicked()
                     {
                         save = true;

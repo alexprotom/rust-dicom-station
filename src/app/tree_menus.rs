@@ -62,11 +62,7 @@ impl ViewerApp {
                         "{} (no image series: any image of this frame)",
                         if free { "●" } else { "  " }
                     ))
-                    .on_hover_text(
-                        "Tie the segmentation to no image series. It shows on every image \
-                         of the same frame of reference - every phase of a 4D study, say - \
-                         resampled onto whichever is displayed.",
-                    )
+                    .on_hover_text("Show on every image of this frame")
                     .clicked()
                 {
                     *out = Some(SetAction::Connect(here, String::new()));
@@ -90,11 +86,7 @@ impl ViewerApp {
             });
         });
         ui.separator();
-        if tip_button(
-            ui,
-            "📤 Save to the PACS",
-            "Write it into this station's PACS, beside the study it belongs to",
-        ) {
+        if tip_button(ui, "📤 Save to the PACS", "Save beside its study") {
             *out = Some(SetAction::SaveToPacs(here));
             ui.close();
         }
@@ -109,11 +101,7 @@ impl ViewerApp {
             ui.close();
         }
         if here.kind == SetKind::Segmentations
-            && tip_button(
-                ui,
-                "💾 Export as DICOM SEG",
-                "Write this series as one DICOM Segmentation file",
-            )
+            && tip_button(ui, "💾 Export as DICOM SEG", "Save as one DICOM SEG file")
         {
             *out = Some(SetAction::ExportSeg {
                 set: here,
@@ -213,9 +201,7 @@ impl ViewerApp {
                     if tip_button(
                         ui,
                         format!("{glyph} ⏱ each phase of {} ({n}): {what}", g.name),
-                        "Copies the structure onto every phase of the group as it is, \
-                         in patient coordinates, with no registration. Use the \
-                         propagation module when the structure should follow the motion.",
+                        "Copy as is, with no registration",
                     ) {
                         picked = Some(Destination::Phases {
                             slot,
@@ -273,24 +259,14 @@ impl ViewerApp {
             }
         });
         ui.separator();
-        if tip_button(
-            ui,
-            format!("∪ Combine {what}"),
-            "Open the structure-algebra window with these as its operands - union, \
-             intersection, subtraction, margins",
-        ) {
+        if tip_button(ui, format!("∪ Combine {what}"), "Combine these structures") {
             *out = Some(ItemAction::Combine {
                 from,
                 items: items.clone(),
             });
             ui.close();
         }
-        if tip_button(
-            ui,
-            format!("📊 Plot {what} on a DVH"),
-            "Open the dose-volume histogram window with these structures against \
-             the loaded dose",
-        ) {
+        if tip_button(ui, format!("📊 Plot {what} on a DVH"), "Plot their DVH") {
             *out = Some(ItemAction::Dvh {
                 from,
                 items: items.clone(),
@@ -300,9 +276,7 @@ impl ViewerApp {
         if tip_button(
             ui,
             format!("⇄ Map {what} to the other workspace"),
-            "Open the propagation module with these structures picked, to carry them \
-             through the active registration - rigid or deformable, landing as \
-             contours or as masks",
+            "Propagate through the registration",
         ) {
             *out = Some(ItemAction::Map {
                 from,
@@ -315,7 +289,7 @@ impl ViewerApp {
             if tip_button(
                 ui,
                 format!("💾 Export {what} as DICOM SEG"),
-                "Writes just these segments, as a SEG series of their own",
+                "Save these segments as a SEG",
             ) {
                 *out = Some(ItemAction::ExportSeg {
                     from,

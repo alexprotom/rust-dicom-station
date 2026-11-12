@@ -143,12 +143,9 @@ fn fourd_rows(
             },
         );
         if !set.confirmed {
-            about.push_str(
-                "\nProbable only: the series share one geometry and nothing else says 4D. \
-                 Confirm or reject it from its menu.",
-            );
+            about.push_str("\nProbable only: confirm or reject it from its menu");
         }
-        about.push_str("\nLoading this row loads its phases, reconstructions and the structure sets drawn on them.");
+        about.push_str("\nLoads its phases, reconstructions and structure sets");
         out.push(SeriesRow {
             modality: "CT".into(),
             datetime,
@@ -281,7 +278,7 @@ pub(super) fn study_rows(
                 if files == 1 { "" } else { "s" }
             ),
             hover: format!(
-                "{}: the series made that day, by the time they were made\n{}",
+                "{}: its series by time\n{}",
                 if course {
                     "A treatment day"
                 } else {

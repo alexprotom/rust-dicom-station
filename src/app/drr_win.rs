@@ -373,30 +373,23 @@ impl ViewerApp {
                 let g = &mut d.params.geometry;
                 form::form(ui, "drr_geom_form", |f| {
                     if !beams.is_empty() {
-                        f.row_tip(
-                            "From beam",
-                            "Take the gantry angle, the couch angle and the isocentre \
-                             from a beam of the loaded plan - the beam's eye view it \
-                             would actually deliver",
-                            |ui| {
-                                egui::ComboBox::from_id_salt("drr_beam")
-                                    .selected_text("Choose a plan beam")
-                                    .width(180.0)
-                                    .show_ui(ui, |ui| {
-                                        for (pi, bi, label) in &beams {
-                                            if ui.selectable_label(false, label).clicked() {
-                                                beam_pick = Some((*pi, *bi));
-                                            }
+                        f.row_tip("From beam", "Take the geometry from a plan beam", |ui| {
+                            egui::ComboBox::from_id_salt("drr_beam")
+                                .selected_text("Choose a plan beam")
+                                .width(180.0)
+                                .show_ui(ui, |ui| {
+                                    for (pi, bi, label) in &beams {
+                                        if ui.selectable_label(false, label).clicked() {
+                                            beam_pick = Some((*pi, *bi));
                                         }
-                                    });
-                            },
-                        );
+                                    }
+                                });
+                        });
                     }
                     if !rt_images.is_empty() {
                         f.row_tip(
                             "From RT image",
-                            "Render exactly the view of an RT image of this workspace: its \
-                             gantry, couch, distances, receptor and pixels",
+                            "Take the geometry from an RT image",
                             |ui| {
                                 egui::ComboBox::from_id_salt("drr_rtimage")
                                     .selected_text("Choose an RT image")
@@ -417,22 +410,18 @@ impl ViewerApp {
                         );
                     }
                     if !room_views.is_empty() {
-                        f.row_tip(
-                            "From room view",
-                            "A calibrated view of imaging-rooms.json, about this isocentre",
-                            |ui| {
-                                egui::ComboBox::from_id_salt("drr_room")
-                                    .selected_text("Choose a room view")
-                                    .width(180.0)
-                                    .show_ui(ui, |ui| {
-                                        for (ri, vi, label) in &room_views {
-                                            if ui.selectable_label(false, label).clicked() {
-                                                room_pick = Some((*ri, *vi));
-                                            }
+                        f.row_tip("From room view", "A calibrated room view", |ui| {
+                            egui::ComboBox::from_id_salt("drr_room")
+                                .selected_text("Choose a room view")
+                                .width(180.0)
+                                .show_ui(ui, |ui| {
+                                    for (ri, vi, label) in &room_views {
+                                        if ui.selectable_label(false, label).clicked() {
+                                            room_pick = Some((*ri, *vi));
                                         }
-                                    });
-                            },
-                        );
+                                    }
+                                });
+                        });
                     }
                     if let Some(e) = &rooms_error {
                         f.wide(|ui| {
@@ -465,12 +454,12 @@ impl ViewerApp {
                                     .range(-360.0..=360.0)
                                     .suffix("°"),
                             )
-                            .on_hover_text("The direction the patient faces, from the nozzle");
+                            .on_hover_text("Where the patient faces, from the nozzle");
                         }
                     });
                     f.row_tip(
                         "Gantry · couch",
-                        "IEC: 0° = source above the patient, 90° = left",
+                        "IEC: 0° = source above, 90° = left",
                         |ui| {
                             ui.add(
                                 egui::DragValue::new(&mut g.gantry_deg)
@@ -520,11 +509,7 @@ impl ViewerApp {
                             for v in [&mut g.isocenter.x, &mut g.isocenter.y, &mut g.isocenter.z] {
                                 ui.add(egui::DragValue::new(v).speed(1.0).max_decimals(1));
                             }
-                            if small_tip_button(
-                                ui,
-                                "⌖",
-                                "Take the isocentre from this workspace's crosshair",
-                            ) {
+                            if small_tip_button(ui, "⌖", "Isocentre at the crosshair") {
                                 set_iso = true;
                             }
                         },
@@ -561,7 +546,7 @@ impl ViewerApp {
                         f.wide(|ui| {
                             ui.horizontal(|ui| {
                                 ui.weak(format!("Camera of {name}"));
-                                if small_tip_button(ui, "✖", "Back to the parameters above") {
+                                if small_tip_button(ui, "✖", "Use the parameters above") {
                                     drop_camera = true;
                                 }
                             });
@@ -575,17 +560,10 @@ impl ViewerApp {
             .default_open(true)
             .show(ui, |ui| {
                 ui.checkbox(&mut d.both, "Run both and compare")
-                    .on_hover_text(
-                        "Render the same geometry with each projector, show the two side by \
-                     side in the planar panes and report the difference - the honest way \
-                     to know what either one costs you",
-                    );
+                    .on_hover_text("Render with both projectors and compare");
                 if d.both {
                     ui.checkbox(&mut d.file_diff, "Also file the difference")
-                        .on_hover_text(
-                            "File the signed difference of the two (exact minus ray-cast) as a \
-                         planar image as well: mid-grey where they agree",
-                        );
+                        .on_hover_text("Also save exact minus ray-cast as an image");
                 } else {
                     ui.horizontal_wrapped(|ui| {
                         for e in Engine::ALL {
@@ -605,36 +583,25 @@ impl ViewerApp {
                                 }
                             });
                     });
-                    f.row_tip(
-                        "Threshold",
-                        "Voxels below this contribute nothing - air, couch",
-                        |ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut d.params.threshold_hu)
-                                    .speed(10.0)
-                                    .range(-1024.0..=3000.0)
-                                    .suffix(" HU"),
-                            );
-                        },
-                    );
-                    f.row_tip(
-                        "Ray step",
-                        "Ray-cast sampling step; the exact tracer ignores it",
-                        |ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut d.params.step_mm)
-                                    .speed(0.05)
-                                    .range(0.05..=5.0)
-                                    .suffix(" mm"),
-                            );
-                        },
-                    );
+                    f.row_tip("Threshold", "Ignore voxels below this", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut d.params.threshold_hu)
+                                .speed(10.0)
+                                .range(-1024.0..=3000.0)
+                                .suffix(" HU"),
+                        );
+                    });
+                    f.row_tip("Ray step", "Ray-cast sampling step", |ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut d.params.step_mm)
+                                .speed(0.05)
+                                .range(0.05..=5.0)
+                                .suffix(" mm"),
+                        );
+                    });
                 });
                 ui.checkbox(&mut d.invert, "Invert: dark is high attenuation")
-                    .on_hover_text(
-                        "Store the image the way a radiograph is read. Off, the values are \
-                         the line integral itself, bright where attenuation is high.",
-                    );
+                    .on_hover_text("Dark where attenuation is high, as on a radiograph");
             });
 
         // Structures projected onto the renderings as 2D contours.
@@ -685,10 +652,7 @@ impl ViewerApp {
             None => {
                 if ui
                     .add_enabled(ready, egui::Button::new("▶ Render"))
-                    .on_hover_text(
-                        "Render, file the result under Planar images of the workspace and \
-                         show it in the row's planar panes",
-                    )
+                    .on_hover_text("Render and show in the planar panes")
                     .clicked()
                 {
                     run = true;
@@ -702,10 +666,8 @@ impl ViewerApp {
             ui.weak(line);
         }
         if let Some(c) = &d.comparison {
-            ui.monospace(c.line()).on_hover_text(
-                "Largest and mean absolute difference and the Pearson correlation of the \
-                 two projectors on this geometry",
-            );
+            ui.monospace(c.line())
+                .on_hover_text("Max and mean difference, correlation");
         }
 
         if let Some(i) = rt_pick {

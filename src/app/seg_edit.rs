@@ -73,14 +73,12 @@ impl ViewerApp {
                 (
                     EditSubject::Structure,
                     "Structure",
-                    "The selected structure of the RT structure set: contours, and \
-                     everything that acts on contours",
+                    "Edit the RT structure's contours",
                 ),
                 (
                     EditSubject::Segmentation,
                     "Segmentation",
-                    "The selected segment of the segmentation series: a mask, and the \
-                     operations a mask has",
+                    "Edit the segmentation's mask",
                 ),
             ] {
                 if ui
@@ -119,34 +117,18 @@ impl ViewerApp {
         );
 
         ui.label(egui::RichText::new("Tidy").strong())
-            .on_hover_text(
-                "The two things a painted or thresholded mask usually needs, and the same \
-             pass the generators and the auto tools use",
-            );
+            .on_hover_text("Clean up the mask");
         ui.horizontal_wrapped(|ui| {
-            if small_tip_button(
-                ui,
-                "Keep largest",
-                "Throw away every connected piece but the biggest: the specks a \
-                 threshold picks up, gone in one pass",
-            ) {
+            if small_tip_button(ui, "Keep largest", "Keep only the largest piece") {
                 act = Some(SegAct::KeepLargest);
             }
-            if small_tip_button(
-                ui,
-                "Remove holes",
-                "Fill the enclosed holes slice by slice - the marrow inside a bone, the \
-                 lumen inside a wall",
-            ) {
+            if small_tip_button(ui, "Remove holes", "Fill holes slice by slice") {
                 act = Some(SegAct::FillHoles);
             }
         });
 
         ui.label(egui::RichText::new("Grow and shrink").strong())
-            .on_hover_text(
-                "A true millimetre margin on the volume's own lattice, not a pixel \
-                 count: anisotropic spacing is accounted for",
-            );
+            .on_hover_text("Margin in mm");
         ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::DragValue::new(&mut radius)
@@ -154,28 +136,23 @@ impl ViewerApp {
                     .range(0.1..=50.0)
                     .suffix(" mm"),
             );
-            if small_tip_button(ui, "➕ Grow", "Dilate the mask by that margin") {
+            if small_tip_button(ui, "➕ Grow", "Grow by the margin") {
                 act = Some(SegAct::Grow);
             }
-            if small_tip_button(ui, "➖ Shrink", "Erode the mask by that margin") {
+            if small_tip_button(ui, "➖ Shrink", "Shrink by the margin") {
                 act = Some(SegAct::Shrink);
             }
         });
 
         ui.label(egui::RichText::new("Whole segmentation").strong());
         ui.horizontal_wrapped(|ui| {
-            if small_tip_button(
-                ui,
-                "▣ To RT structure",
-                "Convert this mask to closed planar contours in the active structure \
-                 set, and go on editing it there. The segmentation stays where it is",
-            ) {
+            if small_tip_button(ui, "▣ To RT structure", "Convert to an RT structure") {
                 act = Some(SegAct::ToStructure);
             }
-            if small_tip_button(ui, "Clear", "Empty the mask, keeping the segmentation") {
+            if small_tip_button(ui, "Clear", "Empty the mask") {
                 act = Some(SegAct::Clear);
             }
-            if small_tip_button(ui, "🗑 Delete", "Remove this segmentation from the series") {
+            if small_tip_button(ui, "🗑 Delete", "Delete this segmentation") {
                 act = Some(SegAct::Delete);
             }
         });

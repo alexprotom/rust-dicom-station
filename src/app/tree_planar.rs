@@ -183,7 +183,7 @@ impl ViewerApp {
                                 }
                             } else if ui
                                 .button(format!("➕ Compare in {label}"))
-                                .on_hover_text("Put it on top of what the pane shows")
+                                .on_hover_text("Stack it on the pane")
                                 .clicked()
                             {
                                 act = Some(Act::Stack(i, Some(*k)));
@@ -199,7 +199,7 @@ impl ViewerApp {
                                     placed && study.has_volume(),
                                     egui::Button::new("⇩ Project structures"),
                                 )
-                                .on_hover_text("The CT's structures on this image, as 2D contours")
+                                .on_hover_text("Project the CT's structures as 2D contours")
                                 .on_disabled_hover_text(if placed {
                                     "the workspace has no CT"
                                 } else {

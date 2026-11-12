@@ -171,15 +171,12 @@ impl ViewerApp {
                     (
                         autoseg::Generation::V2,
                         "v2",
-                        "TotalSegmentator's 'total' task of 2023 - still its default, trained \
-                         on 1559 subjects.",
+                        "TotalSegmentator 'total' (2023, default)",
                     ),
                     (
                         autoseg::Generation::V3,
                         "v3",
-                        "TotalSegmentator's 'total_v3' task: organs, cardiac and muscles \
-                         retrained on 1830 subjects. Same 117 structures; label 26 is \
-                         vertebrae_L6 instead of vertebrae_S1.",
+                        "TotalSegmentator 'total_v3' (retrained)",
                     ),
                 ] {
                     if ui
@@ -192,22 +189,13 @@ impl ViewerApp {
                 }
             });
             for (r, name, hint) in [
-                (
-                    Res::Fast3,
-                    "3 mm - fast",
-                    "Single model, all 117 structures. Good quality, practical on any CPU.",
-                ),
+                (Res::Fast3, "3 mm - fast", "One model, good on any CPU"),
                 (
                     Res::High15,
                     "1.5 mm - high quality",
-                    "Five sub-models at full resolution - the reference quality. Slow \
-                     without a GPU.",
+                    "Best quality, slow without a GPU",
                 ),
-                (
-                    Res::Preview6,
-                    "6 mm - preview",
-                    "Coarse but very fast - a quick look.",
-                ),
+                (Res::Preview6, "6 mm - preview", "Coarse, very fast"),
             ] {
                 let variant = join_variant(gen, r, small);
                 let need = zoo::AutoModel::Nn(variant.task()).download_needed(None, &root);
@@ -230,11 +218,7 @@ impl ViewerApp {
                     idle && res != Res::Preview6,
                     egui::Checkbox::new(&mut small, "small network (residual encoder)"),
                 )
-                .on_hover_text(
-                    "TotalSegmentator's 'small' model size: a residual-encoder nnU-Net with \
-                     8 base features instead of 32, from the same zip. Larger patches (128 \
-                     or 192 cubed), fewer weights. Not trained at 6 mm.",
-                );
+                .on_hover_text("Smaller, faster network");
             }
             d.total = join_variant(gen, res, small);
             d.model = zoo::AutoModel::Nn(d.total.task());
@@ -314,9 +298,9 @@ impl ViewerApp {
                         can_run,
                         "▶ Segment",
                         if d.output.phases {
-                            "Run the model on every phase of the group, one after another"
+                            "Run on every phase"
                         } else {
-                            "Run the model on the whole volume"
+                            "Run on the whole volume"
                         },
                     ) {
                         run = true;
@@ -456,11 +440,7 @@ impl ViewerApp {
             });
         ui.add_space(4.0);
         ui.checkbox(&mut p.tg263, "Name structures by AAPM TG-263")
-            .on_hover_text(
-                "Use the TG-263 standard name (Kidney_L, Lung_RUL, VB_T07, ...) for \
-                 every class that has one, so structure sets from different models \
-                 read as one. Classes without a TG-263 name keep the model's name.",
-            );
+            .on_hover_text("Use standard names (Kidney_L, Lung_RUL, ...)");
         output_rows(
             ui,
             &mut p.output,
@@ -531,7 +511,7 @@ impl ViewerApp {
                     if ui.button("📂 Browse").clicked() {
                         browse = true;
                     }
-                    if tip_button(ui, "↺", "Reset to the application folder") {
+                    if tip_button(ui, "↺", "Reset the folder") {
                         reset_dir = true;
                     }
                 });
@@ -547,7 +527,7 @@ impl ViewerApp {
                     .spacing([8.0, 4.0])
                     .show(ui, |ui| {
                         ui.label("Dose peak (Gy)")
-                            .on_hover_text("Also written as the plan's prescription dose");
+                            .on_hover_text("Also the prescription dose");
                         ui.add(
                             egui::DragValue::new(&mut self.gen_params.peak)
                                 .speed(0.5)
@@ -555,9 +535,8 @@ impl ViewerApp {
                         );
                         ui.end_row();
 
-                        ui.label("Target Y shift (mm)").on_hover_text(
-                            "Moves the target sphere and the dose peak inside the phantom",
-                        );
+                        ui.label("Target Y shift (mm)")
+                            .on_hover_text("Moves the target and dose peak");
                         ui.add(
                             egui::DragValue::new(&mut self.gen_params.target_shift_y)
                                 .speed(0.5)
@@ -566,7 +545,7 @@ impl ViewerApp {
                         ui.end_row();
 
                         ui.label("Phantom shift X / Y (mm)")
-                            .on_hover_text("Shifts the whole phantom - for registration tests");
+                            .on_hover_text("Shifts the whole phantom");
                         ui.horizontal(|ui| {
                             ui.add(
                                 egui::DragValue::new(&mut self.gen_params.shift_x)
@@ -589,9 +568,8 @@ impl ViewerApp {
                         );
                         ui.end_row();
 
-                        ui.label("REG translation (mm)").on_hover_text(
-                            "Translation written into the REG object's second matrix",
-                        );
+                        ui.label("REG translation (mm)")
+                            .on_hover_text("Translation in the REG object");
                         ui.horizontal(|ui| {
                             for v in &mut self.gen_params.reg_shift {
                                 ui.add(egui::DragValue::new(v).speed(0.5).range(-100.0..=100.0));
@@ -618,7 +596,7 @@ impl ViewerApp {
                     } else {
                         if ui
                             .add(egui::Button::new("⚙ Generate"))
-                            .on_hover_text("Existing files with the same names are overwritten")
+                            .on_hover_text("Overwrites files of the same name")
                             .clicked()
                         {
                             do_generate = true;
@@ -751,7 +729,7 @@ impl ViewerApp {
 
                     // ---- findings table ----
                     egui::ScrollArea::vertical()
-                        .max_height(ui.available_height() - 130.0)
+                        .max_height(detach::room_height(ui) - 130.0)
                         .show(ui, |ui| {
                             egui::Grid::new("anon_grid")
                                 .num_columns(3)
@@ -769,11 +747,8 @@ impl ViewerApp {
                                             f.tag.element(),
                                             f.name
                                         );
-                                        ui.checkbox(&mut f.enabled, label).on_hover_text(format!(
-                                            "present in {} file(s); unchecked rows are \
-                                                 left unchanged",
-                                            f.n_files
-                                        ));
+                                        ui.checkbox(&mut f.enabled, label)
+                                            .on_hover_text(format!("In {} file(s)", f.n_files));
                                         let shown = f
                                             .values
                                             .iter()
@@ -808,7 +783,7 @@ impl ViewerApp {
                                                 && ui
                                                     .small_button("↺")
                                                     .tip(format!(
-                                                        "Back to the suggestion: “{}”",
+                                                        "Reset to “{}”",
                                                         if f.suggested.is_empty() {
                                                             "(clear)"
                                                         } else {
@@ -831,20 +806,14 @@ impl ViewerApp {
                             &mut self.anon_remap_uids,
                             format!("Regenerate {} UID(s)", scan.uid_count),
                         )
-                        .on_hover_text(
-                            "Every study / series / SOP instance / frame-of-reference UID is \
-                             replaced by a fresh one - the same original always maps to the \
-                             same new UID, so cross-references stay valid",
-                        );
+                        .on_hover_text("Replace every UID, keeping references");
                         ui.checkbox(
                             &mut self.anon_remove_private,
                             format!("Remove {} private element(s)", scan.private_count),
                         )
-                        .on_hover_text("Drops all odd-group (vendor private) elements");
+                        .on_hover_text("Drop vendor private elements");
                         ui.checkbox(&mut self.anon_mark, "Mark as de-identified")
-                            .on_hover_text(
-                                "Writes PatientIdentityRemoved=YES and DeidentificationMethod",
-                            );
+                            .on_hover_text("Sets PatientIdentityRemoved=YES");
                     });
 
                     ui.horizontal(|ui| {
@@ -862,7 +831,7 @@ impl ViewerApp {
                             browse_out = true;
                         }
                         ui.checkbox(&mut self.anon_in_place, "overwrite in place")
-                            .on_hover_text("Rewrites the original files - no copy is kept");
+                            .on_hover_text("Rewrites the originals, no copy kept");
                     });
 
                     ui.add_space(6.0);
@@ -874,7 +843,7 @@ impl ViewerApp {
                             ui,
                             !busy,
                             "🔏 Anonymize",
-                            "Applies the checked replacements to every file",
+                            "Apply the checked replacements",
                         ) {
                             do_apply = true;
                         }

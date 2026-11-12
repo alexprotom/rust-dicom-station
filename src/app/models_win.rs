@@ -198,10 +198,7 @@ impl ViewerApp {
                                 models::human_bytes(missing)
                             )),
                         )
-                        .on_hover_text(
-                            "Fetch and convert every model that is not ready yet, one after \
-                             the other",
-                        )
+                        .on_hover_text("Download every missing model")
                         .clicked()
                     {
                         action = Some(ModelAction::FetchMissing);
@@ -214,11 +211,7 @@ impl ViewerApp {
                                 models::human_bytes(missing_open)
                             )),
                         )
-                        .on_hover_text(
-                            "Fetch only the missing models whose weights are Apache-2.0 or \
-                             MIT - the ones that may be used for anything, commercial work \
-                             included",
-                        )
+                        .on_hover_text("Download only Apache-2.0 and MIT models")
                         .clicked()
                     {
                         action = Some(ModelAction::FetchMissingOpen);
@@ -227,8 +220,7 @@ impl ViewerApp {
                         ui,
                         !running && ready_n > 0,
                         "⟳ Update all",
-                        "Remove and re-fetch every model that is on disk - the published \
-                         files carry no version, so an update is a fresh download",
+                        "Download every installed model again",
                     ) {
                         action = Some(ModelAction::UpdateInstalled);
                     }
@@ -237,11 +229,7 @@ impl ViewerApp {
                             !running && spare > 0,
                             egui::Button::new(format!("♻ Free {}", models::human_bytes(spare))),
                         )
-                        .on_hover_text(
-                            "Delete the source checkpoints the converted caches were made \
-                             from. The models keep running; only a future re-conversion \
-                             would download them again",
-                        )
+                        .on_hover_text("Delete the source checkpoints; the models keep running")
                         .clicked()
                     {
                         action = Some(ModelAction::FreeAllSpare);
@@ -503,9 +491,9 @@ fn model_row(
     };
     ui.label(egui::RichText::new(glyph).color(tint).monospace())
         .on_hover_text(if s.ready {
-            "Ready - runs with no network access"
+            "Ready"
         } else if s.partial {
-            "Partly downloaded - a run (or Download) finishes it"
+            "Partly downloaded"
         } else {
             "Not downloaded"
         });
@@ -515,7 +503,7 @@ fn model_row(
             .weak()
             .small(),
     )
-    .on_hover_text("The modality the model takes");
+    .on_hover_text("Input modality");
     let lic = egui::RichText::new(a.licence.name()).small();
     ui.label(if a.licence.open() {
         lic.weak()
@@ -523,14 +511,13 @@ fn model_row(
         lic.color(warn_color(ui.visuals()))
     })
     .on_hover_text(if a.licence.needs_licence_number() {
-        "Downloaded with your TotalSegmentator licence number (free for non-commercial \
-         use; commercial use needs a paid licence)"
+        "Needs a TotalSegmentator licence number"
     } else if a.licence.research_only() {
-        "Non-commercial licence: research use only"
+        "Research use only"
     } else if a.licence.open() {
-        "Open licence: any use, commercial work included"
+        "Open licence, any use"
     } else {
-        "Read the licence before any use beyond research"
+        "Check the licence before other use"
     });
     ui.label(
         egui::RichText::new(if s.ready {
@@ -554,11 +541,11 @@ fn model_row(
             && ui
                 .add_enabled(!running && !blocked, egui::Button::new("⬇").small())
                 .tip(if local {
-                    "Convert this model folder's weights"
+                    "Convert this model"
                 } else {
-                    "Download and convert this model"
+                    "Download this model"
                 })
-                .on_disabled_hover_text("Enter your TotalSegmentator licence number above first")
+                .on_disabled_hover_text("Enter the licence number first")
                 .clicked()
         {
             *action = Some(ModelAction::Fetch(i));
@@ -566,7 +553,7 @@ fn model_row(
         if s.ready
             && ui
                 .add_enabled(!running && !blocked, egui::Button::new("⟳").small())
-                .tip("Remove and fetch this model again")
+                .tip("Download this model again")
                 .clicked()
         {
             *action = Some(ModelAction::Update(i));
@@ -575,7 +562,7 @@ fn model_row(
             && ui
                 .add_enabled(!running, egui::Button::new("♻").small())
                 .tip(format!(
-                    "Delete the {} source checkpoint; the model keeps running",
+                    "Delete the {} source checkpoint",
                     models::human_bytes(s.spare_bytes)
                 ))
                 .clicked()
@@ -586,7 +573,7 @@ fn model_row(
             && ui
                 .add_enabled(!running, egui::Button::new("🗑").small())
                 .tip(if local {
-                    "Delete the converted copy; your model folder is not touched"
+                    "Delete the converted copy"
                 } else {
                     "Delete every file of this model"
                 })
@@ -616,10 +603,7 @@ fn licence_row(
         ui.checkbox(shown, "Show");
         if ui
             .button("Keep")
-            .on_hover_text(
-                "Store the number in your own settings file; the licensed models are \
-                 downloaded with it",
-            )
+            .on_hover_text("Save the licence number")
             .clicked()
         {
             *action = Some(ModelAction::SaveLicence);
@@ -646,18 +630,14 @@ impl FolderKind {
     const NNUNET: FolderKind = FolderKind {
         title: "Your nnU-Net v2 models:",
         button: "➕ Add a model folder",
-        hint: "A trained nnU-Net v2 model: a training folder with plans.json, \
-               dataset.json and fold_<k>/checkpoint_final.pth (or the dataset folder \
-               above it). It is then listed with the other automatic models.",
+        hint: "A folder with plans.json, dataset.json and fold_<k>/checkpoint_final.pth",
         add: || ModelAction::AddFolder,
         remove: ModelAction::RemoveFolder,
     };
     const SYNTH: FolderKind = FolderKind {
         title: "Your TotalSynth checkpoints:",
         button: "➕ Add a checkpoint folder",
-        hint: "A folder of TotalSynth checkpoints fine-tuned with KonfAI (CV_0.pt, CV_1.pt, \
-               ... or any .pt of the same network). It is then offered by Image synthesis \
-               beside the published models, its checkpoints averaged like theirs.",
+        hint: "A folder of TotalSynth .pt checkpoints (CV_0.pt, CV_1.pt, ...)",
         add: || ModelAction::AddSynthFolder,
         remove: ModelAction::RemoveSynthFolder,
     };
@@ -685,7 +665,7 @@ fn folders_rows(
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!running, egui::Button::new("🗑").small())
-                .tip("Forget this folder (its files are not touched)")
+                .tip("Forget this folder (files stay)")
                 .clicked()
             {
                 *action = Some((kind.remove)(i));

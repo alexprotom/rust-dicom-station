@@ -80,13 +80,11 @@ impl ViewerApp {
                         has_volume,
                         egui::Button::new("+").small(),
                         if has_volume {
-                            "New: an empty segmentation series, drawn on the displayed image \
-                             series - exports as one DICOM SEG file"
+                            "New segmentation series"
                         } else if displayed {
-                            "This workspace has no image volume to draw on"
+                            "No image volume to draw on"
                         } else {
-                            "Display this study's images first - a new series is drawn on \
-                             the series on screen"
+                            "Display this study's images first"
                         },
                     ) {
                         add_series = true;
@@ -189,7 +187,7 @@ impl ViewerApp {
                             .map(|(i, _)| i)
                             .collect();
                         ui.horizontal_wrapped(|ui| {
-                            if small_tip_button(ui, "All", "Show and select every segmentation") {
+                            if small_tip_button(ui, "All", "Show and select all") {
                                 set_all = Some(true);
                             }
                             if ui.small_button("None").clicked() {
@@ -208,10 +206,7 @@ impl ViewerApp {
                                 let tick = ui
                                     .checkbox(&mut ticks[i], "")
                                     .named_with(|| format!("Show {name}"))
-                                    .tip(
-                                        "Show / select this segmentation\nShift-click: tick or \
-                                 untick the whole range from the last one",
-                                    );
+                                    .tip("Show / select this segmentation\nShift-click: a range");
                                 if tick.clicked() {
                                     new_anchor =
                                         Some((here, apply_tick(&mut ticks, i, shift, anchor)));

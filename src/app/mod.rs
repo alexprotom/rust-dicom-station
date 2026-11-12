@@ -75,6 +75,7 @@ mod modules;
 mod motion;
 mod motion_results;
 mod object_view;
+mod overlays;
 mod pacs_remote;
 mod pacs_save;
 mod pacs_server_win;
@@ -425,12 +426,9 @@ impl DrawMode {
     }
     fn hint(self) -> &'static str {
         match self {
-            DrawMode::Auto => {
-                "New contour when the drawing crosses nothing; extend when it starts \
-                 inside an existing one; cut when it starts outside"
-            }
-            DrawMode::Extend => "Always add to the structure",
-            DrawMode::Subtract => "Always cut away from the structure",
+            DrawMode::Auto => "Start inside to extend, outside to cut",
+            DrawMode::Extend => "Always add",
+            DrawMode::Subtract => "Always cut",
         }
     }
 }
@@ -778,8 +776,10 @@ pub struct ViewerApp {
     /// window opens.
     export_plan: Option<export::ExportPlan>,
     export_job: Option<Job<anyhow::Result<export::ExportSummary>>>,
-    /// *Save to the PACS*: its window, and the save running.
+    /// *Save to the PACS*: its window, the lookup of what the PACS holds,
+    /// and the save running.
     pacs_save: Option<pacs_save::PacsSave>,
+    pacs_save_lookup_job: Option<Job<pacs_save::LookupDone>>,
     pacs_save_job: Option<Job<pacs_save::SaveDone>>,
     export_result: Option<String>,
     /// What the finished run could not do exactly as asked.
@@ -884,6 +884,11 @@ pub struct ViewerApp {
     show_crosshair: bool,
     show_labels: bool,
     show_isocenters: bool,
+    /// What Settings > Viewer draws over the views (persisted).
+    overlays: settings::ViewerOverlays,
+    /// The dose legend of the Dose display module: whether, and on which
+    /// views.
+    dose_legend: dose_display::DoseLegend,
 
     // Interactive segmentation.
     seg_tool: SegTool,
@@ -963,6 +968,8 @@ pub struct ViewerApp {
     // Tools ▶ PACS: the Picture Archiving and Communication System window.
     /// The window, when open.
     pacs: Option<PacsWindow>,
+    /// What the PACS window was left at when it was last closed.
+    pacs_memo: Option<pacs_win::PacsMemo>,
     /// The PACS job in flight - a scan, an import, an upload, a name, a
     /// cohort, a move or a removal.
     pacs_job: Option<Job<anyhow::Result<PacsOutcome>>>,
@@ -1358,6 +1365,7 @@ impl ViewerApp {
             export_plan: None,
             export_job: None,
             pacs_save: None,
+            pacs_save_lookup_job: None,
             pacs_save_job: None,
             export_result: None,
             export_warnings: Vec::new(),
@@ -1407,10 +1415,13 @@ impl ViewerApp {
             show_crosshair: true,
             show_labels: true,
             show_isocenters: true,
+            overlays: prefs.overlays,
+            dose_legend: dose_display::DoseLegend::default(),
             models_dir,
             archive_dir,
             archive_more,
             pacs: None,
+            pacs_memo: None,
             pacs_job: None,
             pacs_remote_job: None,
             pacs_server: None,
@@ -1589,6 +1600,7 @@ impl ViewerApp {
             pacs_stats_pie: self.pacs_stats_pie,
             modules: self.modules.clone(),
             pane_buttons_hidden: self.pane_buttons_hidden,
+            overlays: self.overlays,
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
             view_rows: self.view_rows.clone(),

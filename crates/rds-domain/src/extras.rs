@@ -170,6 +170,47 @@ pub struct PlanarImage {
     pub fraction_group: Option<i32>,
 }
 
+impl PlanarImage {
+    /// The image without its pixels (`data` and `rgb` empty): what a writer
+    /// that is handed the pixels separately (a burned-in copy,
+    /// [`crate::burn_in::write_secondary_capture`]) reads of it, cheap to
+    /// keep while a file dialog is open.
+    pub fn header(&self) -> PlanarImage {
+        PlanarImage {
+            label: self.label.clone(),
+            modality: self.modality.clone(),
+            kind: self.kind,
+            rows: self.rows,
+            cols: self.cols,
+            spacing: self.spacing,
+            data: Vec::new(),
+            rgb: None,
+            min_value: self.min_value,
+            max_value: self.max_value,
+            window: self.window,
+            info: self.info.clone(),
+            sop_instance_uid: self.sop_instance_uid.clone(),
+            sop_class_uid: self.sop_class_uid.clone(),
+            series_instance_uid: self.series_instance_uid.clone(),
+            frame_of_reference_uid: self.frame_of_reference_uid.clone(),
+            study_uid: self.study_uid.clone(),
+            referenced_beam: self.referenced_beam,
+            iec: self.iec,
+            camera: self.camera,
+            geometry_missing: self.geometry_missing.clone(),
+            megavoltage: self.megavoltage,
+            frame_count: self.frame_count,
+            source_path: self.source_path.clone(),
+            series_number: self.series_number,
+            instance_number: self.instance_number,
+            acquired: self.acquired.clone(),
+            reviewed: self.reviewed.clone(),
+            plan_uid: self.plan_uid.clone(),
+            fraction_group: self.fraction_group,
+        }
+    }
+}
+
 /// Frame `frame` of a multi-frame planar image, with the same Modality LUT
 /// and MONOCHROME1 handling as [`load_planar`].
 pub fn load_frame(path: &Path, frame: usize) -> Result<Vec<f32>> {

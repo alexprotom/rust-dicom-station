@@ -307,10 +307,9 @@ impl ViewerApp {
             // made under the study that series belongs to.
             let can_draw = self.slots[slot].has_volume() && self.study_displayed(slot, node);
             let no_draw = if !self.slots[slot].has_volume() {
-                "This workspace has no image volume to draw on"
+                "No image volume to draw on"
             } else {
-                "Display one of this study's image series first - a new set is drawn on \
-                 the series on screen"
+                "Display this study's images first"
             };
             Self::focus_row(
                 ui,
@@ -327,13 +326,12 @@ impl ViewerApp {
                     (
                         SetKind::Structures,
                         "➕ New RT structure set",
-                        "An empty RT structure set, drawn on the displayed image series",
+                        "On the displayed series",
                     ),
                     (
                         SetKind::Segmentations,
                         "➕ New segmentation series",
-                        "An empty segmentation series, drawn on the displayed image series - \
-                         exports as one DICOM SEG file",
+                        "On the displayed series",
                     ),
                 ] {
                     if enabled_tip_button(ui, can_draw, label, if can_draw { tip } else { no_draw })
@@ -487,9 +485,7 @@ impl ViewerApp {
                 if tip_button(
                     ui,
                     format!("🎞 New 4D group from {what}"),
-                    "One custom 4D group of every series under this node, its phases in \
-                     temporal order - by the percent in their descriptions, else by \
-                     temporal position, else by series number",
+                    "Group these series as 4D phases",
                 ) {
                     fourd = Some(FourDAction::NewFrom {
                         slot,
@@ -755,9 +751,7 @@ impl SeriesMenu {
             if tip_button(
                 ui,
                 format!("New 4D group from {what}"),
-                "One custom group of the ticked series, its phases in temporal order - by \
-                 the percent in their descriptions, else by temporal position, else by series \
-                 number, else in the order they were ticked",
+                "Group the ticked series as 4D phases",
             ) {
                 out.fourd = Some(FourDAction::NewFrom {
                     slot,

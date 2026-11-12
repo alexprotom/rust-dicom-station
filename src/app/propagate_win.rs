@@ -1740,10 +1740,7 @@ impl ViewerApp {
                 };
                 (
                     to,
-                    format!(
-                        "The far side of the last registration: {method}, fixed {}, moving {}",
-                        fixed.label, moving.label
-                    ),
+                    format!("{method}: fixed {}, moving {}", fixed.label, moving.label),
                 )
             });
         let reuse = !anchored
@@ -1910,8 +1907,7 @@ impl ViewerApp {
         form::form(ui, "prop_what", |f| {
             f.row_tip(
                 "From image",
-                "The image the structures were drawn on. It is loaded for the run \
-                 when it is not on display.",
+                "The image the structures were drawn on",
                 |ui| {
                     let current = src_choices
                         .iter()
@@ -1931,95 +1927,80 @@ impl ViewerApp {
                         });
                 },
             );
-            f.row_tip(
-                "Structures of",
-                "The structure set or segmentation series the structures are taken \
-                 from; the one drawn on the image is preselected.",
-                |ui| {
-                    let current = set_choices
+            f.row_tip("Structures of", "Where the structures come from", |ui| {
+                let current = set_choices
+                    .iter()
+                    .find(|(c, _)| Some(*c) == d.set)
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| "(none)".into());
+                egui::ComboBox::from_id_salt("prop_set")
+                    .selected_text(current)
+                    .width(230.0)
+                    .show_ui(ui, |ui| {
+                        for (choice, label) in set_choices {
+                            if ui.selectable_label(d.set == Some(*choice), label).clicked() {
+                                d.set = Some(*choice);
+                                d.ticked.clear();
+                                d.colors.clear();
+                                d.anchor = None;
+                            }
+                        }
+                    });
+            });
+            f.row_tip("To", "Where the structures go", |ui| {
+                let current = match d.target {
+                    PropTarget::Other => other_label
+                        .as_ref()
+                        .map(|(l, _)| l.clone())
+                        // Nothing registered and no group either:
+                        // there is no destination at all, and
+                        // saying so is better than naming one.
+                        .unwrap_or_else(|| "(nothing to propagate to)".into()),
+                    PropTarget::Group { .. }
+                    | PropTarget::Phase { .. }
+                    | PropTarget::Series { .. } => all_choices_to
                         .iter()
-                        .find(|(c, _)| Some(*c) == d.set)
+                        .find(|(t, _)| *t == d.target)
                         .map(|(_, l)| l.clone())
-                        .unwrap_or_else(|| "(none)".into());
-                    egui::ComboBox::from_id_salt("prop_set")
-                        .selected_text(current)
-                        .width(230.0)
-                        .show_ui(ui, |ui| {
-                            for (choice, label) in set_choices {
-                                if ui.selectable_label(d.set == Some(*choice), label).clicked() {
-                                    d.set = Some(*choice);
-                                    d.ticked.clear();
-                                    d.colors.clear();
-                                    d.anchor = None;
+                        .unwrap_or_default(),
+                };
+                egui::ComboBox::from_id_salt("prop_target")
+                    .selected_text(current)
+                    .width(230.0)
+                    .show_ui(ui, |ui| {
+                        if let Some((label, hint)) = other_label {
+                            ui.selectable_value(&mut d.target, PropTarget::Other, label)
+                                .on_hover_text(hint);
+                        }
+                        for (target, label) in group_choices {
+                            // Phases are listed under their group
+                            // and indented, so a list of eleven
+                            // lines still reads as one group and
+                            // its phases.
+                            match target {
+                                PropTarget::Phase { .. } => {
+                                    ui.selectable_value(
+                                        &mut d.target,
+                                        *target,
+                                        format!("      {label}"),
+                                    );
+                                }
+                                _ => {
+                                    ui.selectable_value(&mut d.target, *target, label);
                                 }
                             }
-                        });
-                },
-            );
-            f.row_tip(
-                "To",
-                "Where they land: the other image of the active registration, a \
-                 whole 4D group, or one phase of one.",
-                |ui| {
-                    let current = match d.target {
-                        PropTarget::Other => other_label
-                            .as_ref()
-                            .map(|(l, _)| l.clone())
-                            // Nothing registered and no group either:
-                            // there is no destination at all, and
-                            // saying so is better than naming one.
-                            .unwrap_or_else(|| "(nothing to propagate to)".into()),
-                        PropTarget::Group { .. }
-                        | PropTarget::Phase { .. }
-                        | PropTarget::Series { .. } => all_choices_to
-                            .iter()
-                            .find(|(t, _)| *t == d.target)
-                            .map(|(_, l)| l.clone())
-                            .unwrap_or_default(),
-                    };
-                    egui::ComboBox::from_id_salt("prop_target")
-                        .selected_text(current)
-                        .width(230.0)
-                        .show_ui(ui, |ui| {
-                            if let Some((label, hint)) = other_label {
-                                ui.selectable_value(&mut d.target, PropTarget::Other, label)
-                                    .on_hover_text(hint);
+                        }
+                        // The lone series, under a rule of their
+                        // own so they do not read as more phases.
+                        if !series_choices.is_empty() {
+                            ui.separator();
+                            for (target, label) in series_choices {
+                                ui.selectable_value(&mut d.target, *target, label)
+                                    .on_hover_text("Register onto this image, then propagate");
                             }
-                            for (target, label) in group_choices {
-                                // Phases are listed under their group
-                                // and indented, so a list of eleven
-                                // lines still reads as one group and
-                                // its phases.
-                                match target {
-                                    PropTarget::Phase { .. } => {
-                                        ui.selectable_value(
-                                            &mut d.target,
-                                            *target,
-                                            format!("      {label}"),
-                                        );
-                                    }
-                                    _ => {
-                                        ui.selectable_value(&mut d.target, *target, label);
-                                    }
-                                }
-                            }
-                            // The lone series, under a rule of their
-                            // own so they do not read as more phases.
-                            if !series_choices.is_empty() {
-                                ui.separator();
-                                for (target, label) in series_choices {
-                                    ui.selectable_value(&mut d.target, *target, label)
-                                        .on_hover_text(
-                                            "Register the source onto this image and \
-                                             carry the structures across. Nothing is \
-                                             registered yet, so the run makes its own \
-                                             transform.",
-                                        );
-                                }
-                            }
-                        });
-                },
-            );
+                        }
+                    });
+            });
         });
     }
 
@@ -2082,12 +2063,7 @@ impl ViewerApp {
             let n = d.ticked.iter().filter(|v| **v).count();
             ui.weak(format!("{n} selected"));
             if d.colors.iter().any(Option::is_some)
-                && small_tip_button(
-                    ui,
-                    "Source colours",
-                    "Drop the colours chosen here: every copy lands in the colour \
-                     its own structure has",
-                )
+                && small_tip_button(ui, "Source colours", "Use each structure's own colour")
             {
                 d.colors.iter_mut().for_each(|c| *c = None);
             }
@@ -2119,10 +2095,8 @@ impl ViewerApp {
                             ui.weak(format!("{v:.2} cm³"));
                         }
                         if chosen.is_some() {
-                            ui.weak("recoloured").on_hover_text(
-                                "The copy lands in this colour; the structure \
-                                     it was propagated from keeps its own",
-                            );
+                            ui.weak("recoloured")
+                                .on_hover_text("The copy lands in this colour");
                         }
                         if d.anchor == Some(i) {
                             ui.weak("anchor");
@@ -2146,44 +2120,21 @@ impl ViewerApp {
         form::form(ui, "prop_landing", |f| {
             f.row("Carry", |ui| {
                 ui.selectable_value(&mut d.finish.keep_shape, false, "deformed")
-                    .on_hover_text(
-                        "Each structure goes through the transform point by point: \
-                         its shape and volume change as the deformation does where \
-                         it lies.",
-                    );
+                    .on_hover_text("Deform each structure with the transform");
                 ui.selectable_value(&mut d.finish.keep_shape, true, "keep shape")
-                    .on_hover_text(
-                        "Each structure goes as a rigid body - the transform's best \
-                         rigid fit over the structure itself: where the deformation \
-                         takes it, turned as the tissue around it turns, with its \
-                         own shape and volume. For a small target inside an organ \
-                         whose outline the registration matched: inside, the \
-                         deformation is not measured, only interpolated. An anchor \
-                         still follows the transform - it is the run's check.",
-                    );
+                    .on_hover_text("Move each structure rigidly, keeping its shape");
             });
             f.row("Land as", |ui| {
                 ui.selectable_value(&mut d.landing, Landing::Segmentation, "segmentation series")
-                    .on_hover_text(
-                        "A new segmentation series bound to the destination image: \
-                     editable masks, convertible to RTSTRUCT later",
-                    );
+                    .on_hover_text("Land as a new segmentation series");
                 ui.selectable_value(&mut d.landing, Landing::StructureSet, "structure set")
-                    .on_hover_text(
-                        "Contours appended to the destination image's own RT \
-                         structure set (the one that references it; a new set when \
-                         there is none).",
-                    );
+                    .on_hover_text("Add to the image's RT structure set");
             });
             f.row("Then", |ui| {
                 let mut close = d.finish.close_mm > 0.0;
                 if ui
                     .checkbox(&mut close, "close gaps")
-                    .on_hover_text(
-                        "Morphological closing of each landed mask: pieces closer \
-                         than twice the radius join into one surface. For a \
-                         structure that arrives as a cloud of points.",
-                    )
+                    .on_hover_text("Join nearby pieces of each mask")
                     .changed()
                 {
                     d.finish.close_mm = if close { 2.0 } else { 0.0 };
@@ -2197,7 +2148,7 @@ impl ViewerApp {
                     );
                 }
                 ui.checkbox(&mut d.finish.fill, "fill")
-                    .on_hover_text("Fill the interior slice by slice: a surface becomes a solid.");
+                    .on_hover_text("Fill the interior slice by slice");
             });
         });
     }
@@ -2260,9 +2211,7 @@ impl ViewerApp {
                         form::form(ui, "prop_anchor_form", |f| {
                             f.row_tip(
                                 "Lands as",
-                                "The propagated anchor's name and colour on each \
-                                 phase, next to the phase's own contour it is \
-                                 compared with",
+                                "Name and colour of the propagated anchor",
                                 |ui| {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut d.anchor_name)
@@ -2293,32 +2242,19 @@ impl ViewerApp {
                                     }
                                 },
                             );
-                            f.row_tip(
-                                "Margin",
-                                "How far beyond the anchor the registration looks.",
-                                |ui| {
-                                    ui.add(
-                                        egui::DragValue::new(&mut d.anchor_margin_mm)
-                                            .speed(1.0)
-                                            .range(0.0..=60.0)
-                                            .suffix(" mm"),
-                                    );
-                                },
-                            );
+                            f.row_tip("Margin", "Search margin around the anchor", |ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut d.anchor_margin_mm)
+                                        .speed(1.0)
+                                        .range(0.0..=60.0)
+                                        .suffix(" mm"),
+                                );
+                            });
                             f.row("Refine", |ui| {
                                 ui.checkbox(&mut d.anchor_deformable, "deformably")
-                                    .on_hover_text(
-                                        "A local B-spline on the anchor region after \
-                                         the rigid fit. Off keeps the alignment \
-                                         rigid.",
-                                    );
+                                    .on_hover_text("Add a local B-spline after the rigid fit");
                                 ui.checkbox(&mut d.anchor_contours, "match the contours")
-                                    .on_hover_text(
-                                        "Compare the anchor's surfaces (signed \
-                                         distance maps) rather than the image \
-                                         intensities: works across contrast, kernel \
-                                         and modality.",
-                                    );
+                                    .on_hover_text("Match surfaces instead of intensities");
                             });
                         });
                     }
@@ -2439,34 +2375,31 @@ impl ViewerApp {
                     let (label, hint, ready) = if one_image {
                         (
                             "▶ Register and propagate".to_string(),
-                            "One registration onto that image, then the structures; \
-                             method and parameters from the registration module",
+                            "Register onto that image, then propagate",
                             true,
                         )
                     } else if on_the_fly && reuse {
                         (
                             format!("▶ Propagate to {n_phases} {phases_word}"),
-                            "Through the transforms already made for this group",
+                            "Reuse this group's transforms",
                             ready_group,
                         )
                     } else if anchored {
                         (
                             format!("▶ Anchor and propagate to {n_phases} {phases_word}"),
-                            "Per phase: centroids matched, a rigid fit on the anchor, \
-                             the refinement, then the structures (and the anchor, as \
-                             the check) carried across",
+                            "Align on the anchor per phase, then propagate",
                             ready_group,
                         )
                     } else if on_the_fly {
                         (
                             format!("▶ Register and propagate to {n_phases} {phases_word}"),
-                            "One registration per phase, then the structures",
+                            "Register each phase, then propagate",
                             ready_group,
                         )
                     } else {
                         (
                             "▶ Propagate".to_string(),
-                            "Through the active registration onto its other image",
+                            "Propagate with the active registration",
                             registered.is_some(),
                         )
                     };
@@ -2534,32 +2467,23 @@ impl ViewerApp {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Last run").strong());
-                if small_tip_button(
-                    ui,
-                    "📋 Copy",
-                    "Both tables to the clipboard, tab separated - what a \
-                     spreadsheet opens as a table",
-                ) {
+                if small_tip_button(ui, "📋 Copy", "Copy both tables (tab separated)") {
                     ui.ctx().copy_text(d.summary.to_tsv());
                 }
             });
             d.summary.ui(ui, "prop_run");
             if let Some((phases, active)) = group_field {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("Deformation field").on_hover_text(
-                        "The displacement the run's registration found, drawn on \
-                         the views and in 3D. Arrows, grid, spacing and scale are \
-                         set under Image registration ▸ Vector field.",
-                    );
+                    ui.label("Deformation field")
+                        .on_hover_text("Show a phase's field on the views");
                     for (i, label) in phases.iter().enumerate() {
                         let on = *active == Some(i) && field_on;
                         if ui
                             .selectable_label(on, format!("👁 {label}"))
                             .on_hover_text(if on {
-                                "On the views; click to hide it"
+                                "Hide this field"
                             } else {
-                                "Draw this phase's field on the views (the phase is \
-                                 put on display if it is not)"
+                                "Show this phase's field"
                             })
                             .clicked()
                         {
@@ -2572,11 +2496,7 @@ impl ViewerApp {
                     }
                     if active.is_some() {
                         ui.checkbox(&mut warp_only, "deformation only")
-                            .on_hover_text(
-                                "Leave the rigid part out: what the B-spline adds to the \
-                             rigid alignment. The rigid part of an anchored run is the \
-                             jump from one scanner's coordinates to the other's.",
-                            );
+                            .on_hover_text("Draw only what the B-spline adds");
                     }
                 });
             }

@@ -65,7 +65,7 @@ impl ViewerApp {
                     }
                     if ui
                         .add_enabled(!running, egui::Button::new("↺"))
-                        .tip("Reset to the application's data folder")
+                        .tip("Reset to the data folder")
                         .clicked()
                     {
                         reset_dir = true;
@@ -98,7 +98,7 @@ impl ViewerApp {
                         }
                     } else if ui
                         .add(egui::Button::new("📥 Download"))
-                        .on_hover_text("Fetches only the files that are not there yet")
+                        .on_hover_text("Download only the missing files")
                         .clicked()
                     {
                         start = true;

@@ -652,29 +652,18 @@ impl ViewerApp {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(egui::RichText::new("Step").strong());
-            if tip_widget(
-                ui,
-                at > 0,
-                egui::Button::new("⏮").small(),
-                "The step before this one",
-            ) {
+            if tip_widget(ui, at > 0, egui::Button::new("⏮").small(), "Previous step") {
                 goto = Some(at.saturating_sub(1));
             }
             if tip_widget(
                 ui,
                 true,
                 egui::Button::new(if playing { "⏸" } else { "▶" }).small(),
-                "Play the log: the structures move as they were moved, and the table \
-                 follows. Speed and what happens at the end are in the Image playback module.",
+                "Play the log",
             ) {
                 toggle = true;
             }
-            if tip_widget(
-                ui,
-                at + 1 < n,
-                egui::Button::new("⏭").small(),
-                "The step after this one",
-            ) {
+            if tip_widget(ui, at + 1 < n, egui::Button::new("⏭").small(), "Next step") {
                 goto = Some(at + 1);
             }
             let mut sel = at;
@@ -690,19 +679,12 @@ impl ViewerApp {
                 goto = Some(sel);
             }
             ui.weak(format!("{at} / {}", n - 1)).on_hover_text(format!(
-                "The log holds the contours of every step so it can be played again: \
-                 {} for {n} steps. Clear log gives it back.",
+                "Log memory: {} for {n} steps",
                 crate::app::play::human_bytes(
                     self.dose_est.log.iter().map(LogEntry::bytes).sum::<usize>()
                 )
             ));
-            if !live
-                && small_tip_button(
-                    ui,
-                    "Now",
-                    "Back to the last step, where the structures actually stand",
-                )
-            {
+            if !live && small_tip_button(ui, "Now", "Back to the last step") {
                 back_to_now = true;
             }
         });
@@ -751,11 +733,7 @@ impl ViewerApp {
         {
             let was = self.dose_est.dynamic;
             ui.toggle_value(&mut self.dose_est.dynamic, "Dynamic")
-                .on_hover_text(
-                    "Log the table after every move of a structure: each finished Move / \
-                     Rotate / Scale / hand drag adds the rows as they then stand, with \
-                     what was moved and by how much since its origin",
-                );
+                .on_hover_text("Log the table after every structure move");
             if self.dose_est.dynamic && !was {
                 // The state the moves start from is the log's first entry.
                 self.dose_est.log.clear();
@@ -766,11 +744,7 @@ impl ViewerApp {
             }
             if self.dose_est.dynamic
                 && !self.dose_est.log.is_empty()
-                && small_tip_button(
-                    ui,
-                    "Clear log",
-                    "Start the log again from the table as it is",
-                )
+                && small_tip_button(ui, "Clear log", "Restart the log")
             {
                 self.dose_est.log.clear();
                 self.dose_est.cursor = None;
@@ -869,8 +843,7 @@ impl ViewerApp {
             if small_tip_button(
                 ui,
                 "+",
-                "Add a column: Dmean, Dmin, Dmax, Volume, D<X>% (dose to X % of the volume), \
-                 D<X>cc, V<X> (per cent of the volume at X dose units or more), V<X>cc",
+                "Add a column: Dmean, Dmin, Dmax, Volume, D<X>%, D<X>cc, V<X>, V<X>cc",
             ) || enter
             {
                 self.dose_est.add_metric();
@@ -976,19 +949,14 @@ impl ViewerApp {
                                     let name = ui.label(&row.name);
                                     if row.outside > 0.001 {
                                         name.on_hover_text(format!(
-                                            "{:.1} % of the structure lies outside the dose \
-                                             grid and counts as zero dose",
+                                            "{:.1} % outside the dose grid (counted as zero)",
                                             row.outside * 100.0
                                         ));
                                     }
                                     if entry.is_none()
                                         && ui
                                             .small_button("✖")
-                                            .tip(
-                                                "Leave this structure out of the table (it \
-                                                 stays ticked in the views); the Excluded \
-                                                 line below brings it back",
-                                            )
+                                            .tip("Leave this structure out of the table")
                                             .clicked()
                                     {
                                         exclude = Some(row.name.clone());
@@ -1054,11 +1022,7 @@ impl ViewerApp {
                 }
             });
         }
-        if small_tip_button(
-            ui,
-            "💾 Export CSV",
-            "Save the table as it stands, one line per structure",
-        ) {
+        if small_tip_button(ui, "💾 Export CSV", "Save the table as CSV") {
             let d = &self.dose_est;
             let text = if d.dynamic {
                 log_csv(&metrics, &d.units, &d.log)

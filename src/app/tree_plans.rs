@@ -1,5 +1,7 @@
-//! The data tree's plans section: the RT plans of a study and the suffixes
-//! that tell two plans or two structure sets apart.
+//! The data tree's plans section: the RT plans of a study, one row each,
+//! and the suffixes that tell two plans or two structure sets apart. What a
+//! plan holds (its facts and beams) is read in the additional pane, which a
+//! click on its row opens (object_view.rs).
 
 use super::*;
 
@@ -21,7 +23,14 @@ impl ViewerApp {
         let mut new_active: Option<usize> = None;
         let mut new_shown: Option<bool> = None;
         let mut focus: Option<RenameTarget> = None;
+        let mut clicked_plan: Option<usize> = None;
         let current = self.tree_focus.clone();
+        // Which plan the additional pane reads, if one: a click on the
+        // shown plan that is not there yet opens it rather than hiding it.
+        let in_pane: Vec<bool> = which
+            .iter()
+            .map(|&pi| self.object_shown(slot, super::object_view::PaneObject::Plan(pi)))
+            .collect();
         {
             let Some(study) = &self.slots[slot].study else {
                 return;
@@ -38,7 +47,8 @@ impl ViewerApp {
                 false,
                 format!("Plans ({})", which.len()),
                 |ui| {
-                    for &pi in which {
+                    for (row, &pi) in which.iter().enumerate() {
+                        let read_here = in_pane[row];
                         let Some(plan) = study.plans.get(pi) else {
                             continue;
                         };
@@ -61,10 +71,13 @@ impl ViewerApp {
                             current.as_ref() == Some(&me),
                         );
                         Self::focus_row(ui, &resp, me.clone(), &current, &mut focus);
-                        // Clicking the shown plan hides its isocenters;
-                        // clicking any other makes it the shown one.
+                        // Clicking the shown plan hides its isocenters and
+                        // beams; clicking any other makes it the shown one.
                         let mut toggle = || {
-                            if selected {
+                            clicked_plan = Some(pi);
+                            if selected && shown && !read_here {
+                                new_shown = Some(true);
+                            } else if selected {
                                 new_shown = Some(!shown);
                             } else {
                                 new_active = Some(pi);
@@ -122,89 +135,6 @@ impl ViewerApp {
                         if menu_toggle {
                             toggle();
                         }
-                        // What a plan is made of sits under *that* plan, not
-                        // at the end of the list - the same place a set's
-                        // structures are listed.
-                        if !selected {
-                            continue;
-                        }
-                        if !plan.name.is_empty() && plan.name != plan.label {
-                            ui.weak(format!("Name: {}", plan.name));
-                        }
-                        if !plan.plan_kind.is_empty() {
-                            ui.weak(format!("Type: {}", plan.plan_kind));
-                        }
-                        if let Some(fx) = plan.n_fractions {
-                            ui.weak(format!("Fractions: {fx}"));
-                        }
-                        if let Some(rx) = plan.target_prescription_dose {
-                            ui.weak(format!("Prescription: {rx:.2} Gy"));
-                        }
-                        if !plan.date.is_empty() {
-                            ui.weak(format!("Date: {}", plan.date));
-                        }
-                        if !plan.beams.is_empty() {
-                            egui::Grid::new(("beam_grid", slot, pat, stu, pi))
-                                .striped(true)
-                                .min_col_width(10.0)
-                                .show(ui, |ui| {
-                                    ui.strong("Beam");
-                                    ui.strong("Type");
-                                    ui.strong("G°");
-                                    ui.strong("C°");
-                                    ui.strong("E (MeV)");
-                                    ui.strong("MU");
-                                    ui.strong("CPs");
-                                    ui.end_row();
-                                    for b in &plan.beams {
-                                        ui.label(&b.name).on_hover_text(format!(
-                                            "Beam {} · {} · dose/fx {}",
-                                            b.number,
-                                            if b.delivery_type.is_empty() {
-                                                "TREATMENT"
-                                            } else {
-                                                &b.delivery_type
-                                            },
-                                            b.beam_dose
-                                                .map(|d| format!("{d:.2} Gy"))
-                                                .unwrap_or_else(|| "n/a".into()),
-                                        ));
-                                        ui.label(format!(
-                                            "{}{}",
-                                            b.radiation_type,
-                                            if b.scan_mode.is_empty() {
-                                                String::new()
-                                            } else {
-                                                format!("/{}", b.scan_mode)
-                                            }
-                                        ));
-                                        ui.label(
-                                            b.gantry_angle
-                                                .map(|g| format!("{g:.0}"))
-                                                .unwrap_or_else(|| "-".into()),
-                                        );
-                                        ui.label(
-                                            b.couch_angle
-                                                .map(|c| format!("{c:.0}"))
-                                                .unwrap_or_else(|| "-".into()),
-                                        );
-                                        ui.label(match (b.energy_min, b.energy_max) {
-                                            (Some(a), Some(bb)) if (a - bb).abs() > 0.01 => {
-                                                format!("{a:.0}-{bb:.0}")
-                                            }
-                                            (Some(a), _) => format!("{a:.0}"),
-                                            _ => "-".into(),
-                                        });
-                                        ui.label(
-                                            b.meterset
-                                                .map(|m| format!("{m:.1}"))
-                                                .unwrap_or_else(|| "-".into()),
-                                        );
-                                        ui.label(format!("{}", b.n_control_points));
-                                        ui.end_row();
-                                    }
-                                });
-                        }
                     }
                 },
             );
@@ -214,6 +144,15 @@ impl ViewerApp {
         }
         if let Some(on) = new_shown {
             self.slots[slot].plans_shown = on;
+        }
+        // The plan read in full in the additional pane while it is shown.
+        if let (Some(pi), Some(on)) = (clicked_plan, new_shown) {
+            let obj = super::object_view::PaneObject::Plan(pi);
+            if on {
+                self.show_object(slot, obj);
+            } else if self.object_shown(slot, obj) {
+                self.hide_additional(slot);
+            }
         }
         if rename.is_some() {
             self.rename_request = rename;

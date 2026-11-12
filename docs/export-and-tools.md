@@ -176,10 +176,15 @@ goes out with contours of a ticked planar set on it gets a copy beside it,
 
 * a **Secondary Capture** (`1.2.840.10008.5.1.4.1.1.7`, modality `OT`),
   `RGB` at 8 bits, Image Type `DERIVED\SECONDARY`, **Burned In Annotation
-  `YES`**, the image's Pixel Spacing, and the image it was made from in the
-  Source Image Sequence; one series per study for all of them;
-* the grey is the image through the window its pane shows it with (the
-  export takes the panes' windows along), mapped as the panes map it; each
+  `YES`**, and the image it was made from in the Source Image Sequence; one
+  series per study for all of them. The image's spacing is millimetres at
+  the imager, so it goes out as **Imager Pixel Spacing**; Pixel Spacing
+  (the patient) only when the image's geometry gives SID and SAD, scaled to
+  the isocentre plane (`spacing · SAD / SID`) with Pixel Spacing Calibration
+  Type `GEOMETRY`;
+* the grey is the image through the window its pane shows it with when
+  *Export* is pressed (the export takes the panes' windows along, image by
+  image of each workspace), mapped as the panes map it; each
   structure's rings are drawn in its colour with an antialiased stroke a
   four-hundredth of the image's longer side (1.5 to 6 pixels), and a point
   of interest is an × of the same stroke.

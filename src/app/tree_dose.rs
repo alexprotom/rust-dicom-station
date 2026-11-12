@@ -1,5 +1,6 @@
-//! The data tree's dose section: the dose grids of a study, and which one
-//! is displayed. How it is drawn is the *Dose display* module
+//! The data tree's dose section: the dose grids of a study, what radiation
+//! each is of, and which one is displayed. How it is drawn, and the
+//! reference dose it is drawn against, is the *Dose display* module
 //! (`dose_display.rs`).
 
 use super::*;
@@ -34,10 +35,7 @@ impl ViewerApp {
         let dose_on = self.dose_mode != DoseMode::Off && self.slots[slot].dose_shown;
         {
             let StudySlot {
-                study,
-                active_dose,
-                dose_reference,
-                ..
+                study, active_dose, ..
             } = &mut self.slots[slot];
             let Some(study) = study.as_ref() else { return };
             let doses = &study.doses;
@@ -53,13 +51,20 @@ impl ViewerApp {
                         let Some(d) = doses.get(i) else { continue };
                         let selected = i == picked;
                         let me = RenameTarget::Dose { slot, idx: i };
+                        // The radiation, from the plan's beams: what a
+                        // dose is of matters as much as its maximum.
+                        let modality = super::dose_display::dose_modality(plans, d);
                         let resp = Self::series_row(
                             ui,
                             selected,
                             dose_on,
                             format!(
-                                "{}{}",
+                                "{}{}{}",
                                 d.label,
+                                modality
+                                    .as_ref()
+                                    .map(|m| format!(" · {m}"))
+                                    .unwrap_or_default(),
                                 Self::plan_suffix(plans, &d.referenced_plan_uid)
                             ),
                             current.as_ref() == Some(&me),
@@ -80,8 +85,9 @@ impl ViewerApp {
                         resp.on_hover_text(Self::object_tip(
                             &d.sop_instance_uid,
                             format!(
-                                "{} dose · max {:.2} {}",
+                                "{} dose{} · max {:.2} {}",
                                 d.summation_type,
+                                modality.map(|m| format!(" · {m}")).unwrap_or_default(),
                                 d.max_dose,
                                 d.units.to_lowercase()
                             ),
@@ -93,10 +99,7 @@ impl ViewerApp {
                             }
                             if ui
                                 .button("🎨 Display settings")
-                                .on_hover_text(
-                                    "Colorwash, isodose lines, opacity and levels: the Dose \
-                                     display module",
-                                )
+                                .on_hover_text("Open the Dose display module")
                                 .clicked()
                             {
                                 display = true;
@@ -126,25 +129,6 @@ impl ViewerApp {
                             }
                         });
                     }
-                    let Some(d) = doses.get(picked) else { return };
-                    ui.weak(format!(
-                        "{}  max {:.2} {}",
-                        d.summation_type,
-                        d.max_dose,
-                        d.units.to_lowercase()
-                    ));
-                    ui.horizontal(|ui| {
-                        ui.label("Reference");
-                        ui.add(
-                            egui::DragValue::new(dose_reference)
-                                .speed(0.05)
-                                .range(0.01..=1000.0)
-                                .suffix(" Gy"),
-                        );
-                        if ui.small_button("max").clicked() {
-                            *dose_reference = d.max_dose;
-                        }
-                    });
                 },
             );
         }

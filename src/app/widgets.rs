@@ -128,7 +128,7 @@ pub(super) fn system_paste_button(ui: &mut egui::Ui) -> Option<String> {
     let clipboard = crate::settings::clipboard::get()?;
     let clicked = ui
         .small_button("📋 Paste")
-        .on_hover_text("Put what was last copied in another app here")
+        .on_hover_text("Paste from another app")
         .clicked();
     if !clicked {
         return None;
@@ -173,7 +173,7 @@ pub(super) fn color_swatch(ui: &mut egui::Ui, color: &mut [u8; 3], of: &str) -> 
         ui.spacing_mut().interact_size = egui::vec2(12.0, 12.0);
         ui.color_edit_button_srgb(color)
             .named_with(|| format!("Colour of {of}"))
-            .on_hover_text("Click to change the colour")
+            .on_hover_text("Change the colour")
             .changed()
     })
     .inner

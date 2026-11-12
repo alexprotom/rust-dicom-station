@@ -425,8 +425,7 @@ pub(super) fn server_body(
             ui,
             installed && !busy && w.running.is_none() && !w.starting,
             "▶ Start",
-            "Start rds-pacs as a program of its own: it keeps serving when this \
-             window, and the viewer, are closed",
+            "Start the server (it keeps running after the viewer closes)",
         ) {
             k.start = true;
         }
@@ -434,7 +433,7 @@ pub(super) fn server_body(
             ui,
             !busy && w.running.is_some(),
             "⏹ Stop",
-            "Stop the server; paired stations keep their pairing",
+            "Stop the server",
         ) {
             k.stop = true;
         }
@@ -492,8 +491,7 @@ pub(super) fn server_body(
                         }
                     }
                     if let Some(l) = line_for(&with_port) {
-                        if small_tip_button(ui, "📋", "Copy the connection line with this address")
-                        {
+                        if small_tip_button(ui, "📋", "Copy the connection line") {
                             k.copy = Some(l.format());
                         }
                     }
@@ -525,8 +523,7 @@ pub(super) fn server_body(
             if tip_button(
                 ui,
                 "📋 Copy connection details",
-                "The first address and the certificate's fingerprint in one \
-                 line, for Tools > PACS > Add server on the other station",
+                "Copy the address and fingerprint for the other station",
             ) {
                 k.copy = Some(line.format());
             }
@@ -573,9 +570,7 @@ pub(super) fn server_body(
                     ui,
                     !busy,
                     "🔓 Allow through the Windows firewall",
-                    "Make a rule that lets rds-pacs.exe accept TCP connections, \
-                     replacing any rule that blocks it. Windows asks for \
-                     administrator permission.",
+                    "Add a firewall rule for rds-pacs.exe (needs administrator)",
                 ) {
                     k.allow_firewall = true;
                 }
@@ -583,11 +578,7 @@ pub(super) fn server_body(
                     &mut w.firewall_public,
                     "also on networks Windows calls public",
                 )
-                .on_hover_text(
-                    "Windows classes an unknown network, a hotel's or a cafe's, \
-                     as public, and often a home network too until it is marked \
-                     private. The server still answers nothing without a key.",
-                );
+                .on_hover_text("Also allow on public networks");
             });
         }
 
@@ -613,8 +604,7 @@ pub(super) fn server_body(
                 ui,
                 !busy,
                 "New pairing code",
-                "A code for one station, used once; tell it to the person \
-                 pairing, with the connection details",
+                "A one-time code for one station",
             ) {
                 k.new_code = true;
             }
@@ -632,9 +622,7 @@ pub(super) fn server_body(
                 if tip_button(
                     ui,
                     "📋 Copy invitation",
-                    "The connection details with this code in them: everything \
-                     the other station needs, in one line. Send it only to the \
-                     person who is to pair.",
+                    "Copy the connection details with this code",
                 ) {
                     k.copy = Some(
                         ConnectionLine {
@@ -669,7 +657,7 @@ pub(super) fn server_body(
                         !busy,
                         egui::Button::new(if asked { "Really revoke?" } else { "Revoke" }).small(),
                     )
-                    .on_hover_text("This station's key stops working at once")
+                    .on_hover_text("Revoke this station's key")
                     .clicked()
                 {
                     k.revoke = Some(c.name.clone());
@@ -742,11 +730,7 @@ pub(super) fn server_body(
                             .hint_text("pacs.example.org, 100.64.0.7")
                             .desired_width(300.0),
                     )
-                    .on_hover_text(
-                        "Names and addresses put into the server's certificate \
-                         (a dynamic DNS name, a VPN address); takes effect with a \
-                         new certificate",
-                    )
+                    .on_hover_text("Extra certificate names (DNS, VPN address)")
                     .changed();
                 ui.end_row();
                 ui.label("Uploads up to");
@@ -772,7 +756,7 @@ pub(super) fn server_body(
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(w.config_dirty, egui::Button::new("💾 Save"))
-                .on_hover_text("Write pacs.toml; a running server takes it at its next start")
+                .on_hover_text("Save the settings (used at the next start)")
                 .clicked()
             {
                 k.save = true;
@@ -781,8 +765,7 @@ pub(super) fn server_body(
                 ui,
                 !busy && w.running.is_none() && w.config.own_certificate().is_none(),
                 "New certificate",
-                "Make a new self-signed certificate (with the extra names). Every \
-                 paired station must pair again. Only while the server is stopped.",
+                "Make a new certificate. Every station must pair again",
             ) {
                 k.regenerate = true;
             }

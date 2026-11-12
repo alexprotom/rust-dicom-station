@@ -302,11 +302,7 @@ impl ViewerApp {
                                         .range(0.1..=10.0)
                                         .max_decimals(2),
                                 )
-                                .on_hover_text(
-                                    "How much this structure counts against the others. \
-                                     Each structure is already normalised by its own size, \
-                                     so 1 everywhere means every structure counts the same.",
-                                );
+                                .on_hover_text("Weight of this structure in the fit");
                                 if r.by_hand {
                                     if ui.small_button("🗑").tip("Remove this pair").clicked() {
                                         let at = st
@@ -371,27 +367,19 @@ impl ViewerApp {
 
         // ---- how ----
         form::form(ui, "reg_shape_form", |f| {
-            f.row_tip(
-                "Transform",
-                "Rigid recovers three rotations and three translations; translation only \
-                 keeps the rotations at zero (a couch shift between two scans).",
-                |ui| {
-                    egui::ComboBox::from_id_salt("reg_shape_dof")
-                        .selected_text(st.dof.label())
-                        .width(170.0)
-                        .show_ui(ui, |ui| {
-                            for d in ShapeDof::ALL {
-                                ui.selectable_value(&mut st.dof, d, d.label());
-                            }
-                        });
-                },
-            );
+            f.row_tip("Transform", "Rigid, or translation only", |ui| {
+                egui::ComboBox::from_id_salt("reg_shape_dof")
+                    .selected_text(st.dof.label())
+                    .width(170.0)
+                    .show_ui(ui, |ui| {
+                        for d in ShapeDof::ALL {
+                            ui.selectable_value(&mut st.dof, d, d.label());
+                        }
+                    });
+            });
             f.row_tip(
                 "Then refine",
-                "A local B-spline refinement on each structure's distance maps, from the \
-                 largest to the smallest: every structure laid onto its partner, the rest of \
-                 the patient left on the rigid result. Its resolutions, iterations and \
-                 samples are the ones under Parameters.",
+                "Local B-spline refinement on each structure",
                 |ui| {
                     egui::ComboBox::from_id_salt("reg_shape_refine")
                         .selected_text(st.refine.label())
@@ -404,23 +392,18 @@ impl ViewerApp {
                 },
             );
             if st.refine != ShapeRefine::None {
-                f.row_tip(
-                    "Grid",
-                    "B-spline control point spacing of the refinement",
-                    |ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut st.grid_mm)
-                                .speed(1.0)
-                                .range(4.0..=60.0)
-                                .suffix(" mm"),
-                        );
-                    },
-                );
+                f.row_tip("Grid", "B-spline control point spacing", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut st.grid_mm)
+                            .speed(1.0)
+                            .range(4.0..=60.0)
+                            .suffix(" mm"),
+                    );
+                });
             }
             f.row_tip(
                 "Margin",
-                "Each structure grown by this much bounds its refinement, and the analysis \
-                 of the result looks inside the structures grown by it.",
+                "Margin around each structure for the refinement",
                 |ui| {
                     ui.add(
                         egui::DragValue::new(&mut st.margin_mm)
@@ -430,30 +413,19 @@ impl ViewerApp {
                     );
                 },
             );
-            f.row_tip(
-                "Robust",
-                "Distances beyond this width count linearly, not squared (Huber), so a \
-                 slice contoured differently on one image does not steer the whole fit.",
-                |ui| {
-                    ui.checkbox(&mut st.robust, "").named("Robust");
-                    ui.add_enabled(
-                        st.robust,
-                        egui::DragValue::new(&mut st.robust_mm)
-                            .speed(0.1)
-                            .range(0.5..=20.0)
-                            .suffix(" mm"),
-                    );
-                },
-            );
-            f.row_tip(
-                "Both ways",
-                "Also lay the moving surfaces onto the fixed structures. Keeps a structure \
-                 contoured over a shorter length on one image from sliding along its \
-                 partner.",
-                |ui| {
-                    ui.checkbox(&mut st.symmetric, "").named("Both ways");
-                },
-            );
+            f.row_tip("Robust", "Huber width: limits the pull of outliers", |ui| {
+                ui.checkbox(&mut st.robust, "").named("Robust");
+                ui.add_enabled(
+                    st.robust,
+                    egui::DragValue::new(&mut st.robust_mm)
+                        .speed(0.1)
+                        .range(0.5..=20.0)
+                        .suffix(" mm"),
+                );
+            });
+            f.row_tip("Both ways", "Also fit moving onto fixed", |ui| {
+                ui.checkbox(&mut st.symmetric, "").named("Both ways");
+            });
             f.wide(|ui| {
                 ui.weak(
                     "Starts from the structures' centroids matched (Start from: Identity \
@@ -481,7 +453,7 @@ impl ViewerApp {
                 ui,
                 both && ticked > 0,
                 format!("▶ Align on {ticked}"),
-                "Register the moving image onto the fixed one by the ticked structures",
+                "Register by the ticked structures",
             ) {
                 action = Some(ShapeAction::Run(false));
             }
@@ -489,8 +461,7 @@ impl ViewerApp {
                 ui,
                 both && ticked > 0 && can_refine,
                 "▶ Refine active",
-                "Skip the rigid fit and refine the active registration of these two \
-                 images on the ticked structures",
+                "Refine the active registration on the ticked structures",
             ) {
                 action = Some(ShapeAction::Run(true));
             }

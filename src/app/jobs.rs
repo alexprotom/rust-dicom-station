@@ -423,6 +423,9 @@ impl ViewerApp {
             .unwrap_or(0);
         s.study = Some(study);
         self.rebind_seg_series(slot);
+        // Every object as it arrived is unchanged (after the rebinding,
+        // which may lay a segmentation onto the volume's lattice).
+        self.mark_all_saved(slot);
         self.cancel_grow();
         self.paint_last = None;
         self.show_workspace(slot);
@@ -561,9 +564,12 @@ impl ViewerApp {
         if self.export_job.is_some() {
             return;
         }
-        let Some(plan) = self.export_plan.clone() else {
+        let Some(mut plan) = self.export_plan.clone() else {
             return;
         };
+        // The planar images' windows as the panes show them now, when
+        // Export is pressed.
+        plan.planar_windows = self.export_planar_windows();
         let dir = PathBuf::from(self.export_dir.trim());
         if dir.as_os_str().is_empty() {
             self.error = Some("Choose an output folder for the export".into());
@@ -896,14 +902,22 @@ impl ViewerApp {
         // Poll a model download / update batch.
         self.poll_models_job(ctx);
 
-        // Poll a save into the PACS.
-        if let Some((slot, (rows, saved, tree))) = poll_tool_job(
+        // Poll the lookup of what the PACS holds, and a save into it.
+        if let Some((slot, targets)) = poll_job(
+            &mut self.pacs_save_lookup_job,
+            ctx,
+            "Reading the PACS",
+            &mut self.error,
+        ) {
+            self.on_pacs_lookup(slot, targets);
+        }
+        if let Some((slot, landed)) = poll_tool_job(
             &mut self.pacs_save_job,
             ctx,
             "Saving to the PACS",
             &mut self.error,
         ) {
-            self.on_pacs_saved(slot, rows, saved, tree);
+            self.on_pacs_saved(slot, landed);
         }
 
         // Poll the tool windows' workers.
