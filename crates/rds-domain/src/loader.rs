@@ -428,6 +428,10 @@ impl LoadedStudy {
 }
 
 pub const IMAGE_MODALITIES: &[&str] = &["CT", "MR", "PT", "NM", "US", "OT"];
+/// The modalities whose images come as a stack of slices: a series of them
+/// without positions is one that was meant to be a volume. Ultrasound and
+/// `OT` are left out - unpositioned frames are what they normally are.
+const TOMOGRAPHIC: &[&str] = &["CT", "MR", "PT", "NM"];
 /// Modalities treated as 2D projection images (no volume reconstruction).
 const PLANAR_MODALITIES: &[&str] = extras::PROJECTION_MODALITIES;
 
@@ -742,6 +746,11 @@ fn load_files_with(
         .filter(|s| s.has_geometry)
         .map(|s| s.series_uid.as_str())
         .collect();
+    // The series that look like a stack of slices - several images of a
+    // tomographic modality, no secondary capture - but carry no position
+    // anywhere, so they went to the single images: the one case where "no
+    // volume" is news. In the order they are met, with their image count.
+    let mut unpositioned: Vec<(&Scanned, usize)> = Vec::new();
 
     for s in &scanned {
         if meta.patient_id.is_empty() && !s.meta.patient_id.is_empty() {
@@ -763,7 +772,21 @@ fn load_files_with(
             FileClass::Report => report_files.push(s.path.clone()),
             FileClass::Presentation => pr_files.push(s.path.clone()),
             // Both kinds of single image: `load_planar` tells them apart.
-            FileClass::Projection | FileClass::Additional => planar_files.push(s.path.clone()),
+            FileClass::Projection | FileClass::Additional => {
+                if TOMOGRAPHIC.contains(&s.modality.as_str())
+                    && !positioned.contains(s.series_uid.as_str())
+                    && !extras::is_secondary_capture_sop(&s.sop_class)
+                {
+                    match unpositioned
+                        .iter_mut()
+                        .find(|(u, _)| u.series_uid == s.series_uid)
+                    {
+                        Some((_, n)) => *n += 1,
+                        None => unpositioned.push((s, 1)),
+                    }
+                }
+                planar_files.push(s.path.clone())
+            }
             FileClass::Other => {
                 *not_shown
                     .entry(crate::sop::name_or_uid(&s.sop_class))
@@ -820,6 +843,44 @@ fn load_files_with(
         ));
     }
 
+    // A single unpositioned image (a scanner's dose screen written as a CT
+    // image) is no series that failed; two or more are slices without a
+    // place. Said whether or not another series made the volume, and in a
+    // merge too: it is about these files, not about what is on display.
+    unpositioned.retain(|(_, n)| *n > 1);
+    if !unpositioned.is_empty() {
+        let named: Vec<String> = unpositioned
+            .iter()
+            .take(3)
+            .map(|(s, n)| {
+                let name = if !s.series_desc.trim().is_empty() {
+                    format!("\"{}\"", s.series_desc.trim())
+                } else if let Some(no) = s.series_number {
+                    format!("number {no}")
+                } else {
+                    "without a description".into()
+                };
+                format!("{} series {name} ({n} images)", s.modality)
+            })
+            .collect();
+        let more = unpositioned.len().saturating_sub(named.len());
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        let (has, them) = if unpositioned.len() == 1 {
+            ("has", "it")
+        } else {
+            ("have", "them")
+        };
+        warnings.push(format!(
+            "{}{more} {has} no slice positions (Image Position Patient) in any file, so no \
+             volume can be made from {them}; the images are listed one by one under Additional",
+            named.join(", ")
+        ));
+    }
+
     // The slice positions of each CT, for the 4D rules.
     {
         let mut zs: std::collections::HashMap<&str, Vec<i64>> = std::collections::HashMap::new();
@@ -865,18 +926,14 @@ fn load_files_with(
             warnings.append(&mut vol_warnings);
             (v, w)
         }
-        None => {
-            warnings.push(
-                "No image series with slice positions - nothing to reconstruct a volume from. \
-                 Everything else in the selection was loaded; single images are under \
-                 Planar images."
-                    .into(),
-            );
-            // Keep a usable window rather than the (0, 1) an empty volume
-            // would suggest, so the other workspace's display is untouched.
-            (Volume::empty(), (40.0, 400.0))
-        }
+        // What to say about it is decided once the single images are read
+        // (below): it depends on what they turned out to be.
+        //
+        // Keep a usable window rather than the (0, 1) an empty volume would
+        // suggest, so the other workspace's display is untouched.
+        None => (Volume::empty(), (40.0, 400.0)),
     };
+    let no_volume_note_at = warnings.len();
 
     // RT objects - every structure set is loaded (e.g. one per 4DCT phase);
     // the application chooses which one is active. Each group is parsed in
@@ -960,6 +1017,12 @@ fn load_files_with(
             None => true,
         },
     );
+    if let Some(note) = no_volume_note(
+        with_volume && image_series.is_empty() && unpositioned.is_empty(),
+        &planar_images,
+    ) {
+        warnings.insert(no_volume_note_at, note);
+    }
     reports.extend(parse_group(
         &report_files,
         "report",
@@ -1050,7 +1113,8 @@ fn load_files_with(
             .count();
         if missing > 0 {
             warnings.push(format!(
-                "presentation state {} references {missing} image(s) not in this load;                  its contours attach when they are loaded",
+                "presentation state {} references {missing} image(s) not in this load; \
+                 its contours attach when they are loaded",
                 set.label
             ));
         }
@@ -1099,6 +1163,46 @@ fn load_files_with(
         warnings,
         default_window,
     })
+}
+
+/// The line a load with no image series gets, if any.
+///
+/// `standalone` is a load that will be a workspace of its own and has no
+/// image series to put on display (nor one without slice positions, which
+/// says so itself). A load merged into a workspace keeps that workspace's
+/// volume, so it has nothing to report here; and a selection that held no
+/// image at all - RT objects, reports, records - has none to report either,
+/// since nothing in it was meant to be a volume. What is left is a
+/// selection of single images, opened in empty views: the note says where
+/// they went, naming only the tree sections that actually got some.
+fn no_volume_note(standalone: bool, planar: &[PlanarImage]) -> Option<String> {
+    if !standalone || planar.is_empty() {
+        return None;
+    }
+    let projections = planar
+        .iter()
+        .filter(|p| p.kind == crate::extras::PlanarKind::Projection)
+        .count();
+    let additional = planar.len() - projections;
+    let count = |n: usize, what: &str| {
+        if n == 1 {
+            format!("1 {what} is")
+        } else {
+            format!("{n} {what}s are")
+        }
+    };
+    let place = match (projections, additional) {
+        (p, 0) => format!("{} under Planar images", count(p, "image")),
+        (0, a) => format!("{} under Additional", count(a, "object")),
+        (p, a) => format!(
+            "{} under Planar images, {} under Additional",
+            count(p, "image"),
+            count(a, "object")
+        ),
+    };
+    Some(format!(
+        "No image series in the selection, so there is no volume to scroll; {place}"
+    ))
 }
 
 /// The frame-of-reference warnings of a load, one line per kind of object

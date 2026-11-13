@@ -104,6 +104,17 @@ load. Three cases arrive at it:
   where one slice happens to lack the tag is still a series. Before, such
   files were dropped silently.
 
+The load's warnings say only what is news. A series of CT, MR, PET or NM
+images (two or more, no secondary captures) with no position in any file is
+named in one line - why it made no volume, and that its images are under
+*Additional* - whether or not another series made the volume, and when
+merged into a workspace too. A selection of single images opened as a
+workspace of its own gets one line saying where they went (*Planar images*,
+*Additional*, only the sections that got some). A selection of RT objects,
+reports or records says nothing about a volume: nothing in it was meant to
+be one, and the same holds for anything added to a workspace that already
+has its volume.
+
 Such a workspace appears in the tree under its patient and study exactly like
 any other, and everything it holds is usable: planar images open in their
 viewers (the *Planar images* section opens itself, since for these workspaces it

@@ -477,3 +477,181 @@ fn a_presentation_state_is_loaded_as_planar_structures_not_left_out() {
         study.warnings
     );
 }
+
+/// Copy the files of `src` whose names start with one of `prefixes` into a
+/// new folder `tag`.
+fn subset(src: &Path, tag: &str, prefixes: &[&str]) -> PathBuf {
+    let dir = target(tag);
+    for pre in prefixes {
+        for f in files(src, pre) {
+            std::fs::copy(&f, dir.join(f.file_name().unwrap())).expect("the file is copied");
+        }
+    }
+    dir
+}
+
+/// The lines of a load that speak of its having no volume.
+fn no_volume_lines(warnings: &[String]) -> Vec<&String> {
+    warnings
+        .iter()
+        .filter(|w| {
+            let l = w.to_lowercase();
+            l.contains("no image series")
+                || l.contains("planar images")
+                || l.contains("reconstruct")
+                || l.contains("slice positions")
+                || l.contains("no volume")
+        })
+        .collect()
+}
+
+#[test]
+fn rt_objects_alone_say_nothing_about_a_missing_volume() {
+    let src = phantom("test_warn_rtonly_src");
+    let dir = subset(
+        &src,
+        "test_warn_rtonly",
+        &["RS_", "RP_", "RD_", "REG_", "RT_record"],
+    );
+    let all = files(&dir, "");
+    assert_eq!(all.len(), 5, "structures, plan, dose, registration, record");
+
+    // Opened on their own, as a folder or as files.
+    for study in [
+        load(&dir),
+        loader::load_files(&all, "rt objects", &Progress::default()).unwrap(),
+    ] {
+        assert!(study.series.is_empty() && study.planar_images.is_empty());
+        assert_eq!(study.structure_sets.len(), 1);
+        assert_eq!(study.treat_records.len(), 1);
+        assert!(
+            no_volume_lines(&study.warnings).is_empty(),
+            "nothing in the selection was meant to be a volume: {:?}",
+            study.warnings
+        );
+    }
+
+    // The case that was seen: a CT open, its RT objects added to the
+    // workspace afterwards (a folder, a selection in the PACS, the records
+    // of a treatment session). The workspace's warnings stay quiet.
+    let ct = subset(&src, "test_warn_rtonly_ct", &["CT_"]);
+    let mut open = load(&ct);
+    assert!(open.has_volume());
+    let added = loader::load_directory_to_merge(&dir, &Progress::default()).unwrap();
+    assert!(
+        no_volume_lines(&added.warnings).is_empty(),
+        "{:?}",
+        added.warnings
+    );
+    let notes = loader::merge_study(&mut open, added);
+    open.warnings.extend(notes);
+    assert!(
+        no_volume_lines(&open.warnings).is_empty(),
+        "{:?}",
+        open.warnings
+    );
+}
+
+#[test]
+fn radiographs_alone_are_said_to_be_under_planar_images() {
+    let src = phantom("test_warn_radiographs_src");
+    let picked: Vec<PathBuf> = ["DX_", "RI_"].iter().flat_map(|p| files(&src, p)).collect();
+    assert_eq!(picked.len(), 2);
+
+    let study = loader::load_files(&picked, "two images", &Progress::default()).unwrap();
+    assert_eq!(study.planar_images.len(), 2);
+    let lines = no_volume_lines(&study.warnings);
+    assert_eq!(lines.len(), 1, "one line: {:?}", study.warnings);
+    assert!(lines[0].contains("No image series"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("2 images are under Planar images"),
+        "{}",
+        lines[0]
+    );
+    assert!(!lines[0].contains("Additional"), "{}", lines[0]);
+
+    // Added to an open workspace they keep its volume: nothing to say.
+    let merged = loader::load_files_to_merge(&picked, "two images", &Progress::default()).unwrap();
+    assert_eq!(merged.planar_images.len(), 2);
+    assert!(
+        no_volume_lines(&merged.warnings).is_empty(),
+        "{:?}",
+        merged.warnings
+    );
+}
+
+/// Copy the phantom's CT as a new series whose slices carry no Image
+/// Position (Patient); `count` of them, all when `None`.
+fn copy_unpositioned_ct(src: &Path, dst: &Path, count: Option<usize>) {
+    let series_uid = new_uid();
+    let slices = files(src, "CT_");
+    let n = count.unwrap_or(slices.len());
+    for f in slices.into_iter().take(n) {
+        let mut obj = dicom_object::open_file(&f).expect("a CT slice opens");
+        obj.remove_element(tags::IMAGE_POSITION_PATIENT);
+        put_str(&mut obj, tags::SERIES_INSTANCE_UID, VR::UI, &series_uid);
+        put_str(&mut obj, tags::SOP_INSTANCE_UID, VR::UI, &new_uid());
+        put_str(&mut obj, tags::SERIES_DESCRIPTION, VR::LO, "Unplaced");
+        let name = f.file_name().unwrap().to_string_lossy().to_string();
+        obj.write_to_file(dst.join(format!("U_{name}")))
+            .expect("the copy is written");
+    }
+}
+
+#[test]
+fn a_series_without_slice_positions_says_why_it_made_no_volume() {
+    let src = phantom("test_warn_unplaced_src");
+    let n = files(&src, "CT_").len();
+    assert!(n > 1);
+
+    // Alone: no volume, and the one line says which series and why.
+    let dir = target("test_warn_unplaced");
+    copy_unpositioned_ct(&src, &dir, None);
+    let study = load(&dir);
+    assert!(study.series.is_empty() && !study.has_volume());
+    assert_eq!(study.planar_images.len(), n, "each slice is a single image");
+    let lines = no_volume_lines(&study.warnings);
+    assert_eq!(lines.len(), 1, "one line: {:?}", study.warnings);
+    let w = lines[0];
+    assert!(w.contains("CT series \"Unplaced\""), "{w}");
+    assert!(w.contains(&format!("({n} images)")), "{w}");
+    assert!(w.contains("no slice positions"), "{w}");
+    assert!(w.contains("under Additional"), "{w}");
+    assert!(!w.contains("Planar images"), "{w}");
+
+    // Beside a CT that does make the volume, and merged into a workspace,
+    // it is still news.
+    for f in files(&src, "CT_") {
+        std::fs::copy(&f, dir.join(f.file_name().unwrap())).unwrap();
+    }
+    let study = load(&dir);
+    assert_eq!(study.series.len(), 1);
+    assert!(study.has_volume());
+    assert_eq!(
+        no_volume_lines(&study.warnings).len(),
+        1,
+        "{:?}",
+        study.warnings
+    );
+    let merged = loader::load_directory_to_merge(&dir, &Progress::default()).unwrap();
+    assert_eq!(
+        no_volume_lines(&merged.warnings).len(),
+        1,
+        "{:?}",
+        merged.warnings
+    );
+
+    // One unpositioned CT image is no series that failed (a scanner's dose
+    // screen is written so), and opened alone it is an additional object.
+    let one = target("test_warn_unplaced_one");
+    copy_unpositioned_ct(&src, &one, Some(1));
+    let study = load(&one);
+    let lines = no_volume_lines(&study.warnings);
+    assert_eq!(lines.len(), 1, "{:?}", study.warnings);
+    assert!(
+        lines[0].contains("1 object is under Additional"),
+        "{}",
+        lines[0]
+    );
+    assert!(!lines[0].contains("slice positions"), "{}", lines[0]);
+}
