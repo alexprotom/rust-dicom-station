@@ -886,7 +886,7 @@ pub struct ViewerApp {
     show_isocenters: bool,
     /// What Settings > Viewer draws over the views (persisted).
     overlays: settings::ViewerOverlays,
-    /// The dose legend of the Dose display module: whether, and on which
+    /// The dose legend of the Dose and plan display module: whether, and on which
     /// views.
     dose_legend: dose_display::DoseLegend,
 

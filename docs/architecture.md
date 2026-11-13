@@ -49,7 +49,7 @@ rust-dicom-station
 │   │   (insert, edit, combine), Structure auto tools (body contour, the
 │   │   engines, the auto-segmentation results), propagation (with transfer
 │   │   by relationship), Structure comparison, Structure details, Structure
-│   │   motion (the run and its results), Dose display, Dose analysis,
+│   │   motion (the run and its results), Dose and plan display, Dose analysis,
 │   │   Dose-volume histograms and Workflows (the run); the structures a section is
 │   │   about drawn thicker in the views while it is unfolded
 │   ├── Side panel: per workspace a DICOM tree - patient ▶ study ▶ modality ▶ series, with RT
@@ -394,14 +394,15 @@ src/
                       planar images, additional objects, reports,
                       registrations and records, like dose and plans, are
                       categories of a study
-    dose_display.rs   the Dose display module: how the displayed dose is
+    dose_display.rs   the Dose and plan display module: how the dose is
                       drawn (colorwash / isodose, opacity, threshold, the
                       isodose ladder), one setting for every workspace;
                       each workspace's reference dose; the dose legend on
-                      the views it is ticked for
-    overlays.rs       Settings > Viewer over the views: the shown plan's
-                      beam fields (cut by each plane, and in 3D), the ruler,
-                      the orientation cube (a click on a face turns the 3D
+                      the views it is ticked for; the beam fields switch
+    overlays.rs       over the views: the shown plan's beam fields (cut by
+                      each plane, and in 3D); per view (Settings > Viewer)
+                      the ruler and the grey orientation cube with the
+                      view's slice inside (a click on a face turns the 3D
                       scene to it)
     reg_panel.rs      the Image registration module: method, region, parameters,
                       landmarks, the run (against another workspace or every

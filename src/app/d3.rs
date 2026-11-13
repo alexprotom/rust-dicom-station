@@ -1981,7 +1981,23 @@ impl ViewerApp {
                 };
                 super::overlays::draw_beams_3d(&painter, &beams, &project);
             }
-            if self.overlays.orientation_cube {
+            if self.overlays.orientation_cube[3] {
+                // The three slices through the crosshair, inside.
+                let planes: Vec<super::overlays::CubePlane> = self.slots[w.slot]
+                    .study
+                    .as_ref()
+                    .map(|st| {
+                        let c = self.slots[w.slot].cursor;
+                        [
+                            (ViewPlane::Sagittal, c[0]),
+                            (ViewPlane::Coronal, c[1]),
+                            (ViewPlane::Axial, c[2]),
+                        ]
+                        .into_iter()
+                        .map(|(p, s)| super::overlays::cube_plane(&st.volume, p, s))
+                        .collect()
+                    })
+                    .unwrap_or_default();
                 let map = |v: Vec3| -> (Vec2, f32) {
                     let (x, y, z) = (v.x as f32, v.y as f32, v.z as f32);
                     let x1 = cy * x - sy * y;
@@ -1995,6 +2011,7 @@ impl ViewerApp {
                     Pos2::new(rect.left() + 34.0, rect.bottom() - 48.0),
                     14.0,
                     &map,
+                    &planes,
                 );
                 if resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos() {

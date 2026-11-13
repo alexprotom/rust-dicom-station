@@ -197,7 +197,7 @@ const MODULES: [&str; 15] = [
     "Structure comparison",
     "Structure details",
     "Structure motion",
-    "Dose display",
+    "Dose and plan display",
     "Dose analysis",
     "Dose-volume histograms",
     "Workflows",

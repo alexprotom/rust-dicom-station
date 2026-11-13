@@ -380,15 +380,22 @@ impl Reg2dPrefs {
     }
 }
 
-/// What *Settings ▶ Viewer* draws over the views besides the images, each
-/// on for a fresh installation.
+/// The views an overlay can be switched on for, one by one, in the order
+/// of [`ViewerOverlays`]' arrays: the three planes, then the 3D scene.
+pub const OVERLAY_VIEWS: [&str; 4] = ["axial", "sagittal", "coronal", "3d"];
+
+/// What is drawn over the views besides the images, each on everywhere for
+/// a fresh installation. The cube and the ruler are switched per view in
+/// *Settings ▶ Viewer*; the beams in the *Dose and plan display* module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewerOverlays {
-    /// The orientation cube in the lower left corner of every view; in a
-    /// 3D pane a click on one of its faces turns the scene to that side.
-    pub orientation_cube: bool,
-    /// The scale bar along the bottom of every image view.
-    pub ruler: bool,
+    /// The orientation cube in the lower left corner, per view (axial,
+    /// sagittal, coronal, 3D); in a 3D pane a click on one of its faces
+    /// turns the scene to that side.
+    pub orientation_cube: [bool; 4],
+    /// The scale bar along the bottom, per image view (axial, sagittal,
+    /// coronal).
+    pub ruler: [bool; 3],
     /// The active plan's beams: their fields cut by every view's plane,
     /// and drawn in the 3D scene.
     pub beam_fields: bool,
@@ -397,10 +404,50 @@ pub struct ViewerOverlays {
 impl Default for ViewerOverlays {
     fn default() -> Self {
         ViewerOverlays {
-            orientation_cube: true,
-            ruler: true,
+            orientation_cube: [true; 4],
+            ruler: [true; 3],
             beam_fields: true,
         }
+    }
+}
+
+/// The views an overlay is on for, as the settings file writes them:
+/// `axial, sagittal, coronal, 3d` (any of them), `none`.
+fn views_to_str(on: &[bool]) -> String {
+    let names: Vec<&str> = on
+        .iter()
+        .zip(OVERLAY_VIEWS)
+        .filter(|(o, _)| **o)
+        .map(|(_, n)| n)
+        .collect();
+    if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// Read what [`views_to_str`] writes into `out`; `on` / `off` (what the
+/// file held before the views were switched one by one) mean every view
+/// and none. Anything else leaves `out` as it was.
+fn views_from_str(s: &str, out: &mut [bool]) {
+    if let Some(b) = bool_from_str(s) {
+        out.iter_mut().for_each(|o| *o = b);
+        return;
+    }
+    let words: Vec<String> = s
+        .split(',')
+        .map(|w| w.trim().to_ascii_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words
+        .iter()
+        .any(|w| w != "none" && !OVERLAY_VIEWS.contains(&w.as_str()))
+    {
+        return;
+    }
+    for (o, n) in out.iter_mut().zip(OVERLAY_VIEWS) {
+        *o = words.iter().any(|w| w == n);
     }
 }
 
@@ -1258,13 +1305,9 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 s.pacs_scan_on_open = b;
             }
         } else if key.eq_ignore_ascii_case(OVERLAY_CUBE_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.overlays.orientation_cube = b;
-            }
+            views_from_str(value, &mut s.overlays.orientation_cube);
         } else if key.eq_ignore_ascii_case(OVERLAY_RULER_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.overlays.ruler = b;
-            }
+            views_from_str(value, &mut s.overlays.ruler);
         } else if key.eq_ignore_ascii_case(OVERLAY_BEAMS_KEY) {
             if let Some(b) = bool_from_str(value) {
                 s.overlays.beam_fields = b;
@@ -1367,12 +1410,13 @@ fn render(s: &Settings) -> String {
         s.graphics_backend.key()
     ));
     out.push_str(&format!(
-        "# drawn over the views (Settings > Viewer) = on | off\n\
+        "# drawn over the views (Settings > Viewer) = any of axial, sagittal, coronal, 3d | none\n\
          {OVERLAY_CUBE_KEY} = {}\n\
          {OVERLAY_RULER_KEY} = {}\n\
+         # the shown plan's beams on the views (Dose and plan display) = on | off\n\
          {OVERLAY_BEAMS_KEY} = {}\n",
-        bool_to_str(s.overlays.orientation_cube),
-        bool_to_str(s.overlays.ruler),
+        views_to_str(&s.overlays.orientation_cube),
+        views_to_str(&s.overlays.ruler),
         bool_to_str(s.overlays.beam_fields)
     ));
     out.push_str("# what each row of the central area shows, left to right:\n");
@@ -1633,14 +1677,32 @@ mod tests {
     fn the_viewer_overlays_round_trip() {
         let s = Settings {
             overlays: ViewerOverlays {
-                orientation_cube: false,
-                ruler: true,
+                orientation_cube: [true, false, false, true],
+                ruler: [false; 3],
                 beam_fields: false,
             },
             ..Settings::default()
         };
         assert_eq!(parse(&render(&s)), s);
-        assert!(parse("").overlays.ruler, "on for a fresh installation");
+        assert_eq!(
+            parse("").overlays.ruler,
+            [true; 3],
+            "on for a fresh installation"
+        );
+        assert_eq!(
+            parse("orientation_cube = off").overlays.orientation_cube,
+            [false; 4],
+            "the file of before the views were switched one by one"
+        );
+        assert_eq!(
+            parse("ruler = Coronal").overlays.ruler,
+            [false, false, true]
+        );
+        assert_eq!(
+            parse("ruler = coronal, mauve").overlays.ruler,
+            [true; 3],
+            "a word it does not know leaves the default"
+        );
     }
 
     #[test]

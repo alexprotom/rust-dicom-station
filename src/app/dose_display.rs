@@ -1,8 +1,9 @@
-//! *Modules ▶ Dose display*: how the displayed dose grid is drawn over the
-//! images - colorwash, isodose lines or both, the opacity, the threshold
-//! under which nothing is drawn, the isodose ladder - each workspace's
-//! reference dose (the 100 % every level and the wash are relative to), and
-//! the dose legend on the views.
+//! *Modules ▶ Dose and plan display*: how the displayed dose grid is drawn
+//! over the images - colorwash, isodose lines or both, the opacity, the
+//! threshold under which nothing is drawn, the isodose ladder - each
+//! workspace's reference dose (the 100 % every level and the wash are
+//! relative to), the dose legend on the views, and whether the shown plan's
+//! beam fields are drawn ([`super::overlays`]).
 //!
 //! These are display settings of the viewer, not properties of a grid: one
 //! set serves every workspace, which is why they left the data tree (where
@@ -184,6 +185,12 @@ impl ViewerApp {
 
         // The legend over the views.
         ui.separator();
+        let beams_before = self.overlays.beam_fields;
+        ui.checkbox(&mut self.overlays.beam_fields, "Beam fields")
+            .on_hover_text("The shown plan's beams on the views and in 3D");
+        if self.overlays.beam_fields != beams_before {
+            self.persist_settings();
+        }
         let lg = &mut self.dose_legend;
         ui.checkbox(&mut lg.on, "Legend on the views")
             .on_hover_text("Dose scale in the corner of each view");

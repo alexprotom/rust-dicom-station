@@ -1,5 +1,6 @@
-//! What *Settings ▶ Viewer* draws over the views besides the images: the
-//! shown plan's beam fields, the ruler, and the orientation cube.
+//! What is drawn over the views besides the images: the shown plan's beam
+//! fields (switched in the *Dose and plan display* module), and the ruler
+//! and the orientation cube (*Settings ▶ Viewer*, view by view).
 //!
 //! * **Beam fields**: each beam of the shown plan ([`crate::beam_view`])
 //!   cut by the view's plane - the field's edges, its central axis dashed
@@ -10,11 +11,14 @@
 //! * **Ruler**: a scale bar along the bottom of an image view, the longest
 //!   round length (1, 2, 5, 10, 20 cm) that fits a quarter of the width,
 //!   ticked every centimetre (every 5 at 10 cm and more).
-//! * **Orientation cube**: a cube in the lower left corner with the patient
-//!   directions on its faces, turned as the patient is on screen. A 2D view
-//!   tilts it a little so three faces show; the 3D scene's turns with the
-//!   camera, and a click on one of its faces turns the scene to look at
-//!   that side of the patient.
+//! * **Orientation cube**: a grey cube in the lower left corner with the
+//!   patient directions on its faces, turned as the patient is on screen,
+//!   the volume inside it: a 2D view's slice is drawn in it where it lies
+//!   in the volume and moves as the slices are scrolled; the 3D scene's
+//!   holds the three slices through the crosshair. A 2D view tilts the cube
+//!   a little so three faces show; the 3D scene's turns with the camera,
+//!   and a click on one of its faces turns the scene to look at that side
+//!   of the patient. The cube and the ruler are switched per view.
 
 use super::*;
 use crate::beam_view::{self, BeamShape};
@@ -28,6 +32,16 @@ const BEAM_COLORS: [Color32; 6] = [
     Color32::from_rgb(250, 230, 90),
     Color32::from_rgb(90, 230, 220),
 ];
+
+/// Which of a per-view overlay's switches is `plane`'s: axial, sagittal,
+/// coronal (the 3D scene's is the fourth).
+pub(super) fn view_index(plane: ViewPlane) -> usize {
+    match plane {
+        ViewPlane::Axial => 0,
+        ViewPlane::Sagittal => 1,
+        ViewPlane::Coronal => 2,
+    }
+}
 
 /// The colour of beam `i`.
 pub(super) fn beam_color(i: usize) -> Color32 {
@@ -203,15 +217,51 @@ pub(super) struct CubeFace {
     pub corners: [Pos2; 4],
 }
 
-/// The orientation cube at `center`, `half` points from centre to face:
-/// `map` takes a patient direction to its screen offset (x right, y down)
-/// and how much it points at the viewer. Returns the faces drawn, nearest
-/// last.
+/// A slice plane inside the orientation cube: across patient axis `axis`
+/// (0 = x, 1 = y, 2 = z), at `at` from −1 to 1 along it, the cube's own
+/// extent being the volume's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct CubePlane {
+    pub axis: usize,
+    pub at: f32,
+}
+
+/// Where the slice `slice` of the volume's `plane` sits in the cube: the
+/// patient axis its slices step along (the one their direction is nearest
+/// to) and how far along it, from −1 to 1.
+pub(super) fn cube_plane(vol: &Volume, plane: ViewPlane, slice: f64) -> CubePlane {
+    let (dir, n) = match plane {
+        ViewPlane::Axial => (vol.normal, vol.dims[2]),
+        ViewPlane::Sagittal => (vol.row_dir, vol.dims[0]),
+        ViewPlane::Coronal => (vol.col_dir, vol.dims[1]),
+    };
+    let c = [dir.x, dir.y, dir.z];
+    let axis = (0..3)
+        .max_by(|a, b| c[*a].abs().total_cmp(&c[*b].abs()))
+        .unwrap_or(2);
+    let frac = if n > 1 {
+        (slice / (n - 1) as f64).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let at = (2.0 * frac - 1.0) * c[axis].signum();
+    CubePlane {
+        axis,
+        at: at as f32,
+    }
+}
+
+/// The orientation cube at `center`, `half` points from centre to face, in
+/// one grey: the far faces faint, the near ones more solid the more they
+/// face the viewer, `planes` between them in the crosshair's yellow. `map`
+/// takes a patient direction to its screen offset (x right, y down) and how
+/// much it points at the viewer. Returns the near faces, nearest last.
 pub(super) fn draw_cube(
     painter: &egui::Painter,
     center: Pos2,
     half: f32,
     map: &dyn Fn(crate::geometry::Vec3) -> (Vec2, f32),
+    planes: &[CubePlane],
 ) -> Vec<CubeFace> {
     use crate::geometry::Vec3;
     let axes = [
@@ -219,34 +269,44 @@ pub(super) fn draw_cube(
         Vec3::new(0.0, 1.0, 0.0),
         Vec3::new(0.0, 0.0, 1.0),
     ];
-    // Left-right red, front-back green, head-foot blue, as the views' own
-    // axes are drawn elsewhere.
-    let tints = [
-        Color32::from_rgb(200, 80, 80),
-        Color32::from_rgb(80, 170, 90),
-        Color32::from_rgb(80, 120, 210),
-    ];
-    let mut faces: Vec<(f32, CubeFace, Color32)> = Vec::new();
+    let pt = |p: Vec3| center + map(p).0 * half;
+    let edge = Stroke::new(1.0, Color32::from_gray(190));
+    let mut faces: Vec<(f32, CubeFace)> = Vec::new();
     for (a, axis) in axes.iter().enumerate() {
         let (u, v) = (axes[(a + 1) % 3], axes[(a + 2) % 3]);
         for sign in [1.0, -1.0] {
             let n = *axis * sign;
             let (_, facing) = map(n);
-            if facing <= 0.02 {
-                continue;
-            }
-            let pt = |p: Vec3| center + map(p).0 * half;
             let corners = [pt(n + u + v), pt(n + u - v), pt(n - u - v), pt(n - u + v)];
-            faces.push((facing, CubeFace { normal: n, corners }, tints[a]));
+            faces.push((facing, CubeFace { normal: n, corners }));
         }
     }
     faces.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (facing, f, tint) in &faces {
-        let fill = tint.gamma_multiply(0.35 + 0.45 * facing);
+    let (far, near): (Vec<_>, Vec<_>) = faces.into_iter().partition(|(f, _)| *f <= 0.02);
+    let grey = |a: f32| Color32::from_gray(165).gamma_multiply(a);
+    for (_, f) in &far {
         painter.add(egui::Shape::convex_polygon(
             f.corners.to_vec(),
-            fill,
-            Stroke::new(1.0, Color32::from_gray(200)),
+            grey(0.12),
+            Stroke::new(0.6, Color32::from_gray(120)),
+        ));
+    }
+    // The slices, inside: seen through the near faces.
+    for p in planes {
+        let a = p.axis.min(2);
+        let (u, v) = (axes[(a + 1) % 3], axes[(a + 2) % 3]);
+        let c = axes[a] * p.at as f64;
+        painter.add(egui::Shape::convex_polygon(
+            vec![pt(c + u + v), pt(c + u - v), pt(c - u - v), pt(c - u + v)],
+            Color32::from_rgba_unmultiplied(255, 205, 60, 110),
+            Stroke::new(1.0, Color32::from_rgb(255, 205, 60)),
+        ));
+    }
+    for (facing, f) in &near {
+        painter.add(egui::Shape::convex_polygon(
+            f.corners.to_vec(),
+            grey(0.15 + 0.35 * facing),
+            edge,
         ));
         if *facing > 0.3 {
             let mid = f.corners.iter().fold(Vec2::ZERO, |s, p| s + p.to_vec2()) / 4.0;
@@ -259,17 +319,18 @@ pub(super) fn draw_cube(
             );
         }
     }
-    faces.into_iter().map(|(_, f, _)| f).collect()
+    near.into_iter().map(|(_, f)| f).collect()
 }
 
 /// The cube of a 2D view whose screen right and down are the patient
 /// directions `dx` and `dy`: seen a little from the side and from above,
-/// so three faces show.
+/// so three faces show, with the view's slice `plane` inside.
 pub(super) fn draw_cube_2d(
     painter: &egui::Painter,
     center: Pos2,
     dx: crate::geometry::Vec3,
     dy: crate::geometry::Vec3,
+    plane: CubePlane,
 ) {
     let toward = dx.cross(dy) * -1.0;
     let (sa, ca) = 25f32.to_radians().sin_cos();
@@ -282,7 +343,7 @@ pub(super) fn draw_cube_2d(
         let z2 = y * sb + z1 * cb;
         (Vec2::new(x1, y2), z2)
     };
-    draw_cube(painter, center, 12.0, &map);
+    draw_cube(painter, center, 14.0, &map, &[plane]);
 }
 
 /// Whether `p` is inside the convex quad `q`.

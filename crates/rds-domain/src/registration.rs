@@ -2350,8 +2350,8 @@ mod tests {
             for margin in [0.0, 2.0, 4.7, 30.0] {
                 let r = RegionMask::from_mask(&vol, &mask, "r".into(), margin).unwrap();
                 let mut whole = mask.clone();
-                for axis in 0..3 {
-                    let rr = (margin / vol.spacing[axis]).round() as usize;
+                for (axis, &spacing) in vol.spacing.iter().enumerate() {
+                    let rr = (margin / spacing).round() as usize;
                     if rr > 0 {
                         dilate_axis(&mut whole, dims, axis, rr);
                     }

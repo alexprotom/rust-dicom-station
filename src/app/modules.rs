@@ -81,7 +81,7 @@ impl ModuleUi for Module {
             Module::Comparison => "Structure comparison",
             Module::Details => "Structure details",
             Module::Motion => "Structure motion",
-            Module::DoseDisplay => "Dose display",
+            Module::DoseDisplay => "Dose and plan display",
             Module::DoseAnalysis => "Dose analysis",
             Module::Dvh => "Dose-volume histograms",
             Module::Workflows => "Workflows",

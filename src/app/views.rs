@@ -1453,7 +1453,11 @@ impl ViewerApp {
                     rect.center().x,
                     rect.bottom()
                         - if has_slider { 26.0 } else { 6.0 }
-                        - if self.overlays.ruler { 22.0 } else { 0.0 },
+                        - if self.overlays.ruler[super::overlays::view_index(plane)] {
+                            22.0
+                        } else {
+                            0.0
+                        },
                 ),
                 Align2::CENTER_BOTTOM,
                 lbl(dy),
@@ -1473,16 +1477,19 @@ impl ViewerApp {
         // the bottom, the cube in the lower left corner, the legend on the
         // right below the pane's buttons.
         let bottom = rect.bottom() - if has_slider { 26.0 } else { 6.0 };
-        if self.overlays.ruler {
+        let vi = super::overlays::view_index(plane);
+        if self.overlays.ruler[vi] {
             super::overlays::draw_ruler(&painter, rect, zoom, bottom - 14.0);
         }
-        if self.overlays.orientation_cube {
+        if self.overlays.orientation_cube[vi] {
+            // The cube holds this view's slice where it lies in the volume.
             let (dx, dy) = vol.plane_screen_dirs(plane);
             super::overlays::draw_cube_2d(
                 &painter,
-                Pos2::new(rect.left() + 30.0, bottom - 22.0),
+                Pos2::new(rect.left() + 32.0, bottom - 24.0),
                 dx,
                 dy,
+                super::overlays::cube_plane(vol, plane, view.slice as f64),
             );
         }
         if self.dose_legend.shows(Some(plane)) {

@@ -430,7 +430,8 @@ fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> 
         );
 
         let mut contours = Vec::new();
-        for k in 0..NZ {
+        // One CT slice UID per slice, NZ of them.
+        for (k, ct_uid) in ids.ct_sop_uids.iter().enumerate() {
             let z = z0 + k as f64 * SPACING;
             // Radius of this ROI on this slice; targets taper off as a sphere.
             let (r, cy) = match name {
@@ -461,7 +462,7 @@ fn write_rtstruct(dir: &Path, p: &GenParams, ids: &Ids, progress: &Progress) -> 
             put_seq(
                 &mut co,
                 tags::CONTOUR_IMAGE_SEQUENCE,
-                vec![ref_item(SOP_CT, &ids.ct_sop_uids[k])],
+                vec![ref_item(SOP_CT, ct_uid)],
             );
             contours.push(co);
         }

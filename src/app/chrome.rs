@@ -344,12 +344,29 @@ impl ViewerApp {
                         .ui(ui, |ui| {
                             let before = self.overlays;
                             let o = &mut self.overlays;
-                            ui.checkbox(&mut o.orientation_cube, "Orientation cube")
+                            // Each switched view by view.
+                            ui.label("Orientation cube")
                                 .on_hover_text("In 3D, click a face to turn to it");
-                            ui.checkbox(&mut o.ruler, "Ruler")
-                                .on_hover_text("Scale bar on the image views");
-                            ui.checkbox(&mut o.beam_fields, "Beam fields")
-                                .on_hover_text("Show the plan's beams");
+                            ui.horizontal(|ui| {
+                                for (on, name) in o
+                                    .orientation_cube
+                                    .iter_mut()
+                                    .zip(["Axial", "Sagittal", "Coronal", "3D"])
+                                {
+                                    ui.checkbox(on, name)
+                                        .named_with(|| format!("Orientation cube on {name}"));
+                                }
+                            });
+                            ui.separator();
+                            ui.label("Ruler");
+                            ui.horizontal(|ui| {
+                                for (on, name) in
+                                    o.ruler.iter_mut().zip(["Axial", "Sagittal", "Coronal"])
+                                {
+                                    ui.checkbox(on, name)
+                                        .named_with(|| format!("Ruler on {name}"));
+                                }
+                            });
                             if self.overlays != before {
                                 save_settings = true;
                             }

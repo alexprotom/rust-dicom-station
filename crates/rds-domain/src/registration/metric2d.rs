@@ -941,8 +941,8 @@ mod tests {
         let a: Vec<f32> = (0..128).map(|p| (p % 16) as f32).collect();
         let h = Image2d::new(a, dims).halved();
         assert_eq!(h.dims, [8, 4]);
-        for ci in 1..7 {
-            assert!((h.data[ci] - (2.0 * ci as f32 + 0.5)).abs() < 1e-6);
+        for (ci, &v) in h.data.iter().enumerate().take(7).skip(1) {
+            assert!((v - (2.0 * ci as f32 + 0.5)).abs() < 1e-6);
         }
         let (m, d) = halve_mask(&border_mask([16, 16], 4), [16, 16]);
         assert_eq!(d, [8, 8]);

@@ -575,10 +575,13 @@ impl infer::InferHooks for Hooks<'_> {
     /// whole logits first, and a tile ahead would hold several of those.
     fn overlaps(&self) -> bool {
         #[cfg(feature = "gpu")]
-        if matches!(&self.nets.nets, Nets::Gpu(g) if g.len() == 1) {
-            return true;
+        {
+            matches!(&self.nets.nets, Nets::Gpu(g) if g.len() == 1)
         }
-        false
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
     }
 
     fn tile_done(&self, done: usize, total: usize) -> bool {
