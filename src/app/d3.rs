@@ -375,8 +375,9 @@ struct D3Inputs<'a> {
     other_visible: Vec<bool>,
     /// The registration's field when the scene shows its fixed image.
     reg_here: Option<(Arc<crate::registration::dvf::VectorField>, &'static str)>,
-    /// The dose the surfaces can be painted with, and its reference.
-    dose_here: Option<(&'a crate::rtdose::DoseGrid, f32)>,
+    /// The dose the surfaces can be painted with, and the colour scale of
+    /// the wash it is painted on.
+    dose_here: Option<(&'a crate::rtdose::DoseGrid, render::WashScale)>,
 }
 
 /// The camera a scene starts with: the default turn, no zoom, no pan,
@@ -495,7 +496,14 @@ impl ViewerApp {
                 .study
                 .as_ref()
                 .and_then(|st| st.doses.get(s.active_dose))
-                .map(|d| (d, s.dose_reference.max(1e-6))),
+                .map(|d| {
+                    let scale = dose_display::wash_scale(
+                        &self.dose_colors,
+                        s.dose_reference.max(1e-6),
+                        self.dose_threshold_pct,
+                    );
+                    (d, scale)
+                }),
         }
     }
 
@@ -1098,10 +1106,10 @@ impl ViewerApp {
                         h = mix(h, d.data.len() as u64);
                         h = mix(h, d.max_dose.to_bits() as u64);
                         h = mix(h, self.slots[w.slot].dose_reference.to_bits() as u64);
-                        for l in self.iso_levels.iter().filter(|l| l.on) {
+                        for l in self.dose_colors.levels.iter().filter(|l| l.on) {
                             h = mix(h, l.pct.to_bits() as u64);
-                            let c = l.color;
-                            h = mix(h, (c.r() as u64) << 16 | (c.g() as u64) << 8 | c.b() as u64);
+                            let [r, g, b] = l.color;
+                            h = mix(h, (r as u64) << 16 | (g as u64) << 8 | b as u64);
                         }
                         h
                     }
@@ -1120,13 +1128,12 @@ impl ViewerApp {
                                 let dose = d.clone();
                                 let reference = self.slots[w.slot].dose_reference.max(1e-6);
                                 let levels: Vec<(usize, f32, [u8; 3])> = self
-                                    .iso_levels
+                                    .dose_colors
+                                    .levels
                                     .iter()
                                     .enumerate()
                                     .filter(|(_, l)| l.on)
-                                    .map(|(i, l)| {
-                                        (i, l.pct, [l.color.r(), l.color.g(), l.color.b()])
-                                    })
+                                    .map(|(i, l)| (i, l.pct, l.color))
                                     .collect();
                                 let progress = Arc::new(Progress::default());
                                 let (tx, rx) = mpsc::channel();
@@ -1590,7 +1597,7 @@ impl ViewerApp {
             std::sync::Arc<crate::registration::dvf::VectorField>,
             &'static str,
         )>,
-        dose_here: &Option<(&crate::rtdose::DoseGrid, f32)>,
+        dose_here: &Option<(&crate::rtdose::DoseGrid, render::WashScale)>,
         over_buttons: bool,
     ) {
         // The scene fills whatever rect it is given; everything below is
@@ -1705,8 +1712,8 @@ impl ViewerApp {
         // them and only places them again (below).
         let mut shade_key = mix(order_key, paint_dose as u64);
         if paint_dose {
-            let (_, reference) = dose_here.as_ref().expect("checked");
-            shade_key = mix(shade_key, reference.to_bits() as u64);
+            let (_, scale) = dose_here.as_ref().expect("checked");
+            shade_key = mix(shade_key, scale.key());
         }
         // The point the scene turns about: a camera started over for a new
         // image can land on the same scale with a different centre.
@@ -1838,10 +1845,10 @@ impl ViewerApp {
                     // or the dose that lands on it, sampled the
                     // same way the isodose lines are.
                     let color = match &dose_here {
-                        Some((dose, reference)) if paint_dose => {
+                        Some((dose, scale)) if paint_dose => {
                             let p = Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
                             match dose.sample(p) {
-                                Some(d) => render::dose_colormap((d / reference).clamp(0.0, 1.0)),
+                                Some(d) => scale.rgb(d),
                                 // Outside the dose grid: grey, so
                                 // "no dose here" cannot be read as
                                 // "zero dose here".

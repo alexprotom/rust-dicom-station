@@ -910,6 +910,7 @@ dependencies = [
  "burn-tch",
  "burn-vision",
  "burn-wgpu",
+ "cubecl",
 ]
 
 [[package]]
@@ -6720,7 +6721,7 @@ dependencies = [
 
 [[package]]
 name = "rds-domain"
-version = "0.12.8"
+version = "0.12.9"
 dependencies = [
  "anyhow",
  "axum",
@@ -7041,7 +7042,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dicom-station"
-version = "0.12.8"
+version = "0.12.9"
 dependencies = [
  "anyhow",
  "burn",

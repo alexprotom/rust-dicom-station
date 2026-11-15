@@ -271,57 +271,6 @@ impl DoseMode {
     }
 }
 
-struct IsoLevel {
-    pct: f32,
-    color: Color32,
-    on: bool,
-}
-
-fn default_iso_levels() -> Vec<IsoLevel> {
-    vec![
-        IsoLevel {
-            pct: 107.0,
-            color: Color32::from_rgb(255, 0, 255),
-            on: true,
-        },
-        IsoLevel {
-            pct: 100.0,
-            color: Color32::from_rgb(255, 0, 0),
-            on: true,
-        },
-        IsoLevel {
-            pct: 95.0,
-            color: Color32::from_rgb(255, 128, 0),
-            on: true,
-        },
-        IsoLevel {
-            pct: 90.0,
-            color: Color32::from_rgb(255, 255, 0),
-            on: true,
-        },
-        IsoLevel {
-            pct: 80.0,
-            color: Color32::from_rgb(0, 220, 0),
-            on: true,
-        },
-        IsoLevel {
-            pct: 70.0,
-            color: Color32::from_rgb(0, 255, 255),
-            on: true,
-        },
-        IsoLevel {
-            pct: 50.0,
-            color: Color32::from_rgb(0, 128, 255),
-            on: true,
-        },
-        IsoLevel {
-            pct: 30.0,
-            color: Color32::from_rgb(0, 0, 255),
-            on: true,
-        },
-    ]
-}
-
 /// A volume (held weakly, so the cache does not keep it alive) and the
 /// windows of [`RELATIVE_PRESETS`] worked out for it.
 type RelativeWindows = (std::sync::Weak<Volume>, Vec<(f32, f32)>);
@@ -1094,7 +1043,12 @@ pub struct ViewerApp {
     dose_mode: DoseMode,
     dose_opacity: f32,
     dose_threshold_pct: f32,
-    iso_levels: Vec<IsoLevel>,
+    /// The wash's colour map, range and steps, and the isodose levels
+    /// (`dose_display.rs`).
+    dose_colors: settings::DoseColors,
+    /// `dose_colors` as last written to the settings, which are written
+    /// again once they differ and no button is held (a drag ends).
+    dose_colors_saved: settings::DoseColors,
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
     settings_gen: u64,
@@ -1512,7 +1466,8 @@ impl ViewerApp {
             dose_mode: DoseMode::Off,
             dose_opacity: 0.45,
             dose_threshold_pct: 15.0,
-            iso_levels: default_iso_levels(),
+            dose_colors: prefs.dose_colors.clone(),
+            dose_colors_saved: prefs.dose_colors.clone(),
             settings_gen: 0,
             tree_cache: Default::default(),
             struct_gen: [0; MAX_WORKSPACES],
@@ -1601,6 +1556,7 @@ impl ViewerApp {
             modules: self.modules.clone(),
             pane_buttons_hidden: self.pane_buttons_hidden,
             overlays: self.overlays,
+            dose_colors: self.dose_colors.clone(),
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
             view_rows: self.view_rows.clone(),

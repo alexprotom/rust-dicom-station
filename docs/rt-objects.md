@@ -98,9 +98,30 @@ possibly non-uniform frame offsets), with an incremental affine fast path when
 resampling a whole display plane. Display offers:
 
 * a translucent **colorwash** with adjustable opacity and a lower threshold
-  (in % of the reference dose);
+  (in % of the reference dose), drawn with a colour map over a range of
+  dose: continuous by default, or in bands (*Stepped bands*, one colour per
+  step of the scale). The maps are the viewer's rainbow (blue, cyan, green,
+  yellow, red), MATLAB's jet, Google's turbo, matplotlib's perceptually
+  uniform viridis, and the isodose levels' own colours (each level's colour
+  at its percentage, blended between levels, or banded at them). The range
+  (*From* / *to*) is in % of each workspace's reference or in Gy; a dose
+  beyond either end keeps the end's colour. The default is the rainbow,
+  continuous, from 0 to 100 % in 5 steps, which is how the wash was always
+  drawn;
 * **isodose lines** at configurable percentages, extracted per level with
-  marching squares (parallelized across levels).
+  marching squares (parallelized across levels). The ladder is edited in
+  the section: each level's colour (its square), whether it is drawn, its
+  percentage, a level removed (✖) or added (*Add level*, halfway under the
+  lowest), *Sort* (highest first) and *Default levels* (107, 100, 95, 90,
+  80, 70, 50, 30 %).
+
+The legend in the corner of the views shows the wash as a colour bar with a
+tick at every step of its scale, from the threshold (or the scale's lower
+end, if higher) to its upper end, labelled in the scale's unit, and beside
+it the isodose levels drawn, highest first. The colour map, its range, its
+steps, banded or not, and the isodose ladder are kept in the settings
+(`dose_colormap`, `dose_wash_range`, `dose_wash_steps`, `dose_iso_levels`
+in `viewer_settings.txt`).
 
 The **reference dose** defaults to the plan's `TargetPrescriptionDose` and can
 be overridden; the status bar shows Gy and % of reference at the crosshair for

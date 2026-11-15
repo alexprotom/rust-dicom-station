@@ -5,7 +5,7 @@
 //! cargo run --release --example seg_cli -- --list [--models ROOT]
 //! cargo run --release --example seg_cli -- <dicom_dir> <out_prefix>
 //!     [--model KEY] [--models ROOT] [--device auto|gpu|cpu] [--parts a,b,...]
-//!     [--nnunet-folder DIR]...
+//!     [--nnunet-folder DIR]... [--repeat N]
 //! ```
 //!
 //! `--model` is a registry key (`--list` prints them: `total_fast`,
@@ -17,6 +17,13 @@
 //! settings apply as they do in the viewer: the TotalSegmentator licence
 //! number the licensed models download with, and the nnU-Net model folders
 //! added in its model manager; `--nnunet-folder` adds one more for this run.
+//!
+//! `--repeat N` runs the model N times in this one process, each run on a
+//! thread of its own as the viewer runs it, and after each prints what the
+//! GPU's memory pools still hold (and what they hold once the memory of the
+//! threads that ended is given back, `nn::device::memory`); a later run
+//! whose labels differ from the first's is an error. It is how a second run
+//! running out of GPU memory, as it once did, shows itself without a window.
 //!
 //! Writes `<out_prefix>.bin` (u8 labels, `Volume::data` order) and
 //! `<out_prefix>.json` (dims, spacing, origin, the model, its class table
@@ -50,6 +57,7 @@ pub fn run(argv: Vec<String>) -> anyhow::Result<()> {
     let mut device = DevicePref::Auto;
     let mut parts: Option<Vec<String>> = None;
     let mut list = false;
+    let mut repeat = 1usize;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--list" => list = true,
@@ -60,6 +68,13 @@ pub fn run(argv: Vec<String>) -> anyhow::Result<()> {
                 let v = args.next().unwrap_or_default();
                 device = DevicePref::from_key(&v)
                     .ok_or_else(|| anyhow::anyhow!("unknown device {v:?}"))?;
+            }
+            "--repeat" => {
+                let v = args.next().ok_or_else(usage)?;
+                repeat =
+                    v.parse::<usize>().ok().filter(|&n| n >= 1).ok_or_else(|| {
+                        anyhow::anyhow!("--repeat takes a count of runs, not {v:?}")
+                    })?;
             }
             "--parts" => {
                 parts = Some(
@@ -160,39 +175,64 @@ pub fn run(argv: Vec<String>) -> anyhow::Result<()> {
         model.label()
     );
 
-    let ap = Progress::default();
-    let t = std::time::Instant::now();
-    let done = std::sync::atomic::AtomicBool::new(false);
     let opts = RunOptions { device, parts };
-    let result = std::thread::scope(|s| {
-        let (done_ref, ap_ref) = (&done, &ap);
-        let printer = s.spawn(move || {
-            let mut last = String::new();
-            while !done_ref.load(std::sync::atomic::Ordering::Relaxed) {
-                let msg = ap_ref.get();
-                if msg != last {
-                    eprintln!(
-                        "[{:6.1}s] {:5.1}% {}",
-                        t.elapsed().as_secs_f64(),
-                        ap_ref.frac() * 100.0,
-                        msg
-                    );
-                    last = msg;
+    let mut first: Option<Vec<u8>> = None;
+    let mut result = None;
+    for round in 1..=repeat {
+        if repeat > 1 {
+            eprintln!("run {round} of {repeat}");
+        }
+        let ap = Progress::default();
+        let t = std::time::Instant::now();
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let r = std::thread::scope(|s| {
+            let (done_ref, ap_ref) = (&done, &ap);
+            let printer = s.spawn(move || {
+                let mut last = String::new();
+                while !done_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                    let msg = ap_ref.get();
+                    if msg != last {
+                        eprintln!(
+                            "[{:6.1}s] {:5.1}% {}",
+                            t.elapsed().as_secs_f64(),
+                            ap_ref.frac() * 100.0,
+                            msg
+                        );
+                        last = msg;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500));
+            });
+            // On a thread that ends with the run, as a job of the viewer.
+            let r = s
+                .spawn(|| model.run(vol, &opts, &root, &ap))
+                .join()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("the run panicked")));
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = printer.join();
+            r
+        })
+        .map_err(|e| e.context(format!("run {round} of {repeat}")))?;
+        eprintln!(
+            "finished in {:.1}s on {} ({} structures found)",
+            t.elapsed().as_secs_f64(),
+            r.device,
+            r.organs.len()
+        );
+        if repeat > 1 {
+            report_gpu_memory(round);
+        }
+        match &first {
+            None => first = Some(r.labels.clone()),
+            Some(f) if *f != r.labels => {
+                let differ = f.iter().zip(&r.labels).filter(|(a, b)| a != b).count();
+                anyhow::bail!("run {round} labelled {differ} voxels otherwise than run 1");
             }
-        });
-        let r = model.run(vol, &opts, &root, &ap);
-        done.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = printer.join();
-        r
-    })?;
-    eprintln!(
-        "finished in {:.1}s on {} ({} structures found)",
-        t.elapsed().as_secs_f64(),
-        result.device,
-        result.organs.len()
-    );
+            Some(_) => {}
+        }
+        result = Some(r);
+    }
+    let result = result.expect("at least one run");
     for n in &result.notes {
         eprintln!("note: {n}");
     }
@@ -240,9 +280,32 @@ pub fn run(argv: Vec<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What the GPU's memory pools hold after a run, as the thread it ran on
+/// left them, then once the memory of the threads that ended is given back.
+#[cfg(feature = "gpu")]
+fn report_gpu_memory(round: usize) {
+    use rust_dicom_station::nn::device::memory;
+    let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+    let Some((held, streams)) = memory::held() else {
+        return;
+    };
+    memory::release_all();
+    let (after, left) = memory::held().unwrap_or((0, 0));
+    eprintln!(
+        "GPU memory after run {round}: {:.0} MB in {streams} stream(s); {:.0} MB in {left} once \
+         the ended threads' memory is given back",
+        mb(held),
+        mb(after)
+    );
+}
+
+#[cfg(not(feature = "gpu"))]
+fn report_gpu_memory(_round: usize) {}
+
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
         "usage: seg_cli --list [--models ROOT] | seg_cli <dicom_dir> <out_prefix> [--model KEY] \
-         [--models ROOT] [--device auto|gpu|cpu] [--parts a,b,...] [--nnunet-folder DIR]..."
+         [--models ROOT] [--device auto|gpu|cpu] [--parts a,b,...] [--nnunet-folder DIR]... \
+         [--repeat N]"
     )
 }

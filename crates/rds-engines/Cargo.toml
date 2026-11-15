@@ -57,4 +57,7 @@ ureq = { version = "2" }
 
 [features]
 default = ["gpu"]
-gpu = ["burn/wgpu", "burn/fusion", "burn/autotune", "dep:wgpu"]
+# `burn/cubecl` names cubecl's stream ids, to give back the GPU memory a
+# finished thread held (nn/device.rs, `memory`); cubecl is already under
+# the wgpu backend, so nothing more is compiled.
+gpu = ["burn/wgpu", "burn/fusion", "burn/autotune", "burn/cubecl", "dep:wgpu"]

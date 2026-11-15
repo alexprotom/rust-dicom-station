@@ -257,7 +257,7 @@ a panel with one slider per structure on top of that, so the target can
 fade while a chamber volume stays solid (*All 100 %* clears them). With a
 dose in the workspace, **Dose on the surface** colours every surface by the
 dose that lands on it, on the
-isodose scale, and **Isodose surfaces** adds the active dose as translucent
+colorwash's scale (its colour map and range), and **Isodose surfaces** adds the active dose as translucent
 shells at the isodose lines switched on in the Dose and plan display, in their
 colours and relative to the same reference dose, with their own opacity
 slider; they follow a change of dose, reference or lines by themselves.
@@ -372,7 +372,9 @@ per structure, with a Dice column against a reference of your choice) and
 **Structure motion** (the 4D motion analysis and its finished runs -
 [motion-4d.md](motion-4d.md)). **Doses**: **Dose and plan display** (how the
 displayed dose grid is drawn - colorwash, isodose lines or both, opacity,
-threshold and the isodose ladder; one setting for every workspace, which a
+threshold, the wash's colour map, range and steps (continuous or banded),
+and the isodose ladder, whose levels can be recoloured, changed, added and
+removed ([rt-objects.md](rt-objects.md)); one setting for every workspace, which a
 dose grid's **🎨 Display settings** in the tree also opens), **Dose
 analysis** (the dose metrics table) and **Dose-volume histograms** (both in
 [dvh.md](dvh.md)).

@@ -81,7 +81,9 @@ fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-/// Jet-like colormap (blue → cyan → green → yellow → red), t in [0, 1].
+/// Jet-like colormap (blue → cyan → green → yellow → red), t in [0, 1]: the
+/// dose wash's [`DoseColormap::Rainbow`], and what the deformation arrows
+/// are coloured with.
 #[inline]
 pub fn dose_colormap(t: f32) -> [u8; 3] {
     let t = t.clamp(0.0, 1.0);
@@ -97,28 +99,269 @@ pub fn dose_colormap(t: f32) -> [u8; 3] {
     [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
 }
 
-/// Build a translucent colorwash RGBA image from a resampled dose plane.
-/// `reference` maps to colormap t = 1; pixels below `threshold_frac * reference`
-/// are fully transparent.
-pub fn dose_colorwash(
-    dose_plane: &[f32],
-    reference: f32,
-    threshold_frac: f32,
-    opacity: f32,
-    out: &mut Vec<Color32>,
-) {
-    let reference = reference.max(1e-6);
-    let thr = threshold_frac * reference;
+/// The colour maps a dose wash can be drawn with.
+///
+/// `Rainbow` is the viewer's own (blue → cyan → green → yellow → red, full
+/// saturation at both ends); `Jet` is MATLAB's, which starts and ends darker
+/// (dark blue, dark red); `Turbo` is Google's improved rainbow (Mikhailov's
+/// polynomial approximation); `Viridis` is matplotlib's perceptually
+/// uniform map (linear between nine published samples). `Isodose` takes
+/// the colours of the isodose levels themselves, each at its percentage -
+/// the planning-system look where the wash and the lines agree; the caller
+/// hands the levels over ([`WashScale::new`], [`isodose_rgb`]), since they
+/// are not the map's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DoseColormap {
+    #[default]
+    Rainbow,
+    Jet,
+    Turbo,
+    Viridis,
+    Isodose,
+}
+
+impl DoseColormap {
+    pub const ALL: [DoseColormap; 5] = [
+        DoseColormap::Rainbow,
+        DoseColormap::Jet,
+        DoseColormap::Turbo,
+        DoseColormap::Viridis,
+        DoseColormap::Isodose,
+    ];
+
+    /// The word the settings file writes.
+    pub fn key(self) -> &'static str {
+        match self {
+            DoseColormap::Rainbow => "rainbow",
+            DoseColormap::Jet => "jet",
+            DoseColormap::Turbo => "turbo",
+            DoseColormap::Viridis => "viridis",
+            DoseColormap::Isodose => "isodose",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<DoseColormap> {
+        let key = key.trim();
+        DoseColormap::ALL
+            .into_iter()
+            .find(|m| m.key().eq_ignore_ascii_case(key))
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DoseColormap::Rainbow => "Rainbow",
+            DoseColormap::Jet => "Jet",
+            DoseColormap::Turbo => "Turbo",
+            DoseColormap::Viridis => "Viridis",
+            DoseColormap::Isodose => "Isodose level colours",
+        }
+    }
+
+    /// The colour at `t` in [0, 1] (clamped). `Isodose` has no colours of
+    /// its own and answers with the rainbow's.
+    pub fn rgb(self, t: f32) -> [u8; 3] {
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        match self {
+            DoseColormap::Rainbow | DoseColormap::Isodose => dose_colormap(t),
+            DoseColormap::Jet => {
+                let f = |c: f32| to8(1.5 - (4.0 * t - c).abs());
+                [f(3.0), f(2.0), f(1.0)]
+            }
+            DoseColormap::Turbo => {
+                // The published coefficients, worked in f64 as given.
+                let t = t as f64;
+                let poly = |c: [f64; 6]| {
+                    let v = c[0] + t * (c[1] + t * (c[2] + t * (c[3] + t * (c[4] + t * c[5]))));
+                    to8(v as f32)
+                };
+                [
+                    poly([
+                        0.135_721_38,
+                        4.615_392_60,
+                        -42.660_322_58,
+                        132.131_082_34,
+                        -152.942_393_96,
+                        59.286_379_43,
+                    ]),
+                    poly([
+                        0.091_402_61,
+                        2.194_188_39,
+                        4.842_966_58,
+                        -14.185_033_33,
+                        4.277_298_57,
+                        2.829_566_04,
+                    ]),
+                    poly([
+                        0.106_673_30,
+                        12.641_946_08,
+                        -60.582_048_36,
+                        110.362_767_71,
+                        -89.903_109_12,
+                        27.348_249_73,
+                    ]),
+                ]
+            }
+            DoseColormap::Viridis => {
+                const V: [[f32; 3]; 9] = [
+                    [68.0, 1.0, 84.0],
+                    [71.0, 44.0, 122.0],
+                    [59.0, 82.0, 139.0],
+                    [44.0, 114.0, 142.0],
+                    [33.0, 145.0, 140.0],
+                    [40.0, 174.0, 128.0],
+                    [94.0, 201.0, 98.0],
+                    [173.0, 220.0, 48.0],
+                    [253.0, 231.0, 37.0],
+                ];
+                let x = t * 8.0;
+                let i = (x.floor() as usize).min(7);
+                let f = x - i as f32;
+                let mix = |c: usize| (V[i][c] + (V[i + 1][c] - V[i][c]) * f).round() as u8;
+                [mix(0), mix(1), mix(2)]
+            }
+        }
+    }
+}
+
+/// The colour of a dose at `pct` % of the reference under the
+/// [`DoseColormap::Isodose`] map: `levels` are (percentage, colour), in any
+/// order. Stepped, a dose takes the colour of the highest level it reaches
+/// (below the lowest, the lowest's colour); continuous, the colours are
+/// interpolated between neighbouring levels and held beyond the ends.
+pub fn isodose_rgb(levels: &[(f32, [u8; 3])], pct: f32, stepped: bool) -> [u8; 3] {
+    let mut sorted: Vec<(f32, [u8; 3])> = levels.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    isodose_rgb_sorted(&sorted, pct, stepped)
+}
+
+fn isodose_rgb_sorted(sorted: &[(f32, [u8; 3])], pct: f32, stepped: bool) -> [u8; 3] {
+    let (Some(first), Some(last)) = (sorted.first(), sorted.last()) else {
+        return dose_colormap(pct / 100.0);
+    };
+    if pct <= first.0 {
+        return first.1;
+    }
+    if pct >= last.0 {
+        return last.1;
+    }
+    let i = sorted.partition_point(|l| l.0 <= pct);
+    let (a, b) = (sorted[i - 1], sorted[i]);
+    if stepped {
+        return a.1;
+    }
+    let f = ((pct - a.0) / (b.0 - a.0).max(1e-6)).clamp(0.0, 1.0);
+    let m = |c: usize| (a.1[c] as f32 + (b.1[c] as f32 - a.1[c] as f32) * f).round() as u8;
+    [m(0), m(1), m(2)]
+}
+
+/// Entries of a [`WashScale`]'s table: fine enough that a stepped band's
+/// edge sits within a thousandth of the range of where it should.
+pub const WASH_LUT_LEN: usize = 1024;
+
+/// The colour scale of one dose wash, in absolute dose: `lo` takes the
+/// first entry of `lut`, `hi` the last (doses beyond either end keep the
+/// end's colour), and nothing under `threshold` is drawn. The table is
+/// worked out once per change of the settings ([`WashScale::new`]), so a
+/// pixel costs one division and one lookup whatever the map.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WashScale {
+    pub lut: Vec<[u8; 3]>,
+    pub lo: f32,
+    pub hi: f32,
+    pub threshold: f32,
+}
+
+/// What a [`WashScale`] is made of, besides the doses it spans.
+#[derive(Clone, Copy, Debug)]
+pub struct WashStyle<'a> {
+    pub map: DoseColormap,
+    /// Bands of the scale when `stepped` (at least two).
+    pub steps: u32,
+    pub stepped: bool,
+    /// The 100 % the isodose levels are of.
+    pub reference: f32,
+    /// The isodose levels (percentage, colour), for [`DoseColormap::Isodose`].
+    pub levels: &'a [(f32, [u8; 3])],
+}
+
+impl WashScale {
+    /// The scale from `lo` to `hi` (absolute dose; swapped if given the
+    /// wrong way round): `style.steps` bands when stepped (each band one
+    /// colour, the first the map's start, the last its end), the map
+    /// continuous otherwise. [`DoseColormap::Isodose`] bands at the levels
+    /// themselves rather than at `steps`.
+    pub fn new(lo: f32, hi: f32, threshold: f32, style: WashStyle<'_>) -> WashScale {
+        let (lo, hi) = if hi < lo { (hi, lo) } else { (lo, hi) };
+        let hi = if hi - lo < 1e-6 { lo + 1e-6 } else { hi };
+        let n = style.steps.max(2) as f32;
+        let reference = style.reference.max(1e-6);
+        let mut sorted: Vec<(f32, [u8; 3])> = style.levels.to_vec();
+        sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let lut = (0..WASH_LUT_LEN)
+            .map(|i| {
+                let t = i as f32 / (WASH_LUT_LEN - 1) as f32;
+                match style.map {
+                    DoseColormap::Isodose => {
+                        let pct = (lo + t * (hi - lo)) / reference * 100.0;
+                        isodose_rgb_sorted(&sorted, pct, style.stepped)
+                    }
+                    map if style.stepped => {
+                        let band = (t * n).floor().min(n - 1.0);
+                        map.rgb(band / (n - 1.0))
+                    }
+                    map => map.rgb(t),
+                }
+            })
+            .collect();
+        WashScale {
+            lut,
+            lo,
+            hi,
+            threshold,
+        }
+    }
+
+    /// The colour of `dose` on this scale, the threshold aside.
+    #[inline]
+    pub fn rgb(&self, dose: f32) -> [u8; 3] {
+        let t = ((dose - self.lo) / (self.hi - self.lo)).clamp(0.0, 1.0);
+        let t = if t.is_nan() { 0.0 } else { t };
+        self.lut[(t * (self.lut.len() - 1) as f32).round() as usize]
+    }
+
+    /// A hash of everything the scale paints with, for the keys of caches
+    /// built from it.
+    pub fn key(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |v: u64| {
+            h ^= v;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        mix(self.lo.to_bits() as u64);
+        mix(self.hi.to_bits() as u64);
+        mix(self.threshold.to_bits() as u64);
+        for c in &self.lut {
+            mix(((c[0] as u64) << 16) | ((c[1] as u64) << 8) | c[2] as u64);
+        }
+        h
+    }
+}
+
+/// Build a translucent colorwash RGBA image from a resampled dose plane on
+/// `scale`; pixels under its threshold, and those without dose, are fully
+/// transparent.
+pub fn dose_colorwash(dose_plane: &[f32], scale: &WashScale, opacity: f32, out: &mut Vec<Color32>) {
     let a_max = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
     out.clear();
     out.resize(dose_plane.len(), Color32::TRANSPARENT);
     out.par_iter_mut()
         .zip(dose_plane.par_iter())
         .for_each(|(o, &d)| {
-            *o = if d < thr || d <= 0.0 {
+            *o = if d < scale.threshold || d <= 0.0 {
                 Color32::TRANSPARENT
             } else {
-                let [r, g, b] = dose_colormap(d / reference);
+                let [r, g, b] = scale.rgb(d);
                 Color32::from_rgba_unmultiplied(r, g, b, a_max)
             };
         });
@@ -549,5 +792,62 @@ mod tests {
                 assert_eq!(a.points, b.points, "{plane:?} {slice}");
             }
         }
+    }
+
+    fn style(map: DoseColormap, steps: u32, stepped: bool) -> WashStyle<'static> {
+        WashStyle {
+            map,
+            steps,
+            stepped,
+            reference: 50.0,
+            levels: &[(100.0, [255, 0, 0]), (50.0, [0, 0, 255])],
+        }
+    }
+
+    /// The maps start and end where their references do.
+    #[test]
+    fn colour_maps_end_where_they_should() {
+        assert_eq!(DoseColormap::Rainbow.rgb(0.0), [0, 0, 255]);
+        assert_eq!(DoseColormap::Rainbow.rgb(1.0), [255, 0, 0]);
+        assert_eq!(DoseColormap::Jet.rgb(0.0), [0, 0, 128]);
+        assert_eq!(DoseColormap::Jet.rgb(1.0), [128, 0, 0]);
+        assert_eq!(DoseColormap::Viridis.rgb(0.0), [68, 1, 84]);
+        assert_eq!(DoseColormap::Viridis.rgb(1.0), [253, 231, 37]);
+        let t0 = DoseColormap::Turbo.rgb(0.1);
+        let t1 = DoseColormap::Turbo.rgb(1.0);
+        assert!(t0[2] > t0[0] && t1[0] > t1[2], "{t0:?} {t1:?}");
+        for m in DoseColormap::ALL {
+            assert_eq!(DoseColormap::from_key(m.key()), Some(m));
+        }
+    }
+
+    /// Continuous, two doses close together get different colours; stepped,
+    /// the same one inside a band, and the bands span the whole map.
+    #[test]
+    fn a_wash_scale_is_continuous_or_banded() {
+        let c = WashScale::new(0.0, 50.0, 0.0, style(DoseColormap::Rainbow, 5, false));
+        assert_ne!(c.rgb(20.0), c.rgb(21.0));
+        assert_eq!(c.rgb(-5.0), [0, 0, 255]);
+        assert_eq!(c.rgb(80.0), [255, 0, 0]);
+        let s = WashScale::new(0.0, 50.0, 0.0, style(DoseColormap::Rainbow, 5, true));
+        assert_eq!(s.rgb(20.5), s.rgb(29.5));
+        assert_ne!(s.rgb(19.5), s.rgb(20.5));
+        assert_eq!(s.rgb(0.0), [0, 0, 255]);
+        assert_eq!(s.rgb(49.9), [255, 0, 0]);
+        assert_ne!(c.key(), s.key());
+    }
+
+    /// The isodose map takes the levels' colours at their percentages of
+    /// the reference.
+    #[test]
+    fn the_isodose_map_follows_the_levels() {
+        let levels = [(100.0, [255, 0, 0]), (50.0, [0, 0, 255])];
+        assert_eq!(isodose_rgb(&levels, 75.0, false), [128, 0, 128]);
+        assert_eq!(isodose_rgb(&levels, 75.0, true), [0, 0, 255]);
+        assert_eq!(isodose_rgb(&levels, 120.0, true), [255, 0, 0]);
+        let s = WashScale::new(0.0, 60.0, 0.0, style(DoseColormap::Isodose, 5, true));
+        // 50 Gy is the 100 % level here.
+        assert_eq!(s.rgb(49.0), [0, 0, 255]);
+        assert_eq!(s.rgb(51.0), [255, 0, 0]);
     }
 }

@@ -396,7 +396,9 @@ src/
                       categories of a study
     dose_display.rs   the Dose and plan display module: how the dose is
                       drawn (colorwash / isodose, opacity, threshold, the
-                      isodose ladder), one setting for every workspace;
+                      wash's colour map, range and steps through
+                      render::WashScale, the editable isodose ladder;
+                      settings::DoseColors), one setting for every workspace;
                       each workspace's reference dose; the dose legend on
                       the views it is ticked for; the beam fields switch
     overlays.rs       over the views: the shown plan's beam fields (cut by
@@ -884,7 +886,9 @@ crates/            the workspace's library crates; lib.rs re-exports their
       device.rs         DevicePref (Auto / GPU / CPU), the inference device
                         opened adapter by adapter and self-tested (its wgpu
                         device and queue kept for the viewer's own shaders),
-                        the backend-panic guard
+                        the backend-panic guard, `memory` (cubecl's pools
+                        are per thread: an ended thread's are given back
+                        by the next thread to use the device)
       params.rs         shape-checked view of a loaded state dict
       half.rs           binary16 ↔ binary32 conversion
       tensor.rs         Mat [rows, cols] and Act [c, d, h, w]; transposed conv
