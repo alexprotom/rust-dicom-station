@@ -38,8 +38,20 @@ impl ViewerApp {
         mix(self.dose_opacity.to_bits() as u64);
         mix(self.dose_threshold_pct.to_bits() as u64);
         mix(self.slots[slot].dose_reference.to_bits() as u64);
-        for l in &self.iso_levels {
-            mix(l.pct.to_bits() as u64 | ((l.on as u64) << 40));
+        // The colour scale: every choice of it changes the wash (the
+        // isodose map takes the levels' colours too), so all of it keys.
+        let dc = &self.dose_colors;
+        mix(dc.map as u64);
+        mix(dc.in_gy as u64 | ((dc.stepped as u64) << 1) | ((dc.steps as u64) << 8));
+        mix(dc.lo.to_bits() as u64);
+        mix(dc.hi.to_bits() as u64);
+        for l in &dc.levels {
+            let [r, g, b] = l.color;
+            mix(l.pct.to_bits() as u64
+                | ((l.on as u64) << 32)
+                | ((r as u64) << 40)
+                | ((g as u64) << 48)
+                | ((b as u64) << 56));
         }
         // The dose itself, by identity rather than by `settings_gen`: that
         // moves on every structure action, set lock or POI step, and each
@@ -859,10 +871,11 @@ impl ViewerApp {
         // Isodose lines.
         if self.dose_mode.iso() && self.slots[slot].dose_shown {
             for (li, seg) in &view.iso_segs {
-                if let Some(level) = self.iso_levels.get(*li) {
+                if let Some(level) = self.dose_colors.levels.get(*li) {
+                    let [r, g, b] = level.color;
                     painter.line_segment(
                         [px_to_screen(seg.0), px_to_screen(seg.1)],
-                        Stroke::new(1.6, level.color),
+                        Stroke::new(1.6, Color32::from_rgb(r, g, b)),
                     );
                 }
             }
@@ -1453,7 +1466,11 @@ impl ViewerApp {
                     rect.center().x,
                     rect.bottom()
                         - if has_slider { 26.0 } else { 6.0 }
-                        - if self.overlays.ruler { 22.0 } else { 0.0 },
+                        - if self.overlays.ruler[super::overlays::view_index(plane)] {
+                            22.0
+                        } else {
+                            0.0
+                        },
                 ),
                 Align2::CENTER_BOTTOM,
                 lbl(dy),
@@ -1473,16 +1490,19 @@ impl ViewerApp {
         // the bottom, the cube in the lower left corner, the legend on the
         // right below the pane's buttons.
         let bottom = rect.bottom() - if has_slider { 26.0 } else { 6.0 };
-        if self.overlays.ruler {
+        let vi = super::overlays::view_index(plane);
+        if self.overlays.ruler[vi] {
             super::overlays::draw_ruler(&painter, rect, zoom, bottom - 14.0);
         }
-        if self.overlays.orientation_cube {
+        if self.overlays.orientation_cube[vi] {
+            // The cube holds this view's slice where it lies in the volume.
             let (dx, dy) = vol.plane_screen_dirs(plane);
             super::overlays::draw_cube_2d(
                 &painter,
-                Pos2::new(rect.left() + 30.0, bottom - 22.0),
+                Pos2::new(rect.left() + 32.0, bottom - 24.0),
                 dx,
                 dy,
+                super::overlays::cube_plane(vol, plane, view.slice as f64),
             );
         }
         if self.dose_legend.shows(Some(plane)) {
@@ -2460,13 +2480,9 @@ impl ViewerApp {
                 let mut dose_plane = std::mem::take(&mut view.dose_plane);
                 let mut dose_rgba = Vec::new();
                 render::sample_dose_plane(vol, dose, plane, slice, &mut dose_plane);
-                render::dose_colorwash(
-                    &dose_plane,
-                    reference,
-                    self.dose_threshold_pct / 100.0,
-                    self.dose_opacity,
-                    &mut dose_rgba,
-                );
+                let scale =
+                    dose_display::wash_scale(&self.dose_colors, reference, self.dose_threshold_pct);
+                render::dose_colorwash(&dose_plane, &scale, self.dose_opacity, &mut dose_rgba);
                 let img = ColorImage::new([w, h], dose_rgba);
                 match &mut view.dose_tex {
                     Some(t) => t.set(img, TextureOptions::LINEAR),
@@ -2481,7 +2497,8 @@ impl ViewerApp {
                 // Isodose segments - one marching-squares pass per enabled
                 // level, and the levels are independent.
                 let levels: Vec<(usize, f32)> = self
-                    .iso_levels
+                    .dose_colors
+                    .levels
                     .iter()
                     .enumerate()
                     .filter(|(_, l)| l.on)

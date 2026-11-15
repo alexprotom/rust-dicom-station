@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use egui::ThemePreference;
 
 use crate::gfx::Backend;
+pub use crate::render::DoseColormap;
 
 const FILE_NAME: &str = "viewer_settings.txt";
 
@@ -43,6 +44,12 @@ const PANE_BUTTONS_KEY: &str = "pane_buttons";
 const OVERLAY_CUBE_KEY: &str = "orientation_cube";
 const OVERLAY_RULER_KEY: &str = "ruler";
 const OVERLAY_BEAMS_KEY: &str = "beam_fields";
+/// The *Dose and plan display* module's colour scale: the map, its range,
+/// its steps, and the isodose ladder ([`DoseColors`]).
+const DOSE_COLORMAP_KEY: &str = "dose_colormap";
+const DOSE_WASH_RANGE_KEY: &str = "dose_wash_range";
+const DOSE_WASH_STEPS_KEY: &str = "dose_wash_steps";
+const DOSE_ISO_LEVELS_KEY: &str = "dose_iso_levels";
 /// Whether opening the PACS window walks its storage folders.
 const PACS_SCAN_ON_OPEN_KEY: &str = "pacs_scan_on_open";
 /// The PACS window's analytics: worked out on every click, and drawn as
@@ -380,15 +387,22 @@ impl Reg2dPrefs {
     }
 }
 
-/// What *Settings ▶ Viewer* draws over the views besides the images, each
-/// on for a fresh installation.
+/// The views an overlay can be switched on for, one by one, in the order
+/// of [`ViewerOverlays`]' arrays: the three planes, then the 3D scene.
+pub const OVERLAY_VIEWS: [&str; 4] = ["axial", "sagittal", "coronal", "3d"];
+
+/// What is drawn over the views besides the images, each on everywhere for
+/// a fresh installation. The cube and the ruler are switched per view in
+/// *Settings ▶ Viewer*; the beams in the *Dose and plan display* module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewerOverlays {
-    /// The orientation cube in the lower left corner of every view; in a
-    /// 3D pane a click on one of its faces turns the scene to that side.
-    pub orientation_cube: bool,
-    /// The scale bar along the bottom of every image view.
-    pub ruler: bool,
+    /// The orientation cube in the lower left corner, per view (axial,
+    /// sagittal, coronal, 3D); in a 3D pane a click on one of its faces
+    /// turns the scene to that side.
+    pub orientation_cube: [bool; 4],
+    /// The scale bar along the bottom, per image view (axial, sagittal,
+    /// coronal).
+    pub ruler: [bool; 3],
     /// The active plan's beams: their fields cut by every view's plane,
     /// and drawn in the 3D scene.
     pub beam_fields: bool,
@@ -397,10 +411,178 @@ pub struct ViewerOverlays {
 impl Default for ViewerOverlays {
     fn default() -> Self {
         ViewerOverlays {
-            orientation_cube: true,
-            ruler: true,
+            orientation_cube: [true; 4],
+            ruler: [true; 3],
             beam_fields: true,
         }
+    }
+}
+
+/// One isodose level of the *Dose and plan display* module: a percentage of
+/// the workspace's reference dose, the colour its line (and the
+/// [`DoseColormap::Isodose`] wash) is drawn in, and whether it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IsoLevel {
+    pub pct: f32,
+    pub color: [u8; 3],
+    pub on: bool,
+}
+
+/// How the dose is coloured: the colorwash's map, the doses its two ends
+/// stand for, its steps, and the isodose levels. One set for every
+/// workspace, as the rest of the module's choices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DoseColors {
+    pub map: DoseColormap,
+    /// `lo` and `hi` are Gy rather than percentages of the reference.
+    pub in_gy: bool,
+    /// The doses the first and the last colour of the map stand for, in %
+    /// of each workspace's reference (or Gy, `in_gy`). A dose beyond either
+    /// keeps the end's colour; under the module's threshold nothing is
+    /// drawn.
+    pub lo: f32,
+    pub hi: f32,
+    /// The intervals of the legend's scale, and the bands of a stepped wash.
+    pub steps: u32,
+    /// Bands of one colour each instead of a continuous wash.
+    pub stepped: bool,
+    pub levels: Vec<IsoLevel>,
+}
+
+// The floats are clamped and parsed from finite numbers only, never NaN,
+// so equality is an equivalence here (and `Settings` keeps its `Eq`).
+impl Eq for DoseColors {}
+
+/// Least and most steps the scale may have.
+pub const DOSE_STEPS: std::ops::RangeInclusive<u32> = 2..=20;
+
+impl Default for DoseColors {
+    /// The wash as it always was: the rainbow, continuous, from no dose to
+    /// the reference; the eight-level ladder of a planning system.
+    fn default() -> Self {
+        DoseColors {
+            map: DoseColormap::Rainbow,
+            in_gy: false,
+            lo: 0.0,
+            hi: 100.0,
+            steps: 5,
+            stepped: false,
+            levels: default_iso_levels(),
+        }
+    }
+}
+
+/// 107, 100, 95, 90, 80, 70, 50 and 30 %, magenta down to blue.
+pub fn default_iso_levels() -> Vec<IsoLevel> {
+    [
+        (107.0, [255, 0, 255]),
+        (100.0, [255, 0, 0]),
+        (95.0, [255, 128, 0]),
+        (90.0, [255, 255, 0]),
+        (80.0, [0, 220, 0]),
+        (70.0, [0, 255, 255]),
+        (50.0, [0, 128, 255]),
+        (30.0, [0, 0, 255]),
+    ]
+    .into_iter()
+    .map(|(pct, color)| IsoLevel {
+        pct,
+        color,
+        on: true,
+    })
+    .collect()
+}
+
+/// A number the settings file can hold: finite, without the noise of a
+/// float's last digits.
+fn num_to_str(v: f32) -> String {
+    let r = (v as f64 * 1000.0).round() / 1000.0;
+    format!("{r}")
+}
+
+fn num_from_str(s: &str) -> Option<f32> {
+    s.trim().parse::<f32>().ok().filter(|v| v.is_finite())
+}
+
+/// `107 ff00ff on; 100 ff0000 on; ...`: percentage, colour, drawn.
+fn iso_levels_to_str(levels: &[IsoLevel]) -> String {
+    levels
+        .iter()
+        .map(|l| {
+            format!(
+                "{} {:02x}{:02x}{:02x} {}",
+                num_to_str(l.pct),
+                l.color[0],
+                l.color[1],
+                l.color[2],
+                bool_to_str(l.on)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// What [`iso_levels_to_str`] writes; `None` (the levels stay as they were)
+/// when any entry is not one. `none` is the empty ladder.
+fn iso_levels_from_str(s: &str) -> Option<Vec<IsoLevel>> {
+    if s.trim().eq_ignore_ascii_case("none") {
+        return Some(Vec::new());
+    }
+    s.split(';')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            let mut w = e.split_whitespace();
+            let pct = num_from_str(w.next()?)?.clamp(0.0, 1000.0);
+            let hex = w.next()?.trim_start_matches('#');
+            if hex.len() != 6 {
+                return None;
+            }
+            let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+            let color = [byte(0)?, byte(2)?, byte(4)?];
+            let on = w.next().map_or(Some(true), bool_from_str)?;
+            Some(IsoLevel { pct, color, on })
+        })
+        .collect()
+}
+
+/// The views an overlay is on for, as the settings file writes them:
+/// `axial, sagittal, coronal, 3d` (any of them), `none`.
+fn views_to_str(on: &[bool]) -> String {
+    let names: Vec<&str> = on
+        .iter()
+        .zip(OVERLAY_VIEWS)
+        .filter(|(o, _)| **o)
+        .map(|(_, n)| n)
+        .collect();
+    if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// Read what [`views_to_str`] writes into `out`; `on` / `off` (what the
+/// file held before the views were switched one by one) mean every view
+/// and none. Anything else leaves `out` as it was.
+fn views_from_str(s: &str, out: &mut [bool]) {
+    if let Some(b) = bool_from_str(s) {
+        out.iter_mut().for_each(|o| *o = b);
+        return;
+    }
+    let words: Vec<String> = s
+        .split(',')
+        .map(|w| w.trim().to_ascii_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words
+        .iter()
+        .any(|w| w != "none" && !OVERLAY_VIEWS.contains(&w.as_str()))
+    {
+        return;
+    }
+    for (o, n) in out.iter_mut().zip(OVERLAY_VIEWS) {
+        *o = words.iter().any(|w| w == n);
     }
 }
 
@@ -409,6 +591,8 @@ impl Default for ViewerOverlays {
 pub struct Settings {
     /// What is drawn over the views besides the images.
     pub overlays: ViewerOverlays,
+    /// The dose colorwash's map, range and steps, and the isodose levels.
+    pub dose_colors: DoseColors,
     /// Light / dark / follow-the-system appearance.
     pub theme: ThemePreference,
 
@@ -503,6 +687,7 @@ impl Default for Settings {
         // than following the system, which would surprise existing users.
         Settings {
             overlays: ViewerOverlays::default(),
+            dose_colors: DoseColors::default(),
             theme: ThemePreference::Dark,
             models_dir: None,
             archive_dir: None,
@@ -1258,12 +1443,47 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                 s.pacs_scan_on_open = b;
             }
         } else if key.eq_ignore_ascii_case(OVERLAY_CUBE_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.overlays.orientation_cube = b;
-            }
+            views_from_str(value, &mut s.overlays.orientation_cube);
         } else if key.eq_ignore_ascii_case(OVERLAY_RULER_KEY) {
-            if let Some(b) = bool_from_str(value) {
-                s.overlays.ruler = b;
+            views_from_str(value, &mut s.overlays.ruler);
+        } else if key.eq_ignore_ascii_case(DOSE_COLORMAP_KEY) {
+            if let Some(m) = DoseColormap::from_key(value) {
+                s.dose_colors.map = m;
+            }
+        } else if key.eq_ignore_ascii_case(DOSE_WASH_RANGE_KEY) {
+            // low, high, unit (% or gy)
+            let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+            if let [lo, hi, unit] = parts.as_slice() {
+                let in_gy = match unit.to_ascii_lowercase().as_str() {
+                    "gy" => Some(true),
+                    "%" | "pct" | "percent" => Some(false),
+                    _ => None,
+                };
+                if let (Some(lo), Some(hi), Some(in_gy)) =
+                    (num_from_str(lo), num_from_str(hi), in_gy)
+                {
+                    s.dose_colors.lo = lo.clamp(0.0, 10000.0);
+                    s.dose_colors.hi = hi.clamp(0.0, 10000.0);
+                    s.dose_colors.in_gy = in_gy;
+                }
+            }
+        } else if key.eq_ignore_ascii_case(DOSE_WASH_STEPS_KEY) {
+            // steps, continuous | stepped
+            let parts: Vec<&str> = value.split(',').map(str::trim).collect();
+            if let [n, how] = parts.as_slice() {
+                let stepped = match how.to_ascii_lowercase().as_str() {
+                    "stepped" => Some(true),
+                    "continuous" => Some(false),
+                    _ => None,
+                };
+                if let (Ok(n), Some(stepped)) = (n.parse::<u32>(), stepped) {
+                    s.dose_colors.steps = n.clamp(*DOSE_STEPS.start(), *DOSE_STEPS.end());
+                    s.dose_colors.stepped = stepped;
+                }
+            }
+        } else if key.eq_ignore_ascii_case(DOSE_ISO_LEVELS_KEY) {
+            if let Some(l) = iso_levels_from_str(value) {
+                s.dose_colors.levels = l;
             }
         } else if key.eq_ignore_ascii_case(OVERLAY_BEAMS_KEY) {
             if let Some(b) = bool_from_str(value) {
@@ -1367,13 +1587,36 @@ fn render(s: &Settings) -> String {
         s.graphics_backend.key()
     ));
     out.push_str(&format!(
-        "# drawn over the views (Settings > Viewer) = on | off\n\
+        "# drawn over the views (Settings > Viewer) = any of axial, sagittal, coronal, 3d | none\n\
          {OVERLAY_CUBE_KEY} = {}\n\
          {OVERLAY_RULER_KEY} = {}\n\
+         # the shown plan's beams on the views (Dose and plan display) = on | off\n\
          {OVERLAY_BEAMS_KEY} = {}\n",
-        bool_to_str(s.overlays.orientation_cube),
-        bool_to_str(s.overlays.ruler),
+        views_to_str(&s.overlays.orientation_cube),
+        views_to_str(&s.overlays.ruler),
         bool_to_str(s.overlays.beam_fields)
+    ));
+    let dc = &s.dose_colors;
+    out.push_str(&format!(
+        "# the dose colorwash (Dose and plan display): colour map = rainbow | jet | turbo | viridis | isodose\n\
+         {DOSE_COLORMAP_KEY} = {}\n\
+         # the doses of its two ends: low, high, unit (% of the reference | gy)\n\
+         {DOSE_WASH_RANGE_KEY} = {}, {}, {}\n\
+         # the steps of its scale (legend ticks, bands when stepped), continuous | stepped\n\
+         {DOSE_WASH_STEPS_KEY} = {}, {}\n\
+         # isodose levels: percent, colour (rrggbb), on | off; separated by ; (none: no levels)\n\
+         {DOSE_ISO_LEVELS_KEY} = {}\n",
+        dc.map.key(),
+        num_to_str(dc.lo),
+        num_to_str(dc.hi),
+        if dc.in_gy { "gy" } else { "%" },
+        dc.steps,
+        if dc.stepped { "stepped" } else { "continuous" },
+        if dc.levels.is_empty() {
+            "none".to_string()
+        } else {
+            iso_levels_to_str(&dc.levels)
+        }
     ));
     out.push_str("# what each row of the central area shows, left to right:\n");
     out.push_str("# any of axial, sagittal, coronal, 3d, planar1, planar2, additional, chart\n");
@@ -1630,17 +1873,68 @@ mod tests {
     }
 
     #[test]
+    fn the_dose_colours_round_trip() {
+        let mut levels = default_iso_levels();
+        levels[2].on = false;
+        levels[0].pct = 105.5;
+        levels[1].color = [1, 2, 3];
+        let s = Settings {
+            dose_colors: DoseColors {
+                map: DoseColormap::Viridis,
+                in_gy: true,
+                lo: 2.5,
+                hi: 60.0,
+                steps: 8,
+                stepped: true,
+                levels,
+            },
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&s)), s);
+        let none = Settings {
+            dose_colors: DoseColors {
+                levels: Vec::new(),
+                ..DoseColors::default()
+            },
+            ..Settings::default()
+        };
+        assert_eq!(parse(&render(&none)), none);
+        assert_eq!(parse("").dose_colors, DoseColors::default());
+        // A broken line leaves what was there.
+        let broken = parse("dose_iso_levels = 100 ff0000 on; oops\ndose_wash_steps = x, stepped");
+        assert_eq!(broken.dose_colors, DoseColors::default());
+    }
+
+    #[test]
     fn the_viewer_overlays_round_trip() {
         let s = Settings {
             overlays: ViewerOverlays {
-                orientation_cube: false,
-                ruler: true,
+                orientation_cube: [true, false, false, true],
+                ruler: [false; 3],
                 beam_fields: false,
             },
             ..Settings::default()
         };
         assert_eq!(parse(&render(&s)), s);
-        assert!(parse("").overlays.ruler, "on for a fresh installation");
+        assert_eq!(
+            parse("").overlays.ruler,
+            [true; 3],
+            "on for a fresh installation"
+        );
+        assert_eq!(
+            parse("orientation_cube = off").overlays.orientation_cube,
+            [false; 4],
+            "the file of before the views were switched one by one"
+        );
+        assert_eq!(
+            parse("ruler = Coronal").overlays.ruler,
+            [false, false, true]
+        );
+        assert_eq!(
+            parse("ruler = coronal, mauve").overlays.ruler,
+            [true; 3],
+            "a word it does not know leaves the default"
+        );
     }
 
     #[test]

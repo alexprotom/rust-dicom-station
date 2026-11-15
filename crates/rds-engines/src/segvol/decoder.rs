@@ -346,8 +346,9 @@ impl MaskDecoder {
 
         // One 96-wide filter per mask token.
         let mut hyper_in = Mat::zeros(NUM_MASK_TOKENS, UPSCALED_CHANNELS);
-        for i in 0..NUM_MASK_TOKENS {
-            let row = self.hyper[i].forward(&Mat::row_vec(mask_tokens_out.row(i)));
+        // `hyper` holds NUM_MASK_TOKENS networks, one per token (`build`).
+        for (i, mlp) in self.hyper.iter().enumerate() {
+            let row = mlp.forward(&Mat::row_vec(mask_tokens_out.row(i)));
             hyper_in.row_mut(i).copy_from_slice(&row.data);
         }
         let mut masks = matmul(&hyper_in, &up_mat); // [NUM_MASK_TOKENS, spatial]

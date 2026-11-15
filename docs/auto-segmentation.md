@@ -568,7 +568,15 @@ Nature Methods 2021 (<https://doi.org/10.1038/s41592-020-01323-z>).
   network did not run on it; the text after the colon is what the backend
   said (often a buffer larger than the GPU allows: a phone or tablet GPU
   binds far less memory at once than a desktop one). The CPU runs the same
-  networks.
+  networks. When an nnU-Net model (TotalSegmentator and the like) runs out
+  of GPU memory under *Auto*, the run goes on on the CPU by itself and the
+  device it names says so.
+* **A second run ran out of GPU memory where the first did not** (before
+  0.12.9) - every run left the memory of the threads it ran on held on the
+  GPU; the memory of a thread that ended is now given back by the next one
+  to use the device (`nn::device::memory`). `seg_cli --repeat N` runs a
+  model N times in one process and prints what the GPU still holds after
+  each run.
 * **Download fails behind a proxy** - the downloader uses the OS trust
   store, so an inspection proxy's CA installed system-wide is honoured;
   Hugging Face also rate-limits anonymous downloads now and then: retry, or

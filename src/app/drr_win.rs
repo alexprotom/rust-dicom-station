@@ -515,9 +515,9 @@ impl ViewerApp {
                         },
                     );
                     f.row("Panel", |ui| {
-                        for v in 0..2 {
+                        for mm in &mut g.panel_mm {
                             ui.add(
-                                egui::DragValue::new(&mut g.panel_mm[v])
+                                egui::DragValue::new(mm)
                                     .speed(5.0)
                                     .range(10.0..=2000.0)
                                     .suffix(" mm"),
@@ -525,13 +525,13 @@ impl ViewerApp {
                         }
                     });
                     f.row("Pixels", |ui| {
-                        for v in 0..2 {
-                            let mut n = g.dims[v] as i64;
+                        for d in &mut g.dims {
+                            let mut n = *d as i64;
                             if ui
                                 .add(egui::DragValue::new(&mut n).speed(8.0).range(16..=2048))
                                 .changed()
                             {
-                                g.dims[v] = n as usize;
+                                *d = n as usize;
                             }
                         }
                     });

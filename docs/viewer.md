@@ -104,6 +104,17 @@ load. Three cases arrive at it:
   where one slice happens to lack the tag is still a series. Before, such
   files were dropped silently.
 
+The load's warnings say only what is news. A series of CT, MR, PET or NM
+images (two or more, no secondary captures) with no position in any file is
+named in one line - why it made no volume, and that its images are under
+*Additional* - whether or not another series made the volume, and when
+merged into a workspace too. A selection of single images opened as a
+workspace of its own gets one line saying where they went (*Planar images*,
+*Additional*, only the sections that got some). A selection of RT objects,
+reports or records says nothing about a volume: nothing in it was meant to
+be one, and the same holds for anything added to a workspace that already
+has its volume.
+
 Such a workspace appears in the tree under its patient and study exactly like
 any other, and everything it holds is usable: planar images open in their
 viewers (the *Planar images* section opens itself, since for these workspaces it
@@ -246,8 +257,8 @@ a panel with one slider per structure on top of that, so the target can
 fade while a chamber volume stays solid (*All 100 %* clears them). With a
 dose in the workspace, **Dose on the surface** colours every surface by the
 dose that lands on it, on the
-isodose scale, and **Isodose surfaces** adds the active dose as translucent
-shells at the isodose lines switched on in the Dose display, in their
+colorwash's scale (its colour map and range), and **Isodose surfaces** adds the active dose as translucent
+shells at the isodose lines switched on in the Dose and plan display, in their
 colours and relative to the same reference dose, with their own opacity
 slider; they follow a change of dose, reference or lines by themselves.
 
@@ -359,9 +370,11 @@ structure - [motion-4d.md](motion-4d.md)), **Structure comparison** (any two
 structures measured against each other), **Structure details** (one row
 per structure, with a Dice column against a reference of your choice) and
 **Structure motion** (the 4D motion analysis and its finished runs -
-[motion-4d.md](motion-4d.md)). **Doses**: **Dose display** (how the
+[motion-4d.md](motion-4d.md)). **Doses**: **Dose and plan display** (how the
 displayed dose grid is drawn - colorwash, isodose lines or both, opacity,
-threshold and the isodose ladder; one setting for every workspace, which a
+threshold, the wash's colour map, range and steps (continuous or banded),
+and the isodose ladder, whose levels can be recoloured, changed, added and
+removed ([rt-objects.md](rt-objects.md)); one setting for every workspace, which a
 dose grid's **🎨 Display settings** in the tree also opens), **Dose
 analysis** (the dose metrics table) and **Dose-volume histograms** (both in
 [dvh.md](dvh.md)).
@@ -620,7 +633,7 @@ plan it delivered), failing that under the first study. A DRR is filed
 under the study of the image it was made from (the displayed CT, or the
 radiograph it is laid over). Below the patients are only the setups found
 here (2D/3D registration) and the load's warnings. How dose is drawn -
-colorwash, isodose ladder, opacity, threshold - is the **Dose display**
+colorwash, isodose ladder, opacity, threshold - is the **Dose and plan display**
 module, one setting shared by every workspace.
 
 **Treatment sessions.** A course treated on a room with setup imaging leaves
@@ -690,7 +703,7 @@ drawn as one selectable name, and every object row follows the same rules:
   into Planar 1 and 2, a report, registration or treatment record into
   Additional - and the second click takes it out. Whether a dose is drawn is
   each workspace's own, as its structures and plans are; *how* it is drawn
-  is the Dose display module, shared. Three rows keep what they show on a
+  is the Dose and plan display module, shared. Three rows keep what they show on a
   second click, because there is always one: the **image series** on
   display (the views and every tool work on it), the **setup** the 2D/3D
   section shows, and the **structure or segment** being edited (its

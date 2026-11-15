@@ -8,6 +8,13 @@
 //! works with a tiny computation before anything depends on it; [`guarded`]
 //! turns a backend panic into an error, so a worker thread survives it and
 //! the user sees what the backend said instead of a vanished job.
+//!
+//! The device's memory is held per thread (see [`memory`]): cubecl gives
+//! every thread a stream of its own with pools of its own, and those pools
+//! keep each buffer they ever made until asked to let go. Every run happens
+//! on a new thread, so without [`memory`] each run of a model added its
+//! whole working set to what the previous ones still held, and the second
+//! run of a large model ran out of GPU memory.
 
 use anyhow::Result;
 
@@ -76,11 +83,21 @@ pub fn describe_cpu() -> String {
 /// Run `f`, turning a panic inside the GPU backend into an error that says
 /// what the backend said (see [`panics::cause`]).
 pub fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    #[cfg(feature = "gpu")]
+    memory::enter();
     let mark = panics::mark();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|p| {
         let cause = panics::cause(mark, panic_text(p.as_ref()));
         anyhow::anyhow!("GPU inference failed (backend panic: {})", explain(&cause))
     })?
+}
+
+/// Whether an error is the GPU running out of memory: the device refusing
+/// a buffer (wgpu's "Out of Memory") or one larger than it gives at once.
+/// The CPU has the room such a run needs.
+pub fn is_out_of_memory(e: &anyhow::Error) -> bool {
+    let text = format!("{e:#}").to_ascii_lowercase();
+    text.contains("out of memory") || text.contains("allocate buffer of size")
 }
 
 /// A backend message, with what it means when that is not obvious.
@@ -205,12 +222,18 @@ impl GpuContext {
     /// The inference device, opened on first use (see [`open`]).
     pub fn try_new() -> Result<GpuContext> {
         match GPU.get_or_init(open::first_working) {
-            Ok(ctx) => Ok(ctx.clone()),
+            Ok(ctx) => {
+                memory::enter();
+                Ok(ctx.clone())
+            }
             Err(why) => anyhow::bail!("{why}"),
         }
     }
 
+    /// The device, for burn tensors: the calling thread is noted as one
+    /// that holds memory on it (see [`memory`]).
     pub fn device(&self) -> &burn::backend::wgpu::WgpuDevice {
+        memory::enter();
         &self.device
     }
 
@@ -404,7 +427,10 @@ mod open {
             .spawn(move || {
                 let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let device = init_device(setup, RuntimeOptions::default());
-                    self_test(&device).map(|()| device)
+                    let tested = self_test(&device);
+                    // This thread ends here; what its test held goes back.
+                    super::memory::release(&device);
+                    tested.map(|()| device)
                 }));
                 let _ = tx.send(made.unwrap_or_else(|p| Err(super::panic_text(p.as_ref()))));
             })
@@ -470,6 +496,158 @@ mod open {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
+}
+
+/// GPU memory, thread by thread.
+///
+/// cubecl (under burn) keeps one stream per thread that uses the device -
+/// the thread's number modulo 128 - and each stream has its own memory
+/// pools. The pools burn configures (`MemoryConfiguration::SubSlices`) never
+/// give a buffer back by themselves: a freed tensor's slice is only marked
+/// free for the next tensor *of the same stream*, and the buffer goes back
+/// to the driver only on an explicit cleanup, which acts on the calling
+/// thread's stream alone. A run of a model happens on a thread of its own
+/// (a job, an MCP call), and the nnU-Net path forwards each part's windows
+/// on yet another (`autoseg::infer`, the look-ahead), so when those threads
+/// ended their pools stayed full: one run of TotalSegmentator's `total`
+/// left five parts' worth of activations behind, and the second run ran
+/// out of memory in its second part.
+///
+/// So every thread that works on the device is noted ([`enter`], called by
+/// [`GpuContext::device`], [`GpuContext::try_new`] and [`guarded`]); when it
+/// ends, its stream is put on a list, and the next thread to use the device
+/// finishes that stream's queued work (burn-fusion queues a tensor's
+/// release until the stream next runs) and has its pools give back every
+/// buffer nothing uses, acting as that stream through
+/// [`StreamId::executes`]. Nothing of cubecl runs inside the thread-local's
+/// destructor itself, where the backend's own thread-locals may already be
+/// gone. A thread that lives on (the command-line tools, a rayon worker)
+/// keeps its pools for its next run, which reuses them; [`release_all`]
+/// gives them back at a point of the caller's choosing.
+///
+/// One leak remains that this cannot reach: burn-fusion does not release a
+/// tensor dropped while a panic unwinds, so a run that failed inside the
+/// backend (an out-of-memory panic) leaves its live tensors allocated.
+#[cfg(feature = "gpu")]
+pub mod memory {
+    use std::cell::OnceCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use burn::backend::wgpu::WgpuDevice;
+    use burn::backend::Wgpu;
+    use burn::cubecl::stream_id::StreamId;
+    use burn::tensor::backend::Backend;
+
+    /// The streams of the threads that used the device and have ended.
+    static ENDED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+    /// Whether [`ENDED`] has anything: checked on every [`enter`].
+    static ANY_ENDED: AtomicBool = AtomicBool::new(false);
+
+    /// A thread's stream, put on [`ENDED`] when the thread ends.
+    struct Noted(u64);
+
+    impl Drop for Noted {
+        fn drop(&mut self) {
+            ENDED.lock().unwrap_or_else(|p| p.into_inner()).push(self.0);
+            ANY_ENDED.store(true, Ordering::Release);
+        }
+    }
+
+    std::thread_local! {
+        static NOTED: OnceCell<Noted> = const { OnceCell::new() };
+    }
+
+    /// The device, when it has been opened; nothing here opens it.
+    fn device() -> Option<&'static WgpuDevice> {
+        match super::GPU.get() {
+            Some(Ok(ctx)) => Some(&ctx.device),
+            _ => None,
+        }
+    }
+
+    /// Note the calling thread as one that holds memory on the device, and
+    /// give back what the threads that have ended still held.
+    pub fn enter() {
+        let Some(device) = device() else { return };
+        // `try_with`: a destructor running at the thread's end may drop a
+        // network after this thread-local is gone.
+        let _ = NOTED.try_with(|n| {
+            n.get_or_init(|| Noted(StreamId::current().value));
+        });
+        if ANY_ENDED.load(Ordering::Acquire) {
+            reclaim(device);
+        }
+    }
+
+    /// Give back what the streams of ended threads hold.
+    fn reclaim(device: &WgpuDevice) {
+        let ended = {
+            let mut list = ENDED.lock().unwrap_or_else(|p| p.into_inner());
+            ANY_ENDED.store(false, Ordering::Release);
+            std::mem::take(&mut *list)
+        };
+        for value in ended {
+            StreamId { value }.executes(|| release(device));
+        }
+    }
+
+    /// Run the calling stream's queued work, then give back every buffer of
+    /// its pools that holds no live tensor. A failure (a device already
+    /// lost) is logged, not raised: nothing depends on the memory coming
+    /// back but the next run.
+    pub fn release(device: &WgpuDevice) {
+        let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let synced = <Wgpu as Backend>::sync(device);
+            <Wgpu as Backend>::memory_cleanup(device);
+            synced
+        }));
+        match done {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("GPU memory release: {e:?}"),
+            Err(p) => eprintln!("GPU memory release: {}", super::panic_text(p.as_ref())),
+        }
+    }
+
+    /// Give back what the calling thread and every ended one hold: at the
+    /// end of a run on a thread that lives on, or before trying again after
+    /// running out of memory.
+    pub fn release_all() {
+        if let Some(device) = device() {
+            reclaim(device);
+            release(device);
+        }
+    }
+
+    /// The bytes the device's pools hold, over every stream, and how many
+    /// streams hold any (diagnostics: `autoseg_cli --repeat`).
+    pub fn held() -> Option<(u64, usize)> {
+        use burn::backend::wgpu::WgpuRuntime;
+        use burn::cubecl::config::RuntimeConfig;
+        use burn::cubecl::Runtime;
+        let device = device()?;
+        let client = WgpuRuntime::client(device);
+        let streams = burn::cubecl::config::CubeClRuntimeConfig::get()
+            .streaming
+            .max_streams as u64;
+        let (mut bytes, mut holding) = (0, 0);
+        for value in 0..streams {
+            let usage = StreamId { value }.executes(|| client.memory_usage());
+            if let Ok(u) = usage {
+                if u.bytes_reserved > 0 {
+                    bytes += u.bytes_reserved;
+                    holding += 1;
+                }
+            }
+        }
+        Some((bytes, holding))
+    }
+}
+
+/// Without the `gpu` feature there is no device memory to give back.
+#[cfg(not(feature = "gpu"))]
+pub mod memory {
+    pub fn release_all() {}
 }
 
 /// The message a panic carried, for an error the user reads.
@@ -601,6 +779,62 @@ mod tests {
             "{e}"
         );
         assert!(!e.contains("unwrap"), "{e}");
+    }
+
+    /// What a thread that ended held on the GPU stays held (cubecl's pools
+    /// are per thread and keep their buffers), until the next user of the
+    /// device gives it back. Needs a GPU:
+    /// `RDS_GPU_TESTS=1 cargo test -p rds-engines --release -- --ignored gpu_memory`.
+    #[cfg(feature = "gpu")]
+    #[test]
+    #[ignore]
+    fn gpu_memory_of_an_ended_thread_comes_back() {
+        if std::env::var_os("RDS_GPU_TESTS").is_none() {
+            eprintln!("RDS_GPU_TESTS is not set");
+            return;
+        }
+        use burn::backend::Wgpu;
+        use burn::tensor::Tensor;
+        const MB: u64 = 1 << 20;
+        let ctx = GpuContext::try_new().expect("a GPU");
+        memory::release_all();
+        let (before, _) = memory::held().unwrap();
+        let worker = ctx.clone();
+        std::thread::spawn(move || {
+            let t = Tensor::<Wgpu, 1>::ones([(64 * MB / 4) as usize], worker.device());
+            let s: f32 = (t * 2.0).sum().into_scalar();
+            assert_eq!(s, (64 * MB / 2) as f32);
+        })
+        .join()
+        .unwrap();
+        let (left, streams) = memory::held().unwrap();
+        eprintln!(
+            "before {} MB; after the thread ended {} MB in {streams} stream(s)",
+            before / MB,
+            left / MB
+        );
+        assert!(
+            left >= before + 64 * MB,
+            "the thread's pool held its tensors"
+        );
+        memory::release_all();
+        let (after, _) = memory::held().unwrap();
+        eprintln!("given back: {} MB left", after / MB);
+        assert!(after <= before, "{after} bytes left of {before}");
+    }
+
+    #[test]
+    fn running_out_of_gpu_memory_is_recognised() {
+        let e =
+            anyhow::anyhow!("GPU inference failed (backend panic: wgpu error: Out of Memory\n)")
+                .context("GPU forward")
+                .context("inference (v3 1.5 mm vertebrae (2/5))");
+        assert!(is_out_of_memory(&e));
+        let r: Result<()> = guarded(|| {
+            panic!("called `Result::unwrap()` on an `Err` value: can't allocate buffer of size: 7")
+        });
+        assert!(is_out_of_memory(&r.unwrap_err()));
+        assert!(!is_out_of_memory(&anyhow::anyhow!("GPU readback failed")));
     }
 
     #[test]

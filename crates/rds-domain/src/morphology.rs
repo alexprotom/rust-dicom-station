@@ -248,13 +248,14 @@ fn pass_along(f: &mut [f32], dims: [usize; 3], axis: usize, step: f32, sweep: Sw
         |e, &base| {
             // Gather the line, reversed for a backward sweep so that the
             // same forward machinery serves both.
-            for q in 0..n {
+            // `d` and `out` hold n values (`Envelope::new(n)`).
+            for (q, d) in e.d.iter_mut().enumerate() {
                 let src = if sweep == Sweep::Backward {
                     n - 1 - q
                 } else {
                     q
                 };
-                e.d[q] = unsafe { *ptr.get().add(base + src * stride) };
+                *d = unsafe { *ptr.get().add(base + src * stride) };
             }
             let mut k = 0usize;
             e.v[0] = 0;
@@ -313,13 +314,13 @@ fn pass_along(f: &mut [f32], dims: [usize; 3], axis: usize, step: f32, sweep: Sw
                     };
                 }
             }
-            for q in 0..n {
+            for (q, &value) in e.out.iter().enumerate() {
                 let dst = if sweep == Sweep::Backward {
                     n - 1 - q
                 } else {
                     q
                 };
-                unsafe { *ptr.get().add(base + dst * stride) = e.out[q] };
+                unsafe { *ptr.get().add(base + dst * stride) = value };
             }
         },
     );

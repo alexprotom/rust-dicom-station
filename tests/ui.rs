@@ -197,7 +197,7 @@ const MODULES: [&str; 15] = [
     "Structure comparison",
     "Structure details",
     "Structure motion",
-    "Dose display",
+    "Dose and plan display",
     "Dose analysis",
     "Dose-volume histograms",
     "Workflows",
@@ -266,6 +266,97 @@ fn every_widget_of_the_module_sections_has_a_name() {
         );
     }
     assert_all_named(&ui, "the module sections, unfolded");
+}
+
+/// *Dose and plan display*: the colorwash's scale (map, range, steps,
+/// bands) and the isodose ladder are there and named, a level can be
+/// removed and added, the map changed, and what was chosen is written to
+/// the settings.
+#[test]
+fn the_dose_colour_scale_and_levels_can_be_edited() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let out = common::target_dir("ui-test-out");
+    for step in [
+        r#"{"click": {"label": "Modules", "role": "button"}}"#,
+        r#"{"click": {"label": "Dose and plan display", "role": "checkbox"}}"#,
+        r#"{"key": "Escape"}"#,
+    ] {
+        ui.run_step(&serde_json::from_str(step).unwrap(), &out)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{step}: {e:#}
+{}",
+                    ui.tree_text()
+                )
+            });
+    }
+    let arrow = Target::label("Unfold Dose and plan display");
+    if ui.has(&arrow) {
+        ui.invoke(&arrow).unwrap();
+    } else {
+        ui.invoke(&Target::label("Dose and plan display").role("button"))
+            .unwrap();
+    }
+    ui.settle(SETTLE);
+    for name in [
+        "Colour map",
+        "Rainbow",
+        "From",
+        "Steps",
+        "Stepped bands",
+        "Limits in percent of each workspace's reference",
+        "Colour of the 107 % level",
+        "Show the 107 % level",
+        "Remove the 30 % level",
+        "Default levels",
+    ] {
+        assert!(
+            ui.has(&Target::containing(name)),
+            "no \"{name}\":
+{}",
+            ui.tree_text()
+        );
+    }
+    assert!(ui.has(&Target::label("Gy").role("button")));
+    // The tree has a *Remove the ticked structures* of its own.
+    let removes = |ui: &headless::Ui| {
+        ui.find_all(&Target::containing("Remove the ").role("button"))
+            .iter()
+            .filter(|h| h.text.ends_with("% level"))
+            .count()
+    };
+    assert_eq!(removes(&ui), 8, "the eight default levels");
+    assert_all_named(&ui, "the dose display section");
+
+    // One level less, one more halfway under the new lowest (50 %).
+    ui.invoke(&Target::label("Remove the 30 % level")).unwrap();
+    ui.settle(SETTLE);
+    assert!(!ui.has_label("Remove the 30 % level"));
+    assert_eq!(removes(&ui), 7);
+    ui.invoke(&Target::containing("Add level").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert!(ui.has_label("Remove the 25 % level"), "{}", ui.tree_text());
+
+    // Another map, and banded.
+    ui.invoke(&Target::label("Rainbow")).unwrap();
+    ui.settle(SETTLE);
+    ui.invoke(&Target::label("Viridis")).unwrap();
+    ui.settle(SETTLE);
+    ui.invoke(&Target::label("Stepped bands").role("checkbox"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert!(ui.has_label("Viridis"), "{}", ui.tree_text());
+
+    let saved = rust_dicom_station::settings::load().dose_colors;
+    assert_eq!(
+        saved.map,
+        rust_dicom_station::settings::DoseColormap::Viridis
+    );
+    assert!(saved.stepped);
+    let pcts: Vec<f32> = saved.levels.iter().map(|l| l.pct).collect();
+    assert!(pcts.contains(&25.0) && !pcts.contains(&30.0), "{pcts:?}");
 }
 
 #[test]

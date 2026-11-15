@@ -153,8 +153,8 @@ pub(super) fn matrix_editor(
             .num_columns(4)
             .spacing([4.0, 2.0])
             .show(ui, |ui| {
-                for r in 0..4 {
-                    for c in 0..4 {
+                for (r, row) in state.m.0.iter_mut().enumerate() {
+                    for (c, cell) in row.iter_mut().enumerate() {
                         if r == 3 {
                             // Shown so the matrix is the whole matrix, but
                             // not editable. The decimals are capped as the
@@ -164,7 +164,7 @@ pub(super) fn matrix_editor(
                             // of the whole grid.
                             ui.add_enabled(
                                 false,
-                                egui::DragValue::new(&mut state.m.0[r][c].clone())
+                                egui::DragValue::new(&mut cell.clone())
                                     .speed(0.0)
                                     .max_decimals(3),
                             );
@@ -175,11 +175,7 @@ pub(super) fn matrix_editor(
                         // nonsense of it.
                         let speed = if c == 3 { 0.5 } else { 0.005 };
                         changed |= ui
-                            .add(
-                                egui::DragValue::new(&mut state.m.0[r][c])
-                                    .speed(speed)
-                                    .max_decimals(6),
-                            )
+                            .add(egui::DragValue::new(cell).speed(speed).max_decimals(6))
                             .changed();
                     }
                     ui.end_row();

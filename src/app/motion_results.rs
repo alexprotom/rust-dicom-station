@@ -450,12 +450,9 @@ impl ViewerApp {
         }
         // The chart pane follows the run picked here.
         if sel != self.motion_sel || cmp != self.motion_cmp {
-            for s in 0..MAX_WORKSPACES {
-                if matches!(
-                    self.chart[s],
-                    Some(super::chart_pane::ChartSource::Motion(_))
-                ) {
-                    self.chart[s] = Some(super::chart_pane::ChartSource::Motion(sel));
+            for chart in &mut self.chart {
+                if matches!(chart, Some(super::chart_pane::ChartSource::Motion(_))) {
+                    *chart = Some(super::chart_pane::ChartSource::Motion(sel));
                 }
             }
             if sel != self.motion_sel {

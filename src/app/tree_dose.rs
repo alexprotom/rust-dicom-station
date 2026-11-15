@@ -1,6 +1,6 @@
 //! The data tree's dose section: the dose grids of a study, what radiation
 //! each is of, and which one is displayed. How it is drawn, and the
-//! reference dose it is drawn against, is the *Dose display* module
+//! reference dose it is drawn against, is the *Dose and plan display* module
 //! (`dose_display.rs`).
 
 use super::*;
@@ -99,7 +99,7 @@ impl ViewerApp {
                             }
                             if ui
                                 .button("🎨 Display settings")
-                                .on_hover_text("Open the Dose display module")
+                                .on_hover_text("Open the Dose and plan display module")
                                 .clicked()
                             {
                                 display = true;
@@ -153,7 +153,7 @@ impl ViewerApp {
     }
 
     /// Draw dose grid `pick` in this workspace, or (`None`) none at all. A
-    /// grid to draw turns dose display on if it was off; the *Dose display*
+    /// grid to draw turns dose display on if it was off; the *Dose and plan display*
     /// section decides how it is drawn.
     pub(super) fn show_dose(&mut self, slot: usize, pick: Option<usize>) {
         match pick {

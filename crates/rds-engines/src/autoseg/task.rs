@@ -575,10 +575,13 @@ impl infer::InferHooks for Hooks<'_> {
     /// whole logits first, and a tile ahead would hold several of those.
     fn overlaps(&self) -> bool {
         #[cfg(feature = "gpu")]
-        if matches!(&self.nets.nets, Nets::Gpu(g) if g.len() == 1) {
-            return true;
+        {
+            matches!(&self.nets.nets, Nets::Gpu(g) if g.len() == 1)
         }
-        false
+        #[cfg(not(feature = "gpu"))]
+        {
+            false
+        }
     }
 
     fn tile_done(&self, done: usize, total: usize) -> bool {
@@ -701,12 +704,15 @@ fn run_parts(
     }
 
     progress.set("Choosing the compute device");
-    let gpu = device.resolve()?;
-    let device_desc = gpu
+    let mut gpu = device.resolve()?;
+    let mut device_desc = gpu
         .as_ref()
         .map(|ctx| ctx.describe())
         .unwrap_or_else(crate::nn::device::describe_cpu);
     progress.set_device(&device_desc);
+    // What the user reads as the device: `device_desc`, unless the GPU ran
+    // out of memory and the run went on on the CPU.
+    let mut shown_desc = device_desc.clone();
 
     phase(progress, 0.15, 0.05);
     progress.report(
@@ -731,39 +737,59 @@ fn run_parts(
     for (mi, (config, part)) in configs.iter().zip(parts).enumerate() {
         phase(progress, 0.2 + mi as f32 * infer_span, infer_span);
         let dir = root.join(part.spec.home.subdir());
-        let nets = part_nets(
-            part,
-            &dir,
-            max_folds,
-            config,
-            gpu.as_ref(),
-            &device_desc,
-            progress,
-        )?;
-        // A z-score model normalizes against this image, so its constants
-        // are only knowable now, with the resampled volume in hand; the
-        // networks themselves do not depend on them.
-        let mut cfg = config.clone();
-        cfg.apply_image_norm(&vol_model);
-        let hooks = Hooks {
-            nets: &nets,
-            patch: cfg.patch_size,
-            arena: Mutex::new(cpu::Arena::default()),
-            progress,
-            model: (mi, n_models),
-            label: task.label,
+        // One part on one device; its networks and tensors are gone when
+        // this returns, whatever it returns.
+        let run_part =
+            |gpu: Option<&crate::nn::device::GpuContext>, device_desc: &str| -> Result<Vec<u8>> {
+                let nets = part_nets(part, &dir, max_folds, config, gpu, device_desc, progress)?;
+                // A z-score model normalizes against this image, so its constants
+                // are only knowable now, with the resampled volume in hand; the
+                // networks themselves do not depend on them.
+                let mut cfg = config.clone();
+                cfg.apply_image_norm(&vol_model);
+                let hooks = Hooks {
+                    nets: &nets,
+                    patch: cfg.patch_size,
+                    arena: Mutex::new(cpu::Arena::default()),
+                    progress,
+                    model: (mi, n_models),
+                    label: task.label,
+                };
+                infer::predict(
+                    &vol_model,
+                    map.model_dims,
+                    nets.classes,
+                    &cfg,
+                    task.step,
+                    &hooks,
+                )
+                .with_context(|| format!("inference ({})", part.spec.label))
+            };
+        let local = match run_part(gpu.as_ref(), &device_desc) {
+            // The GPU had not the room: under `Auto` the part, and the rest
+            // of the run, go on on the CPU rather than end the run. What the
+            // failed attempt held goes back first (see `memory`).
+            Err(e)
+                if gpu.is_some()
+                    && device == DevicePref::Auto
+                    && crate::nn::device::is_out_of_memory(&e) =>
+            {
+                eprintln!("{}: {e:#}; going on on the CPU", task.label);
+                crate::nn::device::memory::release_all();
+                gpu = None;
+                device_desc = crate::nn::device::describe_cpu();
+                shown_desc = format!("{device_desc}; the GPU ran out of memory");
+                progress.set_device(&shown_desc);
+                run_part(None, &device_desc)?
+            }
+            r => r?,
         };
-        let local = infer::predict(
-            &vol_model,
-            map.model_dims,
-            nets.classes,
-            &cfg,
-            task.step,
-            &hooks,
-        )
-        .with_context(|| format!("inference ({})", part.spec.label))?;
-        drop(hooks);
-        drop(nets);
+        // The part's windows ran on a thread of their own, now ended, and
+        // its networks are dropped: their memory goes back before the next
+        // part, whose windows and weights have other sizes.
+        if gpu.is_some() {
+            crate::nn::device::memory::release_all();
+        }
         // Merge: the network's labels through its table; later parts win.
         for (g, l) in global.iter_mut().zip(local.iter()) {
             if *l != 0 {
@@ -799,7 +825,7 @@ fn run_parts(
             super::v1::apply_post(&mut labels, volume.dims, volume.spacing, &rules);
         }
     }
-    Ok((labels, device_desc))
+    Ok((labels, shown_desc))
 }
 
 #[cfg(test)]
