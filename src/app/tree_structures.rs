@@ -113,8 +113,10 @@ impl ViewerApp {
                             &set.label
                         };
                         let selected = active_set == Some(i);
-                        let resp = Self::series_row(
+                        let (resp, list_open) = Self::folding_series_row(
                             ui,
+                            ("roi_list", slot, i),
+                            selected,
                             selected,
                             structs_shown,
                             format!(
@@ -208,187 +210,197 @@ impl ViewerApp {
                         let Some(ss) = (if selected { sets.get(i) } else { None }) else {
                             continue;
                         };
-                        let selection: Vec<usize> = vis
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, v)| **v)
-                            .map(|(i, _)| i)
-                            .collect();
-                        ui.horizontal_wrapped(|ui| {
-                            if small_tip_button(ui, "All", "Show every structure") {
-                                vis.iter_mut().for_each(|v| *v = true);
-                            }
-                            if ui.small_button("None").clicked() {
-                                vis.iter_mut().for_each(|v| *v = false);
-                            }
-                            if me.derived[slot]
-                                .items
+                        // Folded away by the arrow on the set's row, as a
+                        // modality folds its series.
+                        if !list_open {
+                            continue;
+                        }
+                        ui.indent(("roi_list_body", slot, i), |ui| {
+                            let selection: Vec<usize> = vis
                                 .iter()
-                                .any(|s| matches!(s, Some(crate::derived::Status::NeedsUpdate)))
-                                && ui
-                                    .add_enabled(
-                                        has_volume,
-                                        egui::Button::new("Update derived").small(),
-                                    )
-                                    .on_hover_text("Update the out-of-date derived structures")
-                                    .clicked()
-                            {
-                                update_derived = true;
-                            }
-                            me.selection_buttons(ui, here, &selection, &mut item_act);
-                        });
-                        let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
-                        for (i, roi) in ss.rois.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                let mut color = roi.color;
-                                if color_swatch(ui, &mut color, &roi.name) {
-                                    new_color = Some((i, color));
+                                .enumerate()
+                                .filter(|(_, v)| **v)
+                                .map(|(i, _)| i)
+                                .collect();
+                            ui.horizontal_wrapped(|ui| {
+                                if small_tip_button(ui, "All", "Show every structure") {
+                                    vis.iter_mut().for_each(|v| *v = true);
                                 }
-                                // Shown or not is the tick box; selected - the
-                                // one the editor and the contour tools work
-                                // on - is the name, as in the segmentation list.
-                                let tick = ui
-                                    .checkbox(&mut vis[i], "")
-                                    .named_with(|| format!("Show {}", roi.name))
-                                    .tip("Show this structure\nShift-click: tick a range");
-                                if tick.clicked() {
-                                    new_anchor =
-                                        Some((here, apply_tick(&mut vis, i, shift, anchor)));
+                                if ui.small_button("None").clicked() {
+                                    vis.iter_mut().for_each(|v| *v = false);
                                 }
-                                // Derived: green circle up to date, red square
-                                // out of date, yellow triangle overridden. It
-                                // goes *before* the name, because a name is as
-                                // long as it likes and a narrow panel would
-                                // push a marker at the end off the edge.
-                                if let Some(st) = me.derived_status(slot, i) {
-                                    let c = st.color();
-                                    ui.label(egui::RichText::new(st.glyph()).color(theme::rgb(c)))
-                                        .on_hover_text(format!(
-                                            "Derived structure: {}",
-                                            st.label()
-                                        ));
-                                }
-                                // The name stays live under any study: renaming,
-                                // removing and copying need no image volume. What
-                                // draws - editing it, the crosshair - waits for one.
-                                let resp = ui
-                                    .add(
-                                        egui::Button::selectable(
-                                            edit_roi == Some(i),
-                                            format!(
-                                                "{}{}",
-                                                roi.name,
-                                                if roi.roi_type.is_empty() {
-                                                    String::new()
-                                                } else {
-                                                    format!("  [{}]", roi.roi_type)
-                                                }
-                                            ),
+                                if me.derived[slot]
+                                    .items
+                                    .iter()
+                                    .any(|s| matches!(s, Some(crate::derived::Status::NeedsUpdate)))
+                                    && ui
+                                        .add_enabled(
+                                            has_volume,
+                                            egui::Button::new("Update derived").small(),
                                         )
-                                        .wrap(),
-                                    )
-                                    .on_hover_text(format!(
-                                        "ROI {} · {} contour(s)",
-                                        roi.number,
-                                        roi.contours.len()
-                                    ));
-                                Self::keyboard_badge(
-                                    ui,
-                                    current.as_ref()
-                                        == Some(&RenameTarget::Item { set: here, idx: i }),
-                                );
-                                Self::focus_row(
-                                    ui,
-                                    &resp,
-                                    RenameTarget::Item { set: here, idx: i },
-                                    current,
-                                    &mut focus,
-                                );
-                                if resp.clicked() && has_volume {
-                                    new_edit = Some(i);
+                                        .on_hover_text("Update the out-of-date derived structures")
+                                        .clicked()
+                                {
+                                    update_derived = true;
                                 }
-                                resp.context_menu(|ui| {
-                                    if enabled_tip_button(
-                                        ui,
-                                        has_volume,
-                                        "📝 Edit in the Structure editor",
-                                        "Open it in the Structure editor",
-                                    ) {
-                                        open_editor = Some(i);
-                                        ui.close();
+                                me.selection_buttons(ui, here, &selection, &mut item_act);
+                            });
+                            let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
+                            for (i, roi) in ss.rois.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    let mut color = roi.color;
+                                    if color_swatch(ui, &mut color, &roi.name) {
+                                        new_color = Some((i, color));
                                     }
-                                    if enabled_tip_button(
-                                        ui,
-                                        has_volume,
-                                        "⌖ Localize",
-                                        "Put the crosshair on it",
-                                    ) {
-                                        poi_act = Some((PoiAct::Localize, i));
-                                        ui.close();
+                                    // Shown or not is the tick box; selected - the
+                                    // one the editor and the contour tools work
+                                    // on - is the name, as in the segmentation list.
+                                    let tick = ui
+                                        .checkbox(&mut vis[i], "")
+                                        .named_with(|| format!("Show {}", roi.name))
+                                        .tip("Show this structure\nShift-click: tick a range");
+                                    if tick.clicked() {
+                                        new_anchor =
+                                            Some((here, apply_tick(&mut vis, i, shift, anchor)));
                                     }
-                                    if roi.is_poi() {
+                                    // Derived: green circle up to date, red square
+                                    // out of date, yellow triangle overridden. It
+                                    // goes *before* the name, because a name is as
+                                    // long as it likes and a narrow panel would
+                                    // push a marker at the end off the edge.
+                                    if let Some(st) = me.derived_status(slot, i) {
+                                        let c = st.color();
+                                        ui.label(
+                                            egui::RichText::new(st.glyph()).color(theme::rgb(c)),
+                                        )
+                                        .on_hover_text(
+                                            format!("Derived structure: {}", st.label()),
+                                        );
+                                    }
+                                    // The name stays live under any study: renaming,
+                                    // removing and copying need no image volume. What
+                                    // draws - editing it, the crosshair - waits for one.
+                                    let resp = ui
+                                        .add(
+                                            egui::Button::selectable(
+                                                edit_roi == Some(i),
+                                                format!(
+                                                    "{}{}",
+                                                    roi.name,
+                                                    if roi.roi_type.is_empty() {
+                                                        String::new()
+                                                    } else {
+                                                        format!("  [{}]", roi.roi_type)
+                                                    }
+                                                ),
+                                            )
+                                            .wrap(),
+                                        )
+                                        .on_hover_text(format!(
+                                            "ROI {} · {} contour(s)",
+                                            roi.number,
+                                            roi.contours.len()
+                                        ));
+                                    Self::keyboard_badge(
+                                        ui,
+                                        current.as_ref()
+                                            == Some(&RenameTarget::Item { set: here, idx: i }),
+                                    );
+                                    Self::focus_row(
+                                        ui,
+                                        &resp,
+                                        RenameTarget::Item { set: here, idx: i },
+                                        current,
+                                        &mut focus,
+                                    );
+                                    if resp.clicked() && has_volume {
+                                        new_edit = Some(i);
+                                    }
+                                    resp.context_menu(|ui| {
                                         if enabled_tip_button(
                                             ui,
                                             has_volume,
-                                            "Move to the crosshair",
-                                            "Move the point to the crosshair",
+                                            "📝 Edit in the Structure editor",
+                                            "Open it in the Structure editor",
                                         ) {
-                                            poi_act = Some((PoiAct::MoveHere, i));
+                                            open_editor = Some(i);
                                             ui.close();
                                         }
-                                        if !roi.is_localization()
-                                            && ui
-                                                .button("Make the localization point")
-                                                .on_hover_text(
-                                                    "The point the patient is lined up on",
-                                                )
-                                                .clicked()
-                                        {
-                                            poi_act = Some((PoiAct::Localization, i));
+                                        if enabled_tip_button(
+                                            ui,
+                                            has_volume,
+                                            "⌖ Localize",
+                                            "Put the crosshair on it",
+                                        ) {
+                                            poi_act = Some((PoiAct::Localize, i));
                                             ui.close();
                                         }
-                                    } else if enabled_tip_button(
-                                        ui,
-                                        has_volume,
-                                        "+ POI at its centre",
-                                        "New point at the centre of gravity",
-                                    ) {
-                                        poi_act = Some((PoiAct::AtCentre, i));
-                                        ui.close();
+                                        if roi.is_poi() {
+                                            if enabled_tip_button(
+                                                ui,
+                                                has_volume,
+                                                "Move to the crosshair",
+                                                "Move the point to the crosshair",
+                                            ) {
+                                                poi_act = Some((PoiAct::MoveHere, i));
+                                                ui.close();
+                                            }
+                                            if !roi.is_localization()
+                                                && ui
+                                                    .button("Make the localization point")
+                                                    .on_hover_text(
+                                                        "The point the patient is lined up on",
+                                                    )
+                                                    .clicked()
+                                            {
+                                                poi_act = Some((PoiAct::Localization, i));
+                                                ui.close();
+                                            }
+                                        } else if enabled_tip_button(
+                                            ui,
+                                            has_volume,
+                                            "+ POI at its centre",
+                                            "New point at the centre of gravity",
+                                        ) {
+                                            poi_act = Some((PoiAct::AtCentre, i));
+                                            ui.close();
+                                        }
+                                        ui.separator();
+                                        me.item_context_menu(
+                                            ui,
+                                            here,
+                                            i,
+                                            &roi.name,
+                                            &selection,
+                                            &mut item_act,
+                                        )
+                                    });
+                                    if let Some(p) = roi.point() {
+                                        ui.label(
+                                            egui::RichText::new(if roi.is_localization() {
+                                                "🎯"
+                                            } else {
+                                                "✱"
+                                            })
+                                            .weak(),
+                                        )
+                                        .on_hover_text(
+                                            format!(
+                                                "{}\n{:.1}, {:.1}, {:.1} mm",
+                                                if roi.is_localization() {
+                                                    "The localization point"
+                                                } else {
+                                                    "Point of interest"
+                                                },
+                                                p.x,
+                                                p.y,
+                                                p.z
+                                            ),
+                                        );
                                     }
-                                    ui.separator();
-                                    me.item_context_menu(
-                                        ui,
-                                        here,
-                                        i,
-                                        &roi.name,
-                                        &selection,
-                                        &mut item_act,
-                                    )
                                 });
-                                if let Some(p) = roi.point() {
-                                    ui.label(
-                                        egui::RichText::new(if roi.is_localization() {
-                                            "🎯"
-                                        } else {
-                                            "✱"
-                                        })
-                                        .weak(),
-                                    )
-                                    .on_hover_text(format!(
-                                        "{}\n{:.1}, {:.1}, {:.1} mm",
-                                        if roi.is_localization() {
-                                            "The localization point"
-                                        } else {
-                                            "Point of interest"
-                                        },
-                                        p.x,
-                                        p.y,
-                                        p.z
-                                    ));
-                                }
-                            });
-                        }
+                            }
+                        });
                     }
                 },
             );

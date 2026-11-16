@@ -326,6 +326,55 @@ impl ViewerApp {
         .inner
     }
 
+    /// [`Self::series_row`] with a fold arrow in front, for the structure
+    /// sets and segmentation series: their structures and segments are the
+    /// level below them, listed under the row as the series of a modality
+    /// are under it, and fold away the same way. `has_list`: whether a list
+    /// hangs under this row (only the active set lists its items); the other
+    /// rows keep the arrow's room, so the names of one level line up. Open
+    /// at first. Returns the row and whether its list is open.
+    pub(super) fn folding_series_row(
+        ui: &mut egui::Ui,
+        id_salt: impl std::hash::Hash + std::fmt::Debug,
+        has_list: bool,
+        active: bool,
+        shown: bool,
+        title: String,
+        focused: bool,
+    ) -> (egui::Response, bool) {
+        let id = ui.make_persistent_id(id_salt);
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+        let what = title.clone();
+        let text = egui::RichText::new(title);
+        let text = if active && !shown { text.weak() } else { text };
+        let resp = ui
+            .scope(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.horizontal(|ui| {
+                    if has_list {
+                        let open = state.is_open();
+                        let arrow = state
+                            .show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+                        name_fold_arrow(&arrow, open, &what);
+                        if arrow.clicked() {
+                            state.store(ui.ctx());
+                        }
+                    } else {
+                        // The arrow's own room, taken the way it takes it.
+                        let room = egui::vec2(ui.spacing().indent, ui.spacing().icon_width);
+                        ui.allocate_space(room);
+                    }
+                    let resp = ui.add(egui::Button::selectable(active && shown, text).wrap());
+                    Self::keyboard_badge(ui, focused);
+                    resp
+                })
+                .inner
+            })
+            .inner;
+        (resp, has_list && state.is_open())
+    }
+
     /// The badge on the row the arrow keys are standing on, drawn inline
     /// with the row's name exactly as RTS and SEG are.
     ///

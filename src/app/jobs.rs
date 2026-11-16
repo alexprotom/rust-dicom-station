@@ -426,6 +426,8 @@ impl ViewerApp {
         // Every object as it arrived is unchanged (after the rebinding,
         // which may lay a segmentation onto the volume's lattice).
         self.mark_all_saved(slot);
+        // Another study: what the PACS was found to hold was for the last.
+        self.forget_pacs_studies(slot);
         self.cancel_grow();
         self.paint_last = None;
         self.show_workspace(slot);
@@ -919,6 +921,17 @@ impl ViewerApp {
         ) {
             self.on_pacs_saved(slot, landed);
         }
+        if let Some((slot, studies)) = poll_job(
+            &mut self.pacs_sync_job,
+            ctx,
+            "Reading the PACS",
+            &mut self.error,
+        ) {
+            self.on_pacs_studies(slot, studies);
+            // A menu waiting on it shows its entry now.
+            ctx.request_repaint();
+        }
+        self.start_wanted_pacs_studies();
 
         // Poll the tool windows' workers.
         if let Some((slot, result)) =

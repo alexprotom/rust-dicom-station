@@ -83,8 +83,9 @@ pub(super) enum SetAction {
         set: SetRef,
         items: Vec<usize>,
     },
-    /// Open *Save to the PACS* with this series alone ticked.
-    SaveToPacs(SetRef),
+    /// Open *Save to the PACS* on this series alone, ticked when it is new
+    /// or changed (*Save changes to the PACS*).
+    SaveToPacs(SetRef, super::pacs_sync::SaveScope),
     /// Open *Export DICOM* with this series alone ticked.
     SaveDicom(SetRef),
 }
@@ -263,16 +264,7 @@ impl ViewerApp {
             SetAction::Connect(r, uid) => self.connect_set(r, &uid),
             SetAction::Transfer { from, to, copy } => self.transfer_set(from, to, copy),
             SetAction::ExportSeg { set, items } => self.export_seg_series(set, &items),
-            SetAction::SaveToPacs(set) => self.open_pacs_save(
-                set.slot,
-                Some((
-                    match set.kind {
-                        SetKind::Structures => crate::dicom_export::DerivedKind::StructureSet,
-                        SetKind::Segmentations => crate::dicom_export::DerivedKind::Segmentation,
-                    },
-                    set.idx,
-                )),
-            ),
+            SetAction::SaveToPacs(set, scope) => self.open_pacs_save(set.slot, Some(scope)),
             SetAction::SaveDicom(set) => self.open_export_only(crate::export::Pick::Object {
                 slot: set.slot,
                 kind: match set.kind {

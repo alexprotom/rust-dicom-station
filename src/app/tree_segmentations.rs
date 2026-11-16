@@ -99,8 +99,10 @@ impl ViewerApp {
                             idx: i,
                         };
                         let selected = active_here == Some(i);
-                        let resp = Self::series_row(
+                        let (resp, list_open) = Self::folding_series_row(
                             ui,
+                            ("seg_list", slot, i),
+                            selected,
                             selected,
                             segs_shown,
                             format!(
@@ -146,108 +148,113 @@ impl ViewerApp {
                         // under *that* series rather than at the end of the
                         // list - ten phases of a 4D group otherwise put them a
                         // screen away from the row they belong to.
-                        if !selected {
+                        // Folded away by the arrow on the series' row.
+                        if !selected || !list_open {
                             continue;
                         }
-                        // Masks of a series drawn on another image series are
-                        // on that series' lattice, so nothing here can index
-                        // them.
-                        if !study.has_volume() {
-                            ui.weak(
+                        ui.indent(("seg_list_body", slot, i), |ui| {
+                            // Masks of a series drawn on another image series are
+                            // on that series' lattice, so nothing here can index
+                            // them.
+                            if !study.has_volume() {
+                                ui.weak(
                                 "this workspace has no image volume - add the image series these \
                              segments were drawn on to see and edit them",
                             );
-                            continue;
-                        }
-                        if sr.grid.dims != study.volume.dims {
-                            ui.weak(
+                                return;
+                            }
+                            if sr.grid.dims != study.volume.dims {
+                                ui.weak(
                                 "drawn on another image series - display that series to see and \
                              edit these segments",
                             );
-                            continue;
-                        }
-                        if let Some((glyph, msg, frac)) = &running {
-                            ui.horizontal(|ui| {
-                                ui.label(*glyph);
-                                ui.add(
-                                    egui::ProgressBar::new(*frac)
-                                        .desired_width(120.0)
-                                        .show_percentage(),
-                                );
-                                if ui.small_button("Cancel").clicked() {
-                                    cancel_tool = true;
-                                }
-                            });
-                            ui.weak(msg);
-                        }
-                        let selection: Vec<usize> = rows
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, r)| r.2)
-                            .map(|(i, _)| i)
-                            .collect();
-                        ui.horizontal_wrapped(|ui| {
-                            if small_tip_button(ui, "All", "Show and select all") {
-                                set_all = Some(true);
+                                return;
                             }
-                            if ui.small_button("None").clicked() {
-                                set_all = Some(false);
-                            }
-                            me.selection_buttons(ui, here, &selection, &mut item_act);
-                        });
-                        let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
-                        // The check boxes are edited on `ticks` so a Shift-range
-                        // can reach rows the loop has already drawn.
-                        let mut ticks: Vec<bool> = rows.iter().map(|r| r.2).collect();
-                        for (i, row) in rows.iter_mut().enumerate() {
-                            let name = row.0.clone();
-                            ui.horizontal(|ui| {
-                                color_swatch(ui, &mut row.1, &name);
-                                let tick = ui
-                                    .checkbox(&mut ticks[i], "")
-                                    .named_with(|| format!("Show {name}"))
-                                    .tip("Show / select this segmentation\nShift-click: a range");
-                                if tick.clicked() {
-                                    new_anchor =
-                                        Some((here, apply_tick(&mut ticks, i, shift, anchor)));
-                                }
-                                let resp = ui
-                                    .add(
-                                        egui::Button::selectable(i == active_seg, name.clone())
-                                            .wrap(),
-                                    )
-                                    .on_hover_text(format!("Segment {}", i + 1));
-                                Self::keyboard_badge(
-                                    ui,
-                                    current.as_ref()
-                                        == Some(&RenameTarget::Item { set: here, idx: i }),
-                                );
-                                Self::focus_row(
-                                    ui,
-                                    &resp,
-                                    RenameTarget::Item { set: here, idx: i },
-                                    current,
-                                    &mut focus,
-                                );
-                                if resp.clicked() {
-                                    activate = Some(i);
-                                }
-                                resp.context_menu(|ui| {
-                                    me.item_context_menu(
-                                        ui,
-                                        here,
-                                        i,
-                                        &name,
-                                        &selection,
-                                        &mut item_act,
-                                    )
+                            if let Some((glyph, msg, frac)) = &running {
+                                ui.horizontal(|ui| {
+                                    ui.label(*glyph);
+                                    ui.add(
+                                        egui::ProgressBar::new(*frac)
+                                            .desired_width(120.0)
+                                            .show_percentage(),
+                                    );
+                                    if ui.small_button("Cancel").clicked() {
+                                        cancel_tool = true;
+                                    }
                                 });
-                                ui.weak(format!("{:.2} cm³", row.3));
+                                ui.weak(msg);
+                            }
+                            let selection: Vec<usize> = rows
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, r)| r.2)
+                                .map(|(i, _)| i)
+                                .collect();
+                            ui.horizontal_wrapped(|ui| {
+                                if small_tip_button(ui, "All", "Show and select all") {
+                                    set_all = Some(true);
+                                }
+                                if ui.small_button("None").clicked() {
+                                    set_all = Some(false);
+                                }
+                                me.selection_buttons(ui, here, &selection, &mut item_act);
                             });
-                        }
-                        for (row, on) in rows.iter_mut().zip(ticks) {
-                            row.2 = on;
-                        }
+                            let anchor = me.tick_anchor.filter(|(r, _)| *r == here).map(|(_, i)| i);
+                            // The check boxes are edited on `ticks` so a Shift-range
+                            // can reach rows the loop has already drawn.
+                            let mut ticks: Vec<bool> = rows.iter().map(|r| r.2).collect();
+                            for (i, row) in rows.iter_mut().enumerate() {
+                                let name = row.0.clone();
+                                ui.horizontal(|ui| {
+                                    color_swatch(ui, &mut row.1, &name);
+                                    let tick = ui
+                                        .checkbox(&mut ticks[i], "")
+                                        .named_with(|| format!("Show {name}"))
+                                        .tip(
+                                            "Show / select this segmentation\nShift-click: a range",
+                                        );
+                                    if tick.clicked() {
+                                        new_anchor =
+                                            Some((here, apply_tick(&mut ticks, i, shift, anchor)));
+                                    }
+                                    let resp = ui
+                                        .add(
+                                            egui::Button::selectable(i == active_seg, name.clone())
+                                                .wrap(),
+                                        )
+                                        .on_hover_text(format!("Segment {}", i + 1));
+                                    Self::keyboard_badge(
+                                        ui,
+                                        current.as_ref()
+                                            == Some(&RenameTarget::Item { set: here, idx: i }),
+                                    );
+                                    Self::focus_row(
+                                        ui,
+                                        &resp,
+                                        RenameTarget::Item { set: here, idx: i },
+                                        current,
+                                        &mut focus,
+                                    );
+                                    if resp.clicked() {
+                                        activate = Some(i);
+                                    }
+                                    resp.context_menu(|ui| {
+                                        me.item_context_menu(
+                                            ui,
+                                            here,
+                                            i,
+                                            &name,
+                                            &selection,
+                                            &mut item_act,
+                                        )
+                                    });
+                                    ui.weak(format!("{:.2} cm³", row.3));
+                                });
+                            }
+                            for (row, on) in rows.iter_mut().zip(ticks) {
+                                row.2 = on;
+                            }
+                        });
                     }
                 },
             );

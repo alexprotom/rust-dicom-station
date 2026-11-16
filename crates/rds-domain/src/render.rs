@@ -549,6 +549,47 @@ impl PreparedRoi {
             + self.k_occupied.len() * std::mem::size_of::<i64>()
     }
 
+    /// Whether the point `v` (voxel coordinates of the volume the ROI was
+    /// prepared on) lies inside the ROI as the views draw it: inside the
+    /// contours of the slice nearest to it - those the axial view draws on
+    /// slice `round(k)` - by the even-odd rule over all of them together, so
+    /// that a hole drawn as a second contour inside the first is a hole, as
+    /// [`crate::segmentation::rasterize_roi`] fills it. In plane the point
+    /// keeps its fraction: what is asked is where the crosshair is, not the
+    /// centre of its voxel. A POINT encloses nothing; an open contour is
+    /// taken closed, as it is drawn.
+    ///
+    /// The mapping into voxels went through the volume's direction vectors
+    /// ([`Volume::patient_to_voxel`]), so an oblique or tilted volume needs
+    /// nothing else here. Costs the contours of one slice.
+    pub fn contains(&self, v: [f64; 3]) -> bool {
+        let k = v[2].round();
+        let mut inside = false;
+        for c in &self.contours {
+            if c.point || c.vox.len() < 3 || (c.mean_k - k).abs() > 0.5 {
+                continue;
+            }
+            // A ray to +i from a point outside the contour's box crosses it
+            // an even number of times: the parity would not move.
+            if v[0] < c.lo[0] || v[0] > c.hi[0] || v[1] < c.lo[1] || v[1] > c.hi[1] {
+                continue;
+            }
+            let n = c.vox.len();
+            let mut b = c.vox[n - 1];
+            for &a in &c.vox {
+                // Half-open in j, so a vertex on the ray counts once.
+                if (a[1] > v[1]) != (b[1] > v[1]) {
+                    let x = a[0] + (v[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1]);
+                    if v[0] < x {
+                        inside = !inside;
+                    }
+                }
+                b = a;
+            }
+        }
+        inside
+    }
+
     /// The ROI on one slice of one plane (see [`roi_on_plane`]).
     pub fn on_plane(&self, vol: &Volume, plane: ViewPlane, slice: usize) -> RoiPlaneGraphics {
         let mut g = RoiPlaneGraphics::default();
@@ -731,6 +772,74 @@ mod tests {
             }
         }
         g
+    }
+
+    /// The crosshair's structures: inside a ring and outside its hole, on
+    /// the slice nearest the point only, on a volume tilted out of the
+    /// patient axes (the contours are given in LPS millimetres, as a file
+    /// gives them).
+    #[test]
+    fn a_point_is_inside_what_the_slice_nearest_it_draws() {
+        let dims = [30, 30, 10];
+        // Rows and columns turned 30 degrees about an axis that is not the
+        // patient's, the slices stacked along their cross product.
+        let (s, c) = (30f64.to_radians().sin(), 30f64.to_radians().cos());
+        let row = Vec3::new(c, s * 0.8, s * 0.6).normalized();
+        let col = Vec3::new(-s, c * 0.8, c * 0.6).normalized();
+        let normal = row.cross(col).normalized();
+        let vol = Volume {
+            data: vec![0; dims[0] * dims[1] * dims[2]],
+            dims,
+            spacing: [1.2, 0.8, 3.0],
+            origin: Vec3::new(-7.0, 21.0, -40.0),
+            row_dir: row,
+            col_dir: col,
+            normal,
+            frame_of_reference_uid: String::new(),
+            min_value: 0,
+            max_value: 0,
+        };
+        // A square ring on slice 4 (outer 5..20, hole 10..15), drawn in
+        // patient space through the volume's own geometry.
+        let square = |lo: f64, hi: f64, k: f64| Contour {
+            points: [[lo, lo], [hi, lo], [hi, hi], [lo, hi]]
+                .iter()
+                .map(|[i, j]| vol.voxel_to_patient(*i, *j, k))
+                .collect(),
+            geometric_type: "CLOSED_PLANAR".into(),
+        };
+        let roi = Roi {
+            number: 1,
+            name: "ring".into(),
+            color: [1, 2, 3],
+            roi_type: "ORGAN".into(),
+            description: String::new(),
+            contours: vec![
+                square(5.0, 20.0, 4.0),
+                square(10.0, 15.0, 4.0),
+                Contour {
+                    points: vec![vol.voxel_to_patient(7.0, 7.0, 6.0)],
+                    geometric_type: "POINT".into(),
+                },
+            ],
+        };
+        let p = PreparedRoi::new(&vol, &roi);
+        let at = |i: f64, j: f64, k: f64| {
+            // Through patient space and back, as the crosshair goes.
+            let q = vol.voxel_to_patient(i, j, k);
+            p.contains(vol.patient_to_voxel(q))
+        };
+        assert!(at(7.0, 7.0, 4.0), "in the ring");
+        assert!(at(7.0, 7.0, 4.4), "nearest slice is 4");
+        assert!(
+            !at(7.0, 7.0, 4.6),
+            "nearest slice is 5: nothing drawn there"
+        );
+        assert!(!at(12.5, 12.5, 4.0), "in the hole");
+        assert!(at(19.9, 12.5, 4.0), "a fraction inside the edge");
+        assert!(!at(20.1, 12.5, 4.0), "a fraction outside it");
+        assert!(!at(2.0, 12.5, 4.0), "left of the ring");
+        assert!(!at(7.0, 7.0, 6.0), "a point of interest encloses nothing");
     }
 
     #[test]

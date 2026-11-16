@@ -2033,7 +2033,7 @@ impl ViewerApp {
                     }
                 }
             }
-            if self.dose_legend.shows(None) && dose_here.is_some() {
+            if self.dose_legend.shows(dose_display::legend_view(None)) && dose_here.is_some() {
                 let below = super::pane_windows::bar_cells(rect, rect.top() + 22.0, &[24.0; 8])
                     .iter()
                     .map(|c| c.bottom())

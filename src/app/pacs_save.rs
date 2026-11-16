@@ -41,8 +41,10 @@
 //! the next edit. A save that stops half way keeps what it filed: those
 //! objects take on their identity, the window says what stopped the rest,
 //! and the rest stay ticked. [`ViewerApp::open_pacs_save`] is the one way
-//! in: *File ▶ Save to the PACS*, a set's menu in the data tree (that set
-//! ticked alone), and the PACS window's *Send workspace*.
+//! in: *File ▶ Save to the PACS*, the PACS window's *Send workspace*, and
+//! the data tree's *Save changes to the PACS* on a study, an image series
+//! or a set ([`super::pacs_sync`]), which opens it on that row's objects
+//! alone (a [`SaveScope`]) with only the new and changed ones ticked.
 
 use std::collections::{BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
@@ -54,6 +56,7 @@ use crate::dicom_export::{self, DerivedKind};
 use crate::dicomseg::SegSeries;
 use crate::rtstruct::StructureSet;
 
+use super::pacs_sync::SaveScope;
 use super::*;
 
 /// What the PACS knows of one object.
@@ -134,8 +137,9 @@ pub(super) struct PacsSave {
     pub rows: Vec<SaveRow>,
     /// What the PACS holds; `None` while it is looked up.
     pub targets: Option<SaveTargets>,
-    /// The one object to tick when the lookup lands, as opened from the tree.
-    pub only: Option<(DerivedKind, usize)>,
+    /// The objects the window was opened on from the data tree: only they
+    /// are listed and can be ticked, until *Show the whole workspace*.
+    pub scope: Option<SaveScope>,
     /// The last save's outcome, and whether it is a warning.
     pub status: Option<(String, bool)>,
 }
@@ -323,6 +327,18 @@ pub(super) fn rows_of(
     rows
 }
 
+/// Untick the rows outside `scope`: a window opened on a study, a series
+/// or a set saves nothing else unless asked to.
+fn unticked_outside(rows: &mut [SaveRow], scope: Option<&SaveScope>) {
+    if let Some(sc) = scope {
+        for r in rows {
+            if !sc.holds(r.kind, r.index) {
+                r.tick = false;
+            }
+        }
+    }
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -389,10 +405,10 @@ impl ViewerApp {
         rows_of(study, targets, &changed)
     }
 
-    /// Open *Save to the PACS* on workspace `slot`; with `only`, that one
-    /// object alone is ticked. The window comes up at once; what the PACS
-    /// holds is looked up on a job ([`Self::on_pacs_lookup`]).
-    pub(super) fn open_pacs_save(&mut self, slot: usize, only: Option<(DerivedKind, usize)>) {
+    /// Open *Save to the PACS* on workspace `slot`; with `scope`, on those
+    /// objects alone. The window comes up at once; what the PACS holds is
+    /// looked up on a job ([`Self::on_pacs_lookup`]).
+    pub(super) fn open_pacs_save(&mut self, slot: usize, scope: Option<SaveScope>) {
         if self
             .slots
             .get(slot)
@@ -406,7 +422,7 @@ impl ViewerApp {
             slot,
             rows,
             targets: None,
-            only,
+            scope,
             status: None,
         });
         self.start_pacs_lookup(slot);
@@ -447,11 +463,7 @@ impl ViewerApp {
         let Some(d) = self.pacs_save.as_mut() else {
             return;
         };
-        if let Some((kind, index)) = d.only.take() {
-            for r in &mut rows {
-                r.tick = r.kind == kind && r.index == index && r.state.savable();
-            }
-        }
+        unticked_outside(&mut rows, d.scope.as_ref());
         d.rows = rows;
         d.targets = Some(targets);
     }
@@ -492,6 +504,25 @@ impl ViewerApp {
                      Reference UIDs.",
                 );
                 ui.separator();
+                let mut whole = false;
+                if let Some(sc) = &d.scope {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!("What was made or changed in the {}", sc.label));
+                        if small_tip_button(
+                            ui,
+                            "Show the whole workspace",
+                            "List every object of the workspace",
+                        ) {
+                            whole = true;
+                        }
+                    });
+                    if !d.rows.iter().any(|r| sc.holds(r.kind, r.index)) {
+                        ui.weak("No structure set or segmentation here.");
+                    }
+                }
+                if whole {
+                    d.scope = None;
+                }
                 if d.rows.is_empty() {
                     ui.weak("This workspace has no structure sets or segmentations.");
                 }
@@ -500,6 +531,12 @@ impl ViewerApp {
                     .spacing([10.0, 4.0])
                     .show(ui, |ui| {
                         for r in &mut d.rows {
+                            if d.scope
+                                .as_ref()
+                                .is_some_and(|sc| !sc.holds(r.kind, r.index))
+                            {
+                                continue;
+                            }
                             let glyph = match r.kind {
                                 DerivedKind::StructureSet => "▣",
                                 DerivedKind::Segmentation => "◉",
@@ -730,10 +767,10 @@ impl ViewerApp {
                 .study
                 .as_ref()
                 .is_some_and(|st| self.targets_cover(st, &targets));
-            let rows = self.pacs_rows(slot, cover.then_some(&targets));
+            let mut rows = self.pacs_rows(slot, cover.then_some(&targets));
             if let Some(d) = self.pacs_save.as_mut() {
+                unticked_outside(&mut rows, d.scope.as_ref());
                 d.rows = rows;
-                d.only = None;
                 d.targets = cover.then_some(targets);
                 d.status = Some((msg, warn));
             }

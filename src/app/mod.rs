@@ -50,6 +50,7 @@ mod chrome;
 mod combine;
 mod compare;
 mod contour_edit;
+mod cursor_names;
 mod d3;
 mod data_tree;
 mod derived_app;
@@ -80,6 +81,7 @@ mod pacs_remote;
 mod pacs_save;
 mod pacs_server_win;
 mod pacs_stats;
+mod pacs_sync;
 mod pacs_tree;
 mod pacs_win;
 mod pane_windows;
@@ -730,6 +732,11 @@ pub struct ViewerApp {
     pacs_save: Option<pacs_save::PacsSave>,
     pacs_save_lookup_job: Option<Job<pacs_save::LookupDone>>,
     pacs_save_job: Option<Job<pacs_save::SaveDone>>,
+    /// The data tree's *Save changes to the PACS*: which studies the PACS
+    /// holds and what each workspace changed, read through `&self` while a
+    /// menu is drawn; and the lookup of the studies.
+    pacs_sync: std::sync::Mutex<pacs_sync::SyncState>,
+    pacs_sync_job: Option<Job<pacs_sync::StudiesDone>>,
     export_result: Option<String>,
     /// What the finished run could not do exactly as asked.
     export_warnings: Vec<String>,
@@ -837,7 +844,7 @@ pub struct ViewerApp {
     overlays: settings::ViewerOverlays,
     /// The dose legend of the Dose and plan display module: whether, and on which
     /// views.
-    dose_legend: dose_display::DoseLegend,
+    dose_legend: settings::DoseLegend,
 
     // Interactive segmentation.
     seg_tool: SegTool,
@@ -1049,6 +1056,8 @@ pub struct ViewerApp {
     /// `dose_colors` as last written to the settings, which are written
     /// again once they differ and no button is held (a drag ends).
     dose_colors_saved: settings::DoseColors,
+    /// `dose_legend` as last written, likewise.
+    dose_legend_saved: settings::DoseLegend,
 
     /// Bumped whenever ROI visibility / dose settings change → cache rebuild.
     settings_gen: u64,
@@ -1321,6 +1330,8 @@ impl ViewerApp {
             pacs_save: None,
             pacs_save_lookup_job: None,
             pacs_save_job: None,
+            pacs_sync: Default::default(),
+            pacs_sync_job: None,
             export_result: None,
             export_warnings: Vec::new(),
             gen_open: false,
@@ -1370,7 +1381,7 @@ impl ViewerApp {
             show_labels: true,
             show_isocenters: true,
             overlays: prefs.overlays,
-            dose_legend: dose_display::DoseLegend::default(),
+            dose_legend: prefs.dose_legend,
             models_dir,
             archive_dir,
             archive_more,
@@ -1468,6 +1479,7 @@ impl ViewerApp {
             dose_threshold_pct: 15.0,
             dose_colors: prefs.dose_colors.clone(),
             dose_colors_saved: prefs.dose_colors.clone(),
+            dose_legend_saved: prefs.dose_legend,
             settings_gen: 0,
             tree_cache: Default::default(),
             struct_gen: [0; MAX_WORKSPACES],
@@ -1557,6 +1569,7 @@ impl ViewerApp {
             pane_buttons_hidden: self.pane_buttons_hidden,
             overlays: self.overlays,
             dose_colors: self.dose_colors.clone(),
+            dose_legend: self.dose_legend,
             modules_open: self.modules_open.clone(),
             session: self.session.clone(),
             view_rows: self.view_rows.clone(),
@@ -1887,6 +1900,7 @@ impl eframe::App for ViewerApp {
             self.end_contour_stroke();
         }
         self.poll_all_jobs(&ctx);
+        self.persist_dose_display(&ctx);
 
         // Global segmentation shortcuts (skipped while a text field is
         // focused): Ctrl+Z undo, Esc cancels a region-grow drag, [ ] resize

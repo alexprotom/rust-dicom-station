@@ -50,6 +50,9 @@ const DOSE_COLORMAP_KEY: &str = "dose_colormap";
 const DOSE_WASH_RANGE_KEY: &str = "dose_wash_range";
 const DOSE_WASH_STEPS_KEY: &str = "dose_wash_steps";
 const DOSE_ISO_LEVELS_KEY: &str = "dose_iso_levels";
+/// The dose legend: the views it is drawn on, and what it shows.
+const DOSE_LEGEND_KEY: &str = "dose_legend";
+const DOSE_LEGEND_PARTS_KEY: &str = "dose_legend_parts";
 /// Whether opening the PACS window walks its storage folders.
 const PACS_SCAN_ON_OPEN_KEY: &str = "pacs_scan_on_open";
 /// The PACS window's analytics: worked out on every click, and drawn as
@@ -418,6 +421,40 @@ impl Default for ViewerOverlays {
     }
 }
 
+/// The dose legend in the corner of the views: on which of them it is drawn
+/// (axial, sagittal, coronal, the 3D scene), each switched in the *Dose and
+/// plan display* module or by the legend button on the view's own bar, and
+/// which of its two parts it shows: the colorwash's colour bar and the list
+/// of isodose levels (each part only while the dose is drawn that way).
+/// Off on every view for a fresh installation; what the user left is
+/// remembered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DoseLegend {
+    pub views: [bool; 4],
+    /// The colorwash's colour bar.
+    pub scale: bool,
+    /// The isodose levels, a colour and a percentage each.
+    pub levels: bool,
+}
+
+impl Default for DoseLegend {
+    fn default() -> Self {
+        DoseLegend {
+            views: [false; 4],
+            scale: true,
+            levels: true,
+        }
+    }
+}
+
+impl DoseLegend {
+    /// Drawn on view `view` (0 axial, 1 sagittal, 2 coronal, 3 the 3D
+    /// scene), with something in it.
+    pub fn shows(&self, view: usize) -> bool {
+        self.views.get(view).copied().unwrap_or(false) && (self.scale || self.levels)
+    }
+}
+
 /// One isodose level of the *Dose and plan display* module: a percentage of
 /// the workspace's reference dose, the colour its line (and the
 /// [`DoseColormap::Isodose`] wash) is drawn in, and whether it is drawn.
@@ -593,6 +630,8 @@ pub struct Settings {
     pub overlays: ViewerOverlays,
     /// The dose colorwash's map, range and steps, and the isodose levels.
     pub dose_colors: DoseColors,
+    /// Where the dose legend is drawn and what it shows.
+    pub dose_legend: DoseLegend,
     /// Light / dark / follow-the-system appearance.
     pub theme: ThemePreference,
 
@@ -688,6 +727,7 @@ impl Default for Settings {
         Settings {
             overlays: ViewerOverlays::default(),
             dose_colors: DoseColors::default(),
+            dose_legend: DoseLegend::default(),
             theme: ThemePreference::Dark,
             models_dir: None,
             archive_dir: None,
@@ -1481,6 +1521,22 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
                     s.dose_colors.stepped = stepped;
                 }
             }
+        } else if key.eq_ignore_ascii_case(DOSE_LEGEND_KEY) {
+            views_from_str(value, &mut s.dose_legend.views);
+        } else if key.eq_ignore_ascii_case(DOSE_LEGEND_PARTS_KEY) {
+            // any of scale, levels | none
+            let words: Vec<String> = value
+                .split(',')
+                .map(|w| w.trim().to_ascii_lowercase())
+                .filter(|w| !w.is_empty())
+                .collect();
+            if words
+                .iter()
+                .all(|w| matches!(w.as_str(), "scale" | "levels" | "none"))
+            {
+                s.dose_legend.scale = words.iter().any(|w| w == "scale");
+                s.dose_legend.levels = words.iter().any(|w| w == "levels");
+            }
         } else if key.eq_ignore_ascii_case(DOSE_ISO_LEVELS_KEY) {
             if let Some(l) = iso_levels_from_str(value) {
                 s.dose_colors.levels = l;
@@ -1605,7 +1661,11 @@ fn render(s: &Settings) -> String {
          # the steps of its scale (legend ticks, bands when stepped), continuous | stepped\n\
          {DOSE_WASH_STEPS_KEY} = {}, {}\n\
          # isodose levels: percent, colour (rrggbb), on | off; separated by ; (none: no levels)\n\
-         {DOSE_ISO_LEVELS_KEY} = {}\n",
+         {DOSE_ISO_LEVELS_KEY} = {}\n\
+         # the dose legend: the views it is on = any of axial, sagittal, coronal, 3d | none\n\
+         {DOSE_LEGEND_KEY} = {}\n\
+         # and what it shows = any of scale, levels | none\n\
+         {DOSE_LEGEND_PARTS_KEY} = {}\n",
         dc.map.key(),
         num_to_str(dc.lo),
         num_to_str(dc.hi),
@@ -1616,6 +1676,19 @@ fn render(s: &Settings) -> String {
             "none".to_string()
         } else {
             iso_levels_to_str(&dc.levels)
+        },
+        views_to_str(&s.dose_legend.views),
+        {
+            let parts: Vec<&str> = [(s.dose_legend.scale, "scale"), (s.dose_legend.levels, "levels")]
+                .into_iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, w)| w)
+                .collect();
+            if parts.is_empty() {
+                "none".to_string()
+            } else {
+                parts.join(", ")
+            }
         }
     ));
     out.push_str("# what each row of the central area shows, left to right:\n");
@@ -1870,6 +1943,35 @@ mod tests {
             .expect("a command");
         assert!(cmd.contains("rds-mcp"), "{cmd}");
         assert!(v["mcpServers"]["rust-dicom-station"]["args"].is_array());
+    }
+
+    #[test]
+    fn the_dose_legend_is_off_and_remembered() {
+        let fresh = parse("").dose_legend;
+        assert_eq!(fresh.views, [false; 4], "off on every view at first");
+        assert!(fresh.scale && fresh.levels);
+        for legend in [
+            DoseLegend {
+                views: [false, false, true, false],
+                scale: false,
+                levels: true,
+            },
+            DoseLegend {
+                views: [true; 4],
+                scale: false,
+                levels: false,
+            },
+        ] {
+            let s = Settings {
+                dose_legend: legend,
+                ..Settings::default()
+            };
+            assert_eq!(parse(&render(&s)), s);
+        }
+        assert_eq!(
+            parse("dose_legend_parts = scale, oops").dose_legend,
+            DoseLegend::default()
+        );
     }
 
     #[test]

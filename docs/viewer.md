@@ -195,7 +195,10 @@ anatomy - then **⤴** takes the pane out of its row into a window of its own
 (below), **⟲** resets the pane's zoom and pan and re-centers the
 crosshair in the volume, **✋** hands the left button the
 image - drag it and the image moves instead of the crosshair, as a middle
-drag always does - and **➕ / ➖** zoom a step about the middle of the pane.
+drag always does - and **➕ / ➖** zoom a step about the middle of the pane;
+on an image view whose workspace draws a dose, last, **🎨** puts the dose
+legend on that view or takes it off (it stays beside **◀** on a folded
+bar; remembered, off everywhere on a fresh installation).
 The hand is one switch for every pane of both workspaces. A pane too narrow
 for its bar in one line has it in several, one under the other, every line
 holding the same number of buttons at their own size, so a button keeps its
@@ -331,10 +334,25 @@ Archiving and Communication System (PACS)*, *Downloaded models*, *DRR -
 workspace A*, and so on.
 
 **Status bar.** Patient coordinates, voxel indices, the image value (in HU
-for a CT; *MR value 812* for an MR, whose values have no unit) and dose (Gy
-and % of the reference dose) at the crosshair; with more than one workspace open each
+for a CT; *MR value 812* for an MR, whose values have no unit), the
+structures and segments at the crosshair, and dose (Gy and % of the
+reference dose) at the crosshair; with more than one workspace open each
 reports the full set side by side, at its own crosshair. Hover the **?** at the
 right end to read the active tool's mouse bindings.
+
+The names are those of what is **drawn** there: the structures of the
+workspace's active structure set whose tick boxes are on (the set's row
+ticked, *View ▸ Contours* on), then the segments of its active segmentation
+series whose tick boxes are on. A hidden structure is not named - the
+readout names nothing that is not on screen. Up to three are written,
+comma separated, then *+N* for the rest; the pointer over them lists them
+all. A structure holds the crosshair when the contours of the slice
+nearest to it enclose it, by the even-odd rule (a hole drawn as a second
+contour is a hole): the same contours, mapped through the volume's own
+orientation, that the axial view draws there, so an oblique or tilted
+series needs nothing else. A segment holds it when its mask is set at the
+voxel whose value the readout gives. The names are looked up again only
+when the crosshair moves or what is drawn changes (`app/cursor_names.rs`).
 
 **View ▸ Workspaces** lists all four letters with a tick each: which of them
 are on screen. A is always shown; a workspace holding data is ticked as soon
@@ -374,7 +392,9 @@ per structure, with a Dice column against a reference of your choice) and
 displayed dose grid is drawn - colorwash, isodose lines or both, opacity,
 threshold, the wash's colour map, range and steps (continuous or banded),
 and the isodose ladder, whose levels can be recoloured, changed, added and
-removed ([rt-objects.md](rt-objects.md)); one setting for every workspace, which a
+removed, the two coloured alike in one click, and the dose legend: the
+views it is on and its colour bar and isodose list
+([rt-objects.md](rt-objects.md)); one setting for every workspace, which a
 dose grid's **🎨 Display settings** in the tree also opens), **Dose
 analysis** (the dose metrics table) and **Dose-volume histograms** (both in
 [dvh.md](dvh.md)).
@@ -854,7 +874,12 @@ to no image series; `▶ (image series not loaded)` when the referenced series
 is not in the workspace). Clicking a node makes it active and lists
 its items **under that row**, not at the end of the list - with ten phases of
 a 4D group in the node, the buttons that act on a set belong beside the set
-they act on. A study with no structure set or no segmentation series has no
+they act on. The items are the level below their set, and the set's row
+**folds** them like any other node: the arrow in front of the active set's
+row hides its structures (or segments) and the buttons that act on them,
+and shows them again, as a study folds its modalities and a modality its
+series; the set stays active and drawn. The other sets' rows keep the
+arrow's room, so the names of one level line up. A study with no structure set or no segmentation series has no
 such heading; **➕ New RT structure set** and **➕ New segmentation series**
 in the study's right-click menu create an empty one bound to the displayed
 image series (greyed out until one of that study's series is on screen),
@@ -870,6 +895,11 @@ a series node** offers:
 * *Copy / Move series to workspace A/B*.
 * *💾 Export as DICOM SEG…* (segmentation series only) - writes this one series
   as a single SEG file.
+* *📤 Save changes to the PACS (n)* - on a study of this station's PACS:
+  opens [Save to the PACS](pacs.md#saving-to-the-pacs) on this series alone,
+  ticked when it is new or was changed here; greyed when it is neither. The
+  same entry is on a study's and an image series' menu, for what is filed
+  under them.
 * *🗑 Remove this RT structure set / segmentation series*.
 * *✏ Rename series…*.
 
