@@ -362,9 +362,25 @@ model, a segmentation painted - is saved into the PACS itself, beside the
 study, through **Save to the PACS**. Three ways open it:
 
 * **Save ▶ 📤 Save to the PACS ▶** a workspace;
-* **📤 Save to the PACS** in the menu of a structure set or segmentation row
-  of the data tree (that one alone ticked);
+* **📤 Save changes to the PACS (n)** in the data tree's menu of a study, an
+  image series, a structure set or a segmentation series (see below);
 * **📤 Send workspace A / B** in this window.
+
+**Save changes to the PACS** writes back what was changed here on a study
+the PACS holds: structure sets edited since they were loaded or last
+saved, and the structure sets and segmentation series made here. It is the
+same window, opened on the row's own objects - the sets and series the tree
+files under that study, those drawn on that image series, or that one set -
+with only the *new*, *not in the PACS* and *changed* ones ticked, and a
+*Show the whole workspace* button that lists the rest (unticked). *n* counts
+them. The entry is there only on a study this station's PACS holds (looked
+up from the catalog on a background job the first time a menu asks, and
+again after 30 seconds or a new study in the workspace; greyed while it is
+looked up), and greyed when nothing under the row is new or changed. It
+says *Save changes* rather than *Sync* because it goes one way, into the
+PACS, and brings nothing back. Doses, plans, registrations and planar
+images are not written: they are what the PACS was given, and this window
+saves structure sets and segmentation series.
 
 The window lists the workspace's structure sets and segmentation series,
 each with what the PACS knows of it:

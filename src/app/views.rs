@@ -1505,8 +1505,12 @@ impl ViewerApp {
                 super::overlays::cube_plane(vol, plane, view.slice as f64),
             );
         }
-        if self.dose_legend.shows(Some(plane)) {
-            let n = if self.pane_buttons_hidden { 2 } else { 8 };
+        if self
+            .dose_legend
+            .shows(dose_display::legend_view(Some(plane)))
+        {
+            // The bar's buttons, and the legend's own switch.
+            let n = if self.pane_buttons_hidden { 3 } else { 9 };
             let below = super::pane_windows::bar_cells(rect, rect.top() + 22.0, &vec![24.0; n])
                 .iter()
                 .map(|c| c.bottom())
@@ -1602,7 +1606,27 @@ impl ViewerApp {
         if phases_here {
             widths.push(38.0);
         }
+        // The dose legend's switch for this view, while this workspace
+        // draws a dose: the legend can be put on a view and taken off it
+        // where it is seen, as well as in the module. A folded bar keeps
+        // it, beside its arrow: it is about what is over the image.
+        let legend_here = self.dose_mode != DoseMode::Off
+            && self.slots[slot].dose_shown
+            && self.slots[slot]
+                .study
+                .as_ref()
+                .is_some_and(|st| !st.doses.is_empty());
+        if legend_here {
+            widths.push(24.0);
+        }
         let cells = super::pane_windows::bar_cells(rect, by, &widths);
+        let legend_rect = if legend_here && folded {
+            cells[2]
+        } else if legend_here {
+            cells[widths.len() - 1]
+        } else {
+            Rect::NOTHING
+        };
         // Folded, the bar is two buttons: maximize and the arrow that
         // brings the rest back; the close goes with the others.
         let (max_rect, close_rect, fold_rect) = if folded {
@@ -1640,6 +1664,7 @@ impl ViewerApp {
                             || zin_rect.contains(p)
                             || (slices_here && play3_rect.contains(p))
                             || (phases_here && play4_rect.contains(p))))
+                    || (legend_here && legend_rect.contains(p))
                     || slider_rect.contains(p)
             })
             .unwrap_or(false);
@@ -1740,6 +1765,28 @@ impl ViewerApp {
                 .on_hover_text(if on { "Stop" } else { "Play the 4D phases" });
             clicked_play4 = resp.clicked()
                 || (any_click && pointer_pos.map(|p| play4_rect.contains(p)).unwrap_or(false));
+        }
+        if legend_here {
+            let vi = dose_display::legend_view(Some(plane));
+            let on = self.dose_legend.views[vi];
+            let resp = ui
+                .put(
+                    legend_rect,
+                    egui::Button::selectable(on, "🎨")
+                        .frame_when_inactive(true)
+                        .small(),
+                )
+                .tip(if on {
+                    "Hide the dose legend on this view"
+                } else {
+                    "Show the dose legend on this view"
+                })
+                .named_with(|| format!("Dose legend on {}", plane.title()));
+            if resp.clicked() || (any_click && pointer_pos.is_some_and(|p| legend_rect.contains(p)))
+            {
+                // Written by `persist_dose_display` at the end of the frame.
+                self.dose_legend.views[vi] = !on;
+            }
         }
         let clicked_max = max_resp.clicked()
             || (any_click && pointer_pos.map(|p| max_rect.contains(p)).unwrap_or(false));
@@ -2533,25 +2580,14 @@ impl ViewerApp {
                     // Map the visible ROIs not mapped yet, or written by a
                     // contour edit since they were, all at once: a brush
                     // sample maps the one structure it changed.
-                    let set = *active_structs;
-                    let stamp = |ri: usize| roi_edits.get(&(set, ri)).copied().unwrap_or(0);
-                    let prep = roi_prep.for_set(set, settings_gen, vol, ss.rois.len());
-                    let missing: Vec<usize> = visible
-                        .iter()
-                        .copied()
-                        .filter(|&ri| {
-                            prep.rois[ri]
-                                .as_ref()
-                                .is_none_or(|(at, _)| *at != stamp(ri))
-                        })
-                        .collect();
-                    let prepared: Vec<render::PreparedRoi> = missing
-                        .par_iter()
-                        .map(|&ri| render::PreparedRoi::new(vol, &ss.rois[ri]))
-                        .collect();
-                    for (ri, p) in missing.into_iter().zip(prepared) {
-                        prep.rois[ri] = Some((stamp(ri), p));
-                    }
+                    let prep = roi_prep.prepared(
+                        *active_structs,
+                        settings_gen,
+                        vol,
+                        ss,
+                        roi_edits,
+                        &visible,
+                    );
                     let rois = &prep.rois;
                     views[idx].contours = visible
                         .par_iter()

@@ -189,6 +189,9 @@ pub(super) struct StudySlot {
     /// The planar structure the 2D contour tools edit: (set, structure)
     /// within `study.planar_structs`.
     pub(super) active_planar: Option<(usize, usize)>,
+    /// The structures and segments at the crosshair, for the status bar,
+    /// and what they were found for ([`super::cursor_names`]).
+    pub(super) cursor_names: super::cursor_names::CursorNames,
 }
 
 /// The ROIs of one structure set prepared for drawing on one volume
@@ -276,6 +279,43 @@ impl RoiPreps {
             self.sets.remove(0);
         }
         self.sets.last_mut().expect("just pushed or moved there")
+    }
+
+    /// [`Self::for_set`] with every ROI of `wanted` prepared at its current
+    /// edit stamp (`edits`, [`StudySlot::roi_edits`]): the ones not mapped
+    /// yet, or written by a contour edit since, are mapped now, all at once,
+    /// so a brush sample maps the one structure it changed. What the views'
+    /// contours and the crosshair's names both read, so the two share one
+    /// mapping.
+    pub(super) fn prepared(
+        &mut self,
+        set: usize,
+        gen: u64,
+        vol: &Arc<Volume>,
+        ss: &crate::rtstruct::StructureSet,
+        edits: &std::collections::HashMap<(usize, usize), u64>,
+        wanted: &[usize],
+    ) -> &RoiPrep {
+        let stamp = |ri: usize| edits.get(&(set, ri)).copied().unwrap_or(0);
+        let prep = self.for_set(set, gen, vol, ss.rois.len());
+        let missing: Vec<usize> = wanted
+            .iter()
+            .copied()
+            .filter(|&ri| ri < ss.rois.len())
+            .filter(|&ri| {
+                prep.rois[ri]
+                    .as_ref()
+                    .is_none_or(|(at, _)| *at != stamp(ri))
+            })
+            .collect();
+        let mapped: Vec<render::PreparedRoi> = missing
+            .par_iter()
+            .map(|&ri| render::PreparedRoi::new(vol, &ss.rois[ri]))
+            .collect();
+        for (ri, p) in missing.into_iter().zip(mapped) {
+            prep.rois[ri] = Some((stamp(ri), p));
+        }
+        prep
     }
 }
 
@@ -404,6 +444,7 @@ impl StudySlot {
             planar_last: 1,
             planar_hidden: Default::default(),
             active_planar: None,
+            cursor_names: Default::default(),
         }
     }
 }

@@ -310,6 +310,10 @@ fn the_dose_colour_scale_and_levels_can_be_edited() {
         "Show the 107 % level",
         "Remove the 30 % level",
         "Default levels",
+        "Levels from the map",
+        "Map from the levels",
+        "Colour scale",
+        "Isodose levels",
     ] {
         assert!(
             ui.has(&Target::containing(name)),
@@ -357,6 +361,73 @@ fn the_dose_colour_scale_and_levels_can_be_edited() {
     assert!(saved.stepped);
     let pcts: Vec<f32> = saved.levels.iter().map(|l| l.pct).collect();
     assert!(pcts.contains(&25.0) && !pcts.contains(&30.0), "{pcts:?}");
+
+    // The levels coloured as the (stepped viridis) wash colours their
+    // doses: 107 % is past the scale's top, so its last band; then the wash
+    // in the levels' colours, after which there is nothing to sync from.
+    ui.invoke(&Target::label("Levels from the map")).unwrap();
+    ui.settle(SETTLE);
+    let saved = rust_dicom_station::settings::load().dose_colors;
+    assert_eq!(saved.levels[0].pct, 107.0);
+    assert_eq!(saved.levels[0].color, [253, 231, 37]);
+    ui.invoke(&Target::label("Map from the levels")).unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(
+        rust_dicom_station::settings::load().dose_colors.map,
+        rust_dicom_station::settings::DoseColormap::Isodose
+    );
+    assert!(
+        ui.find(&Target::label("Levels from the map"))
+            .unwrap()
+            .disabled
+    );
+}
+
+/// The dose legend: on no view at first, put on one by the button on that
+/// view's own bar (there on a folded bar too, the default) and taken off
+/// again, each time remembered; its two parts are the section's.
+#[test]
+fn the_dose_legend_is_switched_on_the_view_and_remembered() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let views = || rust_dicom_station::settings::load().dose_legend.views;
+    assert_eq!(views(), [false; 4], "off on every view at first");
+    let coronal = Target::label("Dose legend on Coronal");
+    ui.click(&coronal).unwrap_or_else(|e| {
+        panic!(
+            "{e:#}
+{}",
+            ui.tree_text()
+        )
+    });
+    ui.settle(SETTLE);
+    assert_eq!(views(), [false, false, true, false]);
+    ui.click(&coronal).unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(views(), [false; 4]);
+
+    for step in [
+        r#"{"click": {"label": "Modules", "role": "button"}}"#,
+        r#"{"click": {"label": "Dose and plan display", "role": "checkbox"}}"#,
+        r#"{"key": "Escape"}"#,
+        r#"{"invoke": "Unfold Dose and plan display"}"#,
+        r#"{"invoke": {"label": "Isodose levels", "role": "checkbox"}}"#,
+    ] {
+        ui.run_step(
+            &serde_json::from_str(step).unwrap(),
+            &common::target_dir("ui-test-out"),
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "{step}: {e:#}
+{}",
+                ui.tree_text()
+            )
+        });
+    }
+    ui.settle(SETTLE);
+    let legend = rust_dicom_station::settings::load().dose_legend;
+    assert!(legend.scale && !legend.levels, "{legend:?}");
 }
 
 #[test]
@@ -556,6 +627,166 @@ fn save_to_the_pacs_opens_at_once_and_settles_on_what_the_pacs_holds() {
         .find(&Target::containing("Save 0 objects").role("button"))
         .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
     assert!(save.disabled, "nothing can be saved");
+}
+
+/// Right-click a widget, the way a person opens its menu.
+fn right_click(ui: &mut Ui, target: &Target) {
+    let hit = ui
+        .find(target)
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.click_at(hit.rect.center(), egui::PointerButton::Secondary, 1);
+    ui.settle(SETTLE);
+}
+
+/// The title of the first node that folds, in tree order, that `pick`
+/// takes, as its arrow names it.
+fn fold_title(ui: &Ui, mut pick: impl FnMut(&str) -> bool) -> String {
+    ui.find_all(&Target::containing("Fold ").role("button"))
+        .into_iter()
+        .filter_map(|h| h.text.strip_prefix("Fold ").map(str::to_string))
+        .find(|t| pick(t))
+        .unwrap_or_else(|| panic!("no such fold:\n{}", ui.tree_text()))
+}
+
+/// The status bar names the structures drawn at the crosshair, after its
+/// value; a structure whose tick box is off is not drawn, and not named.
+#[test]
+fn the_readout_names_the_structures_at_the_crosshair() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    right_click(&mut ui, &Target::containing("TARGET  [").role("button"));
+    ui.click(&Target::containing("Localize").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    let named = Target::containing("TARGET").role("label");
+    let hit = ui
+        .find(&named)
+        .unwrap_or_else(|e| panic!("no name at the crosshair: {e:#}\n{}", ui.tree_text()));
+    let hu = ui.find(&Target::containing(" HU").role("label")).unwrap();
+    assert!(
+        hit.rect.left() > hu.rect.left(),
+        "the names come after the value"
+    );
+    ui.click(&Target::label("Show TARGET")).unwrap();
+    ui.settle(SETTLE);
+    assert!(
+        !ui.has(&named),
+        "a hidden structure is still named:\n{}",
+        ui.tree_text()
+    );
+}
+
+/// A structure set folds its structures away under its own arrow, as a
+/// modality folds its series.
+#[test]
+fn a_structure_set_folds_its_structures() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let row = Target::containing("TARGET  [").role("button");
+    assert!(ui.has(&row));
+    let set = fold_title(&ui, |t| t.contains('▶'));
+    ui.click(&Target::label(&format!("Fold {set}"))).unwrap();
+    ui.settle(SETTLE);
+    assert!(!ui.has(&row), "still listed:\n{}", ui.tree_text());
+    assert!(ui.has(&Target::label(&set)), "the set's own row went too");
+    ui.click(&Target::label(&format!("Unfold {set}"))).unwrap();
+    ui.settle(SETTLE);
+    assert!(ui.has(&row), "not listed again:\n{}", ui.tree_text());
+}
+
+/// A study this station's PACS does not hold (here, a PACS never
+/// scanned) has no *Save changes to the PACS*, once the lookup has landed.
+#[test]
+fn no_save_changes_entry_on_a_study_the_pacs_does_not_hold() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let mut nodes = 0;
+    let study = fold_title(&ui, |_| {
+        nodes += 1;
+        nodes == 2
+    });
+    right_click(&mut ui, &Target::label(&study));
+    assert!(ui.has(&Target::containing("Save as DICOM")), "no menu");
+    assert!(
+        !ui.has(&Target::containing("Save changes to the PACS")),
+        "{}",
+        ui.tree_text()
+    );
+}
+
+/// *Save changes to the PACS* on a study this station's PACS holds: greyed
+/// while nothing changed; after a structure is removed, it opens *Save to
+/// the PACS* on that study with the edited set ticked, and the save lands.
+#[test]
+fn save_changes_to_the_pacs_opens_on_the_study_with_what_changed() {
+    let _turn = turn();
+    // The scratch settings' own PACS, emptied however the test ends: the
+    // other tests expect one never scanned.
+    struct Clear(PathBuf);
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let archive = rust_dicom_station::archive::Archive::station();
+    let _clear = Clear(archive.root().to_path_buf());
+    archive
+        .import(
+            &phantom(),
+            &rust_dicom_station::progress::Progress::default(),
+        )
+        .expect("the phantom goes into the PACS");
+    let mut ui = with_phantom(false);
+    // The patient folds first, its study next.
+    let mut nodes = 0;
+    let study = fold_title(&ui, |_| {
+        nodes += 1;
+        nodes == 2
+    });
+    let entry = Target::containing("Save changes to the PACS").role("button");
+
+    right_click(&mut ui, &Target::label(&study));
+    let hit = ui.find(&entry).unwrap_or_else(|e| {
+        panic!(
+            "no entry on a study the PACS holds: {e:#}\n{}",
+            ui.tree_text()
+        )
+    });
+    assert!(hit.disabled, "nothing was changed: {}", hit.text);
+    ui.key("Escape").unwrap();
+    ui.settle(SETTLE);
+
+    // One structure out (the others unticked first, or the menu would act
+    // on every ticked one).
+    ui.click(&Target::label("None").role("button")).unwrap();
+    ui.settle(SETTLE);
+    right_click(&mut ui, &Target::containing("CORD  [").role("button"));
+    ui.click(&Target::containing("🗑 Remove").role("button"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.settle(SETTLE);
+    assert!(!ui.has(&Target::containing("CORD  [")));
+
+    right_click(&mut ui, &Target::label(&study));
+    let hit = ui.find(&entry).unwrap();
+    assert!(!hit.disabled, "the edit is not seen");
+    assert!(hit.text.ends_with("(1)"), "{}", hit.text);
+    ui.click(&entry).unwrap();
+    assert!(ui.settle(SETTLE), "the lookup did not land");
+    assert!(
+        ui.has(&Target::containing("What was made or changed in the study")),
+        "not scoped:\n{}",
+        ui.tree_text()
+    );
+    assert!(ui.has_label("changed"), "{}", ui.tree_text());
+    let save = Target::label("📤 Save 1 object").role("button");
+    assert!(!ui.find(&save).unwrap().disabled, "{}", ui.tree_text());
+    ui.click(&save).unwrap();
+    assert!(ui.settle(SETTLE), "the save did not land");
+    assert!(
+        ui.has(&Target::containing("1 object saved into the PACS")),
+        "{}",
+        ui.tree_text()
+    );
 }
 
 /// The frame as a picture: the size asked for, and an image in the views

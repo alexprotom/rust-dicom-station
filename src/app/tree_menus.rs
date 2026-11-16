@@ -86,9 +86,10 @@ impl ViewerApp {
             });
         });
         ui.separator();
-        if tip_button(ui, "📤 Save to the PACS", "Save beside its study") {
-            *out = Some(SetAction::SaveToPacs(here));
-            ui.close();
+        if let Some(scope) = self.set_sync_scope(here) {
+            if let Some(scope) = self.pacs_sync_entry(ui, here.slot, &scope.0, scope.1) {
+                *out = Some(SetAction::SaveToPacs(here, scope));
+            }
         }
         if Self::save_dicom_entry(
             ui,

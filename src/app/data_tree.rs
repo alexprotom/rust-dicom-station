@@ -299,6 +299,7 @@ impl ViewerApp {
             let open = self.open_slots();
             let uid = node.uid.clone();
             let mut save: Option<String> = None;
+            let mut sync = None;
             let mut act: Option<TreeAction> = None;
             let mut rename = None;
             let mut focus = None;
@@ -341,6 +342,14 @@ impl ViewerApp {
                     }
                 }
                 ui.separator();
+                if let Some(scope) = self.pacs_sync_entry(
+                    ui,
+                    slot,
+                    &uid,
+                    Self::study_scope(&node.title, &node.structs, &node.segs),
+                ) {
+                    sync = Some(scope);
+                }
                 if Self::save_dicom_entry(ui, "study (its series and objects)") {
                     save = Some(uid.clone());
                     ui.close();
@@ -381,6 +390,9 @@ impl ViewerApp {
                 self.save_request = Some(super::save_menu::SaveRequest::Dicom(
                     crate::export::Pick::Study { slot, uid },
                 ));
+            }
+            if let Some(scope) = sync {
+                self.open_pacs_save(slot, Some(scope));
             }
             if focus.is_some() {
                 self.tree_focus = focus;
@@ -555,6 +567,7 @@ impl ViewerApp {
         let open = self.open_slots();
         let mut switch_to = None;
         let mut save: Option<usize> = None;
+        let mut sync = None;
         let mut out = SeriesOut::default();
         let mut focus = None;
         let group_names = self.group_names(slot);
@@ -622,6 +635,11 @@ impl ViewerApp {
                         menu.fourd_entries(ui, &group_names, &mut out);
                     });
                     ui.separator();
+                    if let Some(scope) = Self::series_scope(study, i) {
+                        if let Some(scope) = self.pacs_sync_entry(ui, slot, &s.study_uid, scope) {
+                            sync = Some(scope);
+                        }
+                    }
                     if Self::save_dicom_entry(ui, "series") {
                         save = Some(i);
                         ui.close();
@@ -634,6 +652,9 @@ impl ViewerApp {
             self.save_request = Some(super::save_menu::SaveRequest::Dicom(
                 crate::export::Pick::Series { slot, index },
             ));
+        }
+        if let Some(scope) = sync {
+            self.open_pacs_save(slot, Some(scope));
         }
         if let Some(i) = switch_to {
             self.start_series_switch(slot, i);

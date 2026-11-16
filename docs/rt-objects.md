@@ -115,12 +115,23 @@ resampling a whole display plane. Display offers:
   lowest), *Sort* (highest first) and *Default levels* (107, 100, 95, 90,
   80, 70, 50, 30 %).
 
+The level colours and the wash can be made to agree in one click, either
+way round (*Sync colours*): **Levels from the map** colours every level as
+the wash colours its dose (stepped bands included), **Map from the levels**
+switches the wash to the isodose map. Both stay editable afterwards.
+
 The legend in the corner of the views shows the wash as a colour bar with a
 tick at every step of its scale, from the threshold (or the scale's lower
 end, if higher) to its upper end, labelled in the scale's unit, and beside
-it the isodose levels drawn, highest first. The colour map, its range, its
-steps, banded or not, and the isodose ladder are kept in the settings
-(`dose_colormap`, `dose_wash_range`, `dose_wash_steps`, `dose_iso_levels`
+it the isodose levels drawn, highest first. It is off on every view for a
+fresh installation. It is switched per view by the 🎨 button on the view's
+own bar (there while the workspace draws a dose, on a folded bar too) or
+by the *Legend on* ticks in the section, and its two parts by *Colour
+scale* and *Isodose levels* there: a legend of the isodose lines alone on
+the coronal view is one click on that view and one tick. The colour map,
+its range, its steps, banded or not, the isodose ladder and the legend's
+switches are kept in the settings (`dose_colormap`, `dose_wash_range`,
+`dose_wash_steps`, `dose_iso_levels`, `dose_legend`, `dose_legend_parts`
 in `viewer_settings.txt`).
 
 The **reference dose** defaults to the plan's `TargetPrescriptionDose` and can

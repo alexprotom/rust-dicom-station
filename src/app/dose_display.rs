@@ -35,33 +35,12 @@
 use super::*;
 use crate::settings::{DoseColormap, DoseColors};
 
-/// Where the dose legend is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct DoseLegend {
-    pub on: bool,
-    /// Axial, sagittal, coronal, the 3D scene.
-    pub views: [bool; 4],
-}
-
-impl Default for DoseLegend {
-    fn default() -> Self {
-        DoseLegend {
-            on: true,
-            views: [true; 4],
-        }
-    }
-}
-
-impl DoseLegend {
-    /// Drawn on a view of `plane`, or (`None`) on the 3D scene.
-    pub fn shows(&self, plane: Option<ViewPlane>) -> bool {
-        self.on
-            && self.views[match plane {
-                Some(ViewPlane::Axial) => 0,
-                Some(ViewPlane::Sagittal) => 1,
-                Some(ViewPlane::Coronal) => 2,
-                None => 3,
-            }]
+/// The index of a view in [`crate::settings::DoseLegend::views`]: a plane,
+/// or (`None`) the 3D scene.
+pub(super) fn legend_view(plane: Option<ViewPlane>) -> usize {
+    match plane {
+        Some(p) => super::overlays::view_index(p),
+        None => 3,
     }
 }
 
@@ -139,6 +118,18 @@ pub(super) fn wash_scale(dc: &DoseColors, reference: f32, threshold_pct: f32) ->
             levels: &levels,
         },
     )
+}
+
+/// Every isodose level coloured as the wash colours its dose: the scale of
+/// a workspace whose 100 % is `reference` (none loaded: a scale in % needs
+/// none, one in Gy is read as if 100 % were 100 Gy), stepped bands
+/// included, so a line runs along the edge of the band it starts.
+pub(super) fn sync_levels_to_map(dc: &mut DoseColors, reference: Option<f32>) {
+    let reference = reference.filter(|r| *r > 0.0).unwrap_or(100.0);
+    let scale = wash_scale(dc, reference, 0.0);
+    for l in &mut dc.levels {
+        l.color = scale.rgb(l.pct / 100.0 * reference);
+    }
 }
 
 /// A number of the legend: as many decimals as the scale's ticks need.
@@ -237,7 +228,7 @@ impl ViewerApp {
             .on_hover_text("No colour under this percentage of the reference");
 
         self.dose_scale_ui(ui, first_reference);
-        self.dose_levels_ui(ui);
+        self.dose_levels_ui(ui, first_reference);
 
         // The legend over the views.
         ui.separator();
@@ -248,27 +239,41 @@ impl ViewerApp {
             self.persist_settings();
         }
         let lg = &mut self.dose_legend;
-        ui.checkbox(&mut lg.on, "Legend on the views")
-            .on_hover_text("Dose scale in the corner of each view");
-        ui.add_enabled_ui(lg.on, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (on, name) in lg
-                    .views
-                    .iter_mut()
-                    .zip(["Axial", "Sagittal", "Coronal", "3D"])
-                {
-                    ui.checkbox(on, name);
-                }
-            });
+        ui.label("Legend on")
+            .on_hover_text("The dose legend in the corner of these views; each view's own bar has a button for it too");
+        ui.horizontal_wrapped(|ui| {
+            for (on, name) in lg
+                .views
+                .iter_mut()
+                .zip(["Axial", "Sagittal", "Coronal", "3D"])
+            {
+                ui.checkbox(on, name)
+                    .on_hover_text(format!("The dose legend on the {name} view"));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Showing");
+            ui.checkbox(&mut lg.scale, "Colour scale")
+                .on_hover_text("The colorwash's colour bar, while the wash is drawn");
+            ui.checkbox(&mut lg.levels, "Isodose levels")
+                .on_hover_text("Each isodose level drawn, its colour and percentage");
         });
         self.dose_mode = mode;
         self.dose_opacity = opacity;
         self.dose_threshold_pct = threshold;
+    }
 
-        // The colour choices are written once they settle: not on every
-        // frame of a drag, but as soon as no button is held.
-        if self.dose_colors != self.dose_colors_saved && !ui.input(|i| i.pointer.any_down()) {
+    /// Write the colour scale, the isodose ladder and the legend's switches
+    /// to the settings once they differ from what was last written and no
+    /// button is held: not on every frame of a drag, but as soon as it
+    /// ends. Once a frame, wherever they were changed (the section, a
+    /// view's legend button).
+    pub(super) fn persist_dose_display(&mut self, ctx: &egui::Context) {
+        let changed = self.dose_colors != self.dose_colors_saved
+            || self.dose_legend != self.dose_legend_saved;
+        if changed && !ctx.input(|i| i.pointer.any_down()) {
             self.dose_colors_saved = self.dose_colors.clone();
+            self.dose_legend_saved = self.dose_legend;
             self.persist_settings();
         }
     }
@@ -350,8 +355,10 @@ impl ViewerApp {
     }
 
     /// The isodose ladder: each level's colour, whether it is drawn, its
-    /// percentage; a level added or removed.
-    fn dose_levels_ui(&mut self, ui: &mut egui::Ui) {
+    /// percentage; a level added or removed; the levels' colours and the
+    /// wash's made the same, either way round. `reference` is the first
+    /// workspace's 100 %, which a scale in Gy is read against.
+    fn dose_levels_ui(&mut self, ui: &mut egui::Ui, reference: Option<f32>) {
         ui.separator();
         ui.weak("Isodose levels (% of reference)");
         let levels = &mut self.dose_colors.levels;
@@ -418,6 +425,36 @@ impl ViewerApp {
                 *levels = settings::default_iso_levels();
             }
         });
+
+        // The lines and the wash in the same colours, whichever way round:
+        // each level takes the wash's colour at its percentage, or the wash
+        // takes the levels' colours (the isodose map). Either is one click,
+        // and either can be changed again afterwards.
+        let dc = &mut self.dose_colors;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Sync colours");
+            let from_map = dc.map != DoseColormap::Isodose;
+            if ui
+                .add_enabled(from_map, egui::Button::new("Levels from the map").small())
+                .on_hover_text("Colour every isodose level as the colorwash colours its dose")
+                .on_disabled_hover_text(
+                    "The wash already takes the levels' colours: pick another colour map first",
+                )
+                .clicked()
+            {
+                sync_levels_to_map(dc, reference);
+            }
+            if ui
+                .add_enabled(from_map, egui::Button::new("Map from the levels").small())
+                .on_hover_text(
+                    "Colour the wash with the isodose levels' own colours (the isodose map)",
+                )
+                .on_disabled_hover_text("The wash already takes the levels' colours")
+                .clicked()
+            {
+                dc.map = DoseColormap::Isodose;
+            }
+        });
     }
 
     /// The dose legend of `slot`, its top right corner at `top_right`:
@@ -441,7 +478,7 @@ impl ViewerApp {
         let dc = &self.dose_colors;
         let reference = st.dose_reference.max(1e-6);
         let units = gy_units(&d.units);
-        let mut title = if dc.in_gy && self.dose_mode.wash() {
+        let mut title = if dc.in_gy && self.dose_mode.wash() && self.dose_legend.scale {
             format!("{units}, 100 % = {reference:.2}")
         } else {
             format!("% of {reference:.2} {units}")
@@ -460,7 +497,7 @@ impl ViewerApp {
         };
 
         // The isodose lines drawn.
-        let mut levels: Vec<(f32, Color32)> = if self.dose_mode.iso() {
+        let mut levels: Vec<(f32, Color32)> = if self.dose_mode.iso() && self.dose_legend.levels {
             dc.levels
                 .iter()
                 .filter(|l| l.on)
@@ -491,7 +528,7 @@ impl ViewerApp {
             ticks: Vec<(f32, String)>,
             label_w: f32,
         }
-        let bar = self.dose_mode.wash().then(|| {
+        let bar = (self.dose_mode.wash() && self.dose_legend.scale).then(|| {
             let scale = wash_scale(dc, reference, self.dose_threshold_pct);
             let (lo, hi) = (scale.lo, scale.hi);
             let bottom = if scale.threshold < hi {
@@ -529,6 +566,10 @@ impl ViewerApp {
             }
         });
 
+        if bar.is_none() && levels.is_empty() {
+            // Neither part has anything to say in this mode.
+            return;
+        }
         let bar_h = 120.0;
         let bar_col_w = bar.as_ref().map_or(0.0, |b| b.label_w + 4.0 + 10.0);
         let iso_col_w = if levels.is_empty() { 0.0 } else { iso_w };

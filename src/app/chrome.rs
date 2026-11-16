@@ -879,6 +879,11 @@ impl ViewerApp {
                 }
                 let comparing = self.comparing();
                 for slot in self.open_slots() {
+                    // Looked up again only when the crosshair or what is
+                    // drawn moved (see `cursor_names`).
+                    self.refresh_cursor_names(slot);
+                }
+                for slot in self.open_slots() {
                     let slot_name = SLOT_NAMES[slot];
                     let s = &self.slots[slot];
                     let Some(study) = &s.study else { continue };
@@ -929,6 +934,16 @@ impl ViewerApp {
                             "CT" | "" => format!("{hu:5} HU"),
                             other => format!("{other} value {hu}"),
                         });
+                    }
+                    // The structures and segments drawn at the crosshair,
+                    // between the value and the dose.
+                    if let Some((names, all)) =
+                        super::cursor_names::names_text(&s.cursor_names.names)
+                    {
+                        let resp = ui.label(names);
+                        if let Some(all) = all {
+                            resp.on_hover_text(all);
+                        }
                     }
                     if let Some(d) = study.doses.get(s.active_dose).and_then(|d| d.sample(p)) {
                         ui.monospace(format!(

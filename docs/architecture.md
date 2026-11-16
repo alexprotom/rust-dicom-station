@@ -334,7 +334,13 @@ src/
     mod.rs            ViewerApp's struct, construction, the per-frame driver;
                       the types it holds live with the files that use them
     slot.rs           StudySlot (a workspace) and ViewState (a view), with the
-                      prepared-structure caches (RoiPrep, RoiPreps)
+                      prepared-structure caches (RoiPrep, RoiPreps; one
+                      mapping shared by the views and the readout)
+    cursor_names.rs   the status bar's names at the crosshair: the drawn
+                      structures (PreparedRoi::contains on the nearest
+                      slice) and visible segments (mask at the voxel) that
+                      hold it, cached on the crosshair and the structure /
+                      segment generations
     theme.rs          theme-dependent colors
     glyphs.rs         the font stack (Hack as the last proportional fallback)
                       and the test that fails on a glyph egui cannot draw
@@ -576,8 +582,13 @@ src/
     pacs_remote.rs    the PACS window on a paired server: its tree, pull
                       (patients, studies, single series), load, send, sync,
                       upload, the Tasks tab, Add server / pairing
-    pacs_save.rs      Save to the PACS (Save menu, a set's tree menu, the
-                      PACS window's Send workspace): the workspace's sets
+    pacs_sync.rs      the data tree's Save changes to the PACS (study, image
+                      series, set rows): which studies the PACS holds, on a
+                      job; the new / changed objects (fingerprints against
+                      saved_marks, cached); opens pacs_save.rs scoped
+                      (SaveScope) to the row
+    pacs_save.rs      Save to the PACS (Save menu, the tree's Save changes,
+                      the PACS window's Send workspace): the workspace's sets
                       and segmentations as new / changed / in the PACS /
                       not in it (changed: an edit fingerprint kept per SOP
                       UID in StudySlot::saved_marks), the new and changed
