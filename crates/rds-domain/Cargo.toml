@@ -24,6 +24,11 @@ dicom-pixeldata = { version = "0.10", features = ["native", "rayon"] }
 dicom-transfer-syntax-registry = "0.10"  # read data sets that carry no file meta group (see dicomfile.rs)
 # The DRR workflow step writes its renderings as PNG.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# The posture model's film (`posture/film.rs`): an animated GIF written from
+# indices into one palette of its own, which the image crate's GIF encoder
+# (quantizing every RGBA frame) cannot take. The crate the image crate's
+# `gif` feature already builds, so nothing new is downloaded or compiled.
+gif = { version = "0.14", default-features = false, features = ["std"] }
 # Encapsulated PDF documents (a radiologist's findings filed with the study)
 # are rendered page by page for the additional pane: pure Rust, on the CPU,
 # so every build - the mobile ones too - draws them the same way.

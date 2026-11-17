@@ -506,6 +506,8 @@ impl ViewerApp {
             image_series_uid: &ser.referenced_series_uid,
             image_sop_uids: &[],
             params: &params,
+            series_uid: "",
+            series_description: "",
         };
         match dicomseg::write(ser, &ctx, path) {
             Ok(()) => {

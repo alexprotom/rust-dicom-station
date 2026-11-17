@@ -2,9 +2,10 @@
 
 Contours drawn as contours: a polygon, a spline or a freehand stroke goes
 into the RT structure as the curve it was drawn as, not as the outline of the
-voxels it happened to cover. The brush and the geodesic grower still edit
-voxel masks - [segmentation.md](segmentation.md) - and the two representations
-meet where each is better, by the rule below. A structure that was generated
+voxels it happened to cover. A segmentation is a voxel mask -
+[segmentation.md](segmentation.md) - and the drawing tools are one set for
+both: each acts on whichever is selected, in that one's own representation,
+and the two representations meet where each is better, by the rule below. A structure that was generated
 rather than drawn - a threshold, a shape, a dose level - is
 [generators.md](generators.md), and it lands here, editable, like everything
 else.
@@ -36,18 +37,33 @@ automatic.
 | Operation | On | Because |
 |---|---|---|
 | Drawing, nudging, per-slice editing, interpolation | contours | It is what the user sees and what the file stores |
+| The same tools on a segment | voxels, through the slice's outline where the tool is a curve | A segment is a mask; a curve fills the voxels whose centre it encloses |
 | Boolean algebra between structures, margins, morphological cleanup, distance transforms | voxels | The exact anisotropic distance transform is a voxel algorithm ([structure-algebra.md](structure-algebra.md)) |
 | Everything learned, region growing, thresholds | voxels | The engines produce label maps |
 | The 3-D view | triangle mesh | Surface nets over the mask |
 
 ## The tools
 
-The toolbar's **✏ Draw structure** button unfolds one row of glyphs on the
-toolbar itself: the voxel tools first, then these, which take over the left
-mouse button like the brush. After the row come only the options of the
-tool in hand - the radius, the edge band, the draw mode, the structure or
-segmentation being drawn into with a **+** to start another. Folding the
-row puts the tool down.
+The toolbar's **✏ Draw structure** button unfolds one row of eight glyphs
+on the toolbar itself, which take over the left mouse button. After the row
+come the options of the tool in hand - the radius, the edge band, the draw
+mode - and the **target line**: what the tools act on. Folding the row puts
+the tool down.
+
+**One row for structures and segments.** The row is the same whatever is
+selected: each tool acts on the *subject* the target line names, an RT
+structure or a segment, and the program picks the representation. The
+user picks a tool for what it does, never for what kind of thing it works
+on; the tooltips and the status bar's *?* say what the tool in hand does to
+the current subject.
+
+| Tool | On an RT structure | On a segment |
+|---|---|---|
+| **🎨 Paint** | the contour brush: the swept stroke is added to the slice's contours, pushing the outline out; with *3D* a ball, cut into the contours of every slice it reaches | the voxel brush, a disc on the slice or a sphere through the slices (*3D*) |
+| **⊖ Erase** | the same brush, cutting the outline back, on the slice or (*3D*) through the slices | the voxel brush, erasing |
+| **✨ Grow** | the grown region's outline merged into the contours of every slice it reached | the grown voxels added to the mask |
+| **📐 Polygon**, **✒ Spline**, **✏ Free**, **🔗 Live wire** | the closed curve added or cut by the *Auto / Extend / Subtract* rule | the voxels whose centre the curve encloses filled in or cut out on that slice, by the same rule |
+| **⌖ Nudge** | the outline's vertices pushed | the slice's outline pushed, and filled back into the mask |
 
 * **📐 Polygon** - click by click. Right-click, double-click or `Enter`
   closes it; `Esc` throws it away.
@@ -56,24 +72,79 @@ row puts the tool down.
 * **✏ Free** - press, drag round the structure, release. The stroke closes
   itself and is thinned on release, so a dense drag does not store two
   thousand points.
-* **🖊 Brush** - a round brush *on the patient*: the swept stroke is added to
-  the structure, or cut out of it with `Alt`. On a sagittal slice of a 1 x 3
-  mm lattice the stamp is an ellipse on the lattice and a disc on the
-  patient, which is the only way a brush radius in millimetres means
-  anything. This is the tool a department uses most.
-* **⌖ Nudge** - push the outline around. Every vertex within the tool radius
-  follows the drag with a cosine falloff, so the curve deforms instead of
-  developing a corner. The radius is the brush radius: `Shift`+wheel, `[`
-  and `]`.
-
 * **🔗 Live wire** - click once on the boundary, move along it, and the
   curve between the two follows the image edge instead of the straight line
   the hand would have drawn. Every click anchors what is on screen; right-
   click, double-click or `Enter` closes. See *Following the edge* below.
+* **🎨 Paint** and **⊖ Erase** - a round brush *on the patient*. On a
+  structure the swept stroke is added to the slice's contours (Paint) or cut
+  out of them (Erase); on a sagittal slice of a 1 x 3 mm lattice the stamp is
+  an ellipse on the lattice and a disc on the patient, which is the only way
+  a brush radius in millimetres means anything. On a segment it is the voxel
+  brush of [segmentation.md](segmentation.md), with its *3D* sphere. `Alt`
+  reverses either tool on both. A structure is painted on the slice in view
+  unless *3D* is on (the toggle is kept per kind: on for a segment, off for
+  a structure until asked for); then the brush is a ball, below under *The
+  3-D contour brush*. This is the tool a department uses most.
+* **✨ Grow** - press a seed, drag up and down to widen or narrow the
+  region, release to keep it ([segmentation.md](segmentation.md)). On a
+  segment the voxels are added; on a structure the region - holes inside a
+  slice filled, the *inside:* limit honoured - is traced the way a generator
+  traces a mask and united with the structure's contours on every slice it
+  reached, as one undo step.
+* **⌖ Nudge** - push the outline around. Every vertex within the tool radius
+  follows the drag with a cosine falloff, so the curve deforms instead of
+  developing a corner. The radius is the brush radius: `Shift`+wheel, `[`
+  and `]`. On a segment the slice's outline is read once when the drag
+  starts (the marching-squares trace a generator makes, resampled to half a
+  voxel), pushed by every sample and filled back each time: kept for the
+  whole drag, so a push of a fraction of a voxel is not rounded away and
+  many of them add up as they do on a contour.
 
-All six work in **any** of the three views. `Ctrl`-click picks the structure
-under the pointer; `Ctrl+Z` undoes the last contour edit of the workspace under
-the pointer.
+All eight work in **any** of the three views. `Ctrl`-click picks what is
+under the pointer - a structure whose contour encloses it, or a segment that
+holds the voxel, the subject's own kind looked at first - and makes it the
+subject. `Ctrl+Z` takes back the last stroke of the subject, whichever tool
+made it: one step per stroke, curve or drag, on either kind.
+
+### The 3-D contour brush
+
+With *3D* on and a structure the subject, Paint and Erase are a ball of
+the brush radius in patient millimetres. On every slice of the drawing
+plane the ball reaches, it adds to that slice's contours, or cuts out of
+them, the disc where the sphere meets the slice - a capsule, swept along
+the drag. How far it reaches is the radius over the spacing *along the
+slice normal*, and every distance is measured in patient LPS through the
+image's direction vectors, so on a tilted acquisition (slices stacked
+along a direction that is not their normal) the circle on a neighbouring
+slice is smaller by the true distance and shifted by the tilt, as the
+sphere really crosses it. On a sagittal or coronal view the slices are
+that plane's, and the result is re-cut onto the axial contours the
+structure is stored as, as any off-axis stroke is.
+
+The obvious implementation - a contour boolean on every reached slice on
+every mouse sample - is what kept the brush on one slice: five to fifty
+booleans per sample cannot follow a hand. So a stroke keeps a **raster of
+what the ball has covered** (`contours::BallFootprint`): each sample only
+marks the cells under the ball, finer than the voxels (a radius is at least
+24 cells, a cell no finer than 0.2 mm), on every slice it reaches - a few
+thousand distance tests, nothing else. A slice's cells become an outline
+the way a mask slice does (marching squares, `region_of_mask`'s trace) and
+are merged into the contours by one boolean: the slice being drawn on at
+once, so the stroke under the pointer shows as it goes, the other slices
+every 100 ms and on release. A merge always starts from the slice as the
+stroke found it, so however often it runs nothing compounds, and the rings
+the ball never touched keep their vertices (the boolean passes them
+through). The other views, the 3D scene and *Save changes to the PACS*
+see the contours as they are merged, through the same writes as every
+other contour edit. The whole stroke is one undo step; `Alt`, `Shift`+wheel
+and `[` `]` work as on the slice.
+
+The smart brush's edge band applies voxel by voxel through the ball, as it
+does through the segment brush's sphere: a cell is marked only if the voxel
+it lies in is in the band. The slice brush's "keep the one piece the stroke
+stands on" has no meaning in a sphere and is not applied. A planar pane is
+one image, so it has no *3D*.
 
 ### What a stroke does to what is there
 
@@ -84,10 +155,12 @@ the pointer.
 | **Subtract** | Always cut. |
 
 Auto is the rule planning systems have settled on, because a planner should
-not have to learn a second set of habits to draw a contour here. The brush
-follows it too: an Auto stroke that *starts* inside the structure adds to it
-and one that starts outside cuts into it, decided once when the stroke
-starts so the brush does not change its mind halfway through.
+not have to learn a second set of habits to draw a contour here. On a
+segment the rule is asked of the slice's own outline (the trace of its
+voxels), so a curve does the same thing to a mask as to a contour. The
+brush does not follow the mode: Paint adds and Erase cuts, on a structure as
+on a segment, and `Alt` reverses either - which tool is in hand says what a
+stroke does, so it cannot depend on where the stroke happened to start.
 
 ### Following the edge
 
@@ -120,37 +193,55 @@ than an equally strong edge that does not. Half the cost stays static, so a
 strong edge the tool has never seen is still cheaper than flat tissue.
 *forget* is what to press when moving to a different organ.
 
-**The smart brush** is the 🖊 brush with an *edge* setting. The stamp is cut
-back to the pixels whose value falls in the band - *bone* and *air* are the
-CT numbers themselves, *bright* and *dark* are relative to the display
-window, so they mean something on MR and PET too - and then to the one piece
-of that which the stroke is standing on, so a brush overlapping a second
-organ across a gap does not fill it. *reach* is how far past the threshold
-it may still paint, as a fraction of the window. With the setting on *any*
-it is the plain brush, stamp and all.
+**The smart brush** is Paint and Erase with an *edge* setting. The stamp is
+cut back to the pixels whose value falls in the band - *bone* and *air* are
+the CT numbers themselves, *bright* and *dark* are relative to the display
+window, so they mean something on MR and PET too. On a structure it is then
+cut to the one piece of that which the stroke is standing on, so a brush
+overlapping a second organ across a gap does not fill it; on a segment the
+band is applied voxel by voxel through the disc or the sphere, the
+threshold-limited paintbrush of a mask editor
+(`Segmentation::paint_capsule_within`). *reach* is how far past the
+threshold it may still paint, as a fraction of the window. With the setting
+on *any* it is the plain brush, stamp and all.
 
-### Which structure is being edited
+### What is being edited
 
-One at a time: the one **selected** in the sidebar's *RT structures* list
-(click its name, exactly as a segment is selected in the *Segmentations*
-list; the tick box beside it is only whether it is shown) and named after
-the draw row. Select it there, `Ctrl`-click a contour in a view, or simply
-start drawing: with no structure chosen the first stroke **creates** one
-(and a structure set to hold it, if the study has none). It creates rather
-than adopting the list's first structure on purpose - a stroke must never
-land in a structure nobody pointed at. *+ Empty structure* in the editor's
-*Insert structure* section, and *+* after the selected structure's name on
-the toolbar, make another.
+One thing at a time, the **subject**: an RT structure or a segment. The rule
+is the Structure editor's own (`ViewerApp::edit_subject`, below under
+*Editing a segmentation*): a workspace that holds only one kind is edited as
+that kind; one that holds both has the *Edit: Structure | Segmentation*
+switch, on the target line as in the editor, and the two never disagree.
+
+The target line after the row reads `▸ name` in the subject's colour. It is
+a picker: the structures of the active set and the segments of the active
+segmentation series are listed under their headings, and choosing one makes
+it the subject, of whichever kind; *New RT structure* and *New
+segmentation* at its foot start one of either. The **+** beside it starts a
+new one of the subject's kind. Clicking a structure in the sidebar's *RT
+structures* list makes it the subject, and clicking a segment in the
+*Segmentations* list makes that one the subject (the tick box beside either
+is only whether it is shown); so does `Ctrl`-clicking it in a view. Or
+simply start drawing: with nothing chosen the first stroke **creates** one
+of the subject's kind (and a structure set or a segmentation series to hold
+it, if the study has none). It creates rather than adopting the list's first
+structure on purpose - a stroke must never land in a structure nobody
+pointed at. *+ Empty structure* in the editor's *Insert structure* section
+makes another structure too.
 
 ### On a planar pane
 
 The same tools draw on the planar panes, on the 2D contours of a planar
 structure set: a stroke on a pane makes the pane the tools' target (the
-toolbar row reads `▸ 2D · set · structure`, and Ctrl+Z, Esc and Enter act
-there), a stroke in an MPR view makes the volume the target again. The
-rings are in the image's pixels and the brush radius in millimetres of its
-spacing; the rule of *Auto / Extend / Subtract* is the one above
-(`contours::auto_cuts`), the spline the same curve (`contours::spline_points`).
+target line reads `▸ 2D · set · structure`, and Ctrl+Z, Esc and Enter act
+there), a stroke in an MPR view makes the volume the target again. A planar
+image has no segments, so the subject there is always the planar structure:
+Paint and Erase are its contour brush (only *bright* and *dark* of the edge
+band mean anything on a radiograph), and Grow, which needs a volume to grow
+through, does nothing on a pane. The rings are in the image's pixels and the
+brush radius in millimetres of its spacing; the rule of *Auto / Extend /
+Subtract* is the one above (`contours::auto_cuts`), the spline the same
+curve (`contours::spline_points`).
 See [planar-2d.md](planar-2d.md).
 
 ## The Structure editor
@@ -255,7 +346,10 @@ when the workspace holds both an RT structure set and a segmentation series -
 with one of them alone there is nothing to choose, and the editor follows
 whatever is there rather than saying "nothing is selected" when it means "not
 that kind". The subject is the selected segment of the segmentation series,
-the same one the voxel tools paint into ([segmentation.md](segmentation.md)).
+and it is the drawing tools' subject too: the toolbar's strip carries the
+same switch on its target line, so what the editor's section shows and what
+the tools draw on are always the same thing
+([segmentation.md](segmentation.md)).
 
 The header is the segment's colour, its name, its volume in cm³, how many
 slices it touches and how many voxels it holds. Under it:

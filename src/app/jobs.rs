@@ -237,6 +237,37 @@ impl ViewerApp {
         self.loading = Some(Job { progress, rx });
     }
 
+    /// *Restore last session*, one workspace: every source it was loaded
+    /// from, read as one load ([`loader::load_sources`]: overlapping
+    /// sources give each file once, so nothing is merged into itself and
+    /// nothing is reported as already present). Called with the loader idle.
+    pub(super) fn start_restore(&mut self, slot: usize, sources: Vec<PathBuf>) {
+        if sources.is_empty() {
+            return;
+        }
+        self.remember_sources(slot, &sources);
+        if let Some(r) = &mut self.wf_run {
+            r.forget_parked(slot);
+        }
+        let merge = self.slots[slot].study.is_some();
+        let origin = match sources.len() {
+            1 => sources[0].display().to_string(),
+            n => format!("the {n} sources of the last session"),
+        };
+        let progress = Arc::new(Progress::default());
+        let (tx, rx) = mpsc::channel();
+        let p2 = progress.clone();
+        std::thread::spawn(move || {
+            let res = if merge {
+                loader::load_sources_to_merge(&sources, &origin, &p2)
+            } else {
+                loader::load_sources(&sources, &origin, &p2)
+            };
+            let _ = tx.send(LoadResult::Study(Box::new(res), slot));
+        });
+        self.loading = Some(Job { progress, rx });
+    }
+
     /// Read series `idx` of `slot` off the disk and put it on display.
     ///
     /// Asked while another read is running, it waits its turn rather than
@@ -850,13 +881,9 @@ impl ViewerApp {
             } else if let Some((slot, paths, sources)) = self.pending_load_files.take() {
                 self.start_load_files_noting(slot, paths, sources);
             } else if !self.restore_queue.is_empty() {
-                // One source of the session being restored at a time.
-                let (slot, path) = self.restore_queue.remove(0);
-                if path.is_dir() {
-                    self.start_load(slot, path);
-                } else {
-                    self.start_load_files(slot, vec![path]);
-                }
+                // One workspace of the session being restored at a time.
+                let (slot, paths) = self.restore_queue.remove(0);
+                self.start_restore(slot, paths);
             }
         }
 
@@ -1038,6 +1065,13 @@ impl ViewerApp {
         // Poll an archive job - a scan, an import, an upload or a removal.
         match poll_job(&mut self.pacs_job, ctx, "Archive", &mut self.error) {
             Some(Ok(outcome)) => self.on_pacs_done(outcome),
+            // Cancelled from the window's bar: what was asked for, said in
+            // the window's status line rather than as an error.
+            Some(Err(e)) if progress::is_cancellation(&e) => {
+                if let Some(w) = &mut self.pacs {
+                    w.status = Some("Cancelled".into());
+                }
+            }
             Some(Err(e)) => self.error = Some(format!("Archive: {e:#}")),
             None => {}
         }
@@ -1108,6 +1142,7 @@ impl ViewerApp {
         // egui has just delivered to whoever asked for it - a recording of a
         // run, or a still of the views.
         self.poll_phase_cache(ctx);
+        self.poll_posture(ctx);
         self.play_tick(ctx);
         let shot = ctx.input(|i| {
             i.events.iter().rev().find_map(|e| match e {

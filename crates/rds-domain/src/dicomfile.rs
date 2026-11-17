@@ -63,6 +63,13 @@ pub fn open_references(path: &Path) -> Result<DefaultDicomObject> {
     open(path, Some(Tag(0x3006, 0x0011)))
 }
 
+/// Open a file as far as `tag` (not into it): the start of an RT object's
+/// own groups when only its first attributes are wanted (an RT Plan's
+/// label at 300A,0002, a dose's comment at 3004,0006).
+pub fn open_until(path: &Path, tag: Tag) -> Result<DefaultDicomObject> {
+    open(path, Some(tag))
+}
+
 /// Open a file in full, pixels included.
 pub fn open_full(path: &Path) -> Result<DefaultDicomObject> {
     open(path, None)

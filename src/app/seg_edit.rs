@@ -13,6 +13,16 @@
 //! contours. Nothing here is a new algorithm; it is
 //! [`crate::structops::Cleanup`], [`crate::morphology`] and
 //! [`crate::segmentation::mask_to_roi`] given a place in the editor.
+//!
+//! **The subject.** Which of the two the editor works on is one rule,
+//! [`ViewerApp::edit_subject`], and the toolbar's drawing strip follows the
+//! same rule: its eight tools act on the subject, whichever kind it is, and
+//! its target line carries the same *Edit:* switch
+//! ([`ViewerApp::edit_subject_row`]). So the switch is set from wherever
+//! the user points at something - a structure or a segment clicked in the
+//! data tree, chosen in the strip's picker, Ctrl-clicked in a view, made by
+//! a generator - and the editor's section and the drawing tools never
+//! disagree about what is being edited.
 
 use super::*;
 
@@ -62,6 +72,56 @@ impl ViewerApp {
         }
     }
 
+    /// The name and colour of what the tools act on in this workspace, and
+    /// the colour a brush cursor or a curve being drawn takes when nothing
+    /// is chosen yet (the first stroke creates one).
+    pub(super) fn subject_color(&self, slot: usize) -> [u8; 3] {
+        match self.edit_subject(slot) {
+            EditSubject::Structure => self
+                .edit_roi_name(slot)
+                .map(|(_, c)| c)
+                .unwrap_or([255, 235, 60]),
+            EditSubject::Segmentation => {
+                let s = &self.slots[slot];
+                s.segs()
+                    .get(s.active_seg)
+                    .map(|g| g.color)
+                    .unwrap_or([140, 255, 140])
+            }
+        }
+    }
+
+    /// Make whatever is under the pointer what the tools act on: a
+    /// structure whose contour encloses it, or a visible segment that holds
+    /// the voxel - the subject's own kind looked at first, so a Ctrl-click
+    /// inside a structure painted over by a segment picks what was being
+    /// edited. Whether anything was picked.
+    pub(super) fn pick_subject_at(
+        &mut self,
+        slot: usize,
+        plane: crate::volume::ViewPlane,
+        v: [f64; 3],
+    ) -> bool {
+        let structure = |me: &mut Self| {
+            let hit = me.pick_roi_at(slot, plane, v);
+            if hit {
+                me.tools.subject = EditSubject::Structure;
+            }
+            hit
+        };
+        let segment = |me: &mut Self| {
+            let hit = me.pick_seg_at(slot, v);
+            if hit {
+                me.tools.subject = EditSubject::Segmentation;
+            }
+            hit
+        };
+        match self.edit_subject(slot) {
+            EditSubject::Structure => structure(self) || segment(self),
+            EditSubject::Segmentation => segment(self) || structure(self),
+        }
+    }
+
     /// The two-button switch, shown only where there is a choice to make.
     pub(super) fn edit_subject_row(&mut self, ui: &mut egui::Ui, slot: usize) {
         if !(self.edit_target(slot).is_some() && self.has_editable_seg(slot)) {
@@ -97,7 +157,7 @@ impl ViewerApp {
         let Some((name, color, cm3, occupied, voxels)) = self.seg_summary(slot) else {
             ui.weak(
                 "No segmentation is selected. Click one in the Segmentations list, or \
-                 paint with a voxel tool and the first stroke creates one.",
+                 pick New segmentation on the drawing tools' target line.",
             );
             return;
         };

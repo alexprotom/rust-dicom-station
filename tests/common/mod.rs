@@ -608,3 +608,38 @@ pub fn radiographs_into(folder: &Path, shift: [f64; 3], prefix: &str) {
             .expect("RT image written");
     }
 }
+
+/// A study as a PACS files it, for *Restore last session*: the synthetic RT
+/// study (`gen_test_data`: CT, structures, dose, plan, a DX and an RT image)
+/// in `dir/study/ct`, and `kv` more radiographs - RT images labelled
+/// `KV 01`, `KV 02`, ... - directly in `dir/study`, the way the station
+/// files what it saves beside a study's series. Returns the study folder,
+/// the series folder and the radiographs, sorted.
+pub fn study_with_radiographs(dir: &Path, kv: usize) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+    use rust_dicom_station::dicom_export::{write_rt_image, ObjectMeta};
+    let study_dir = dir.join("study");
+    let ct = study_dir.join("ct");
+    let _ = std::fs::remove_dir_all(&study_dir);
+    gen_test_data::generate(&ct, &GenParams::default(), &Progress::default())
+        .expect("test data generation succeeds");
+    let study = loader::load_directory(&ct, &Progress::default()).expect("the study loads");
+    let dx = study
+        .planar_images
+        .iter()
+        .find(|p| p.modality == "DX")
+        .expect("the generator writes a DX")
+        .clone();
+    let meta = ObjectMeta::of_study(&study, "KV", "kV image");
+    let mut files = Vec::new();
+    for i in 1..=kv {
+        let mut img = dx.clone();
+        img.label = format!("KV {i:02}");
+        // Fresh UIDs: each is an image of its own.
+        img.sop_instance_uid.clear();
+        img.series_instance_uid.clear();
+        let path = study_dir.join(format!("KV_{i:02}.dcm"));
+        write_rt_image(&path, &img, &meta).expect("RT image written");
+        files.push(path);
+    }
+    (study_dir, ct, files)
+}

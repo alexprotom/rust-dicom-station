@@ -444,6 +444,9 @@ impl ViewerApp {
         if let Some(i) = new_edit {
             self.slots[slot].active_roi = i;
             self.drop_edit();
+            // A structure picked in the list is what the drawing tools and
+            // the editor act on from now on, segments there or not.
+            self.tools.subject = super::seg_edit::EditSubject::Structure;
         }
         if let Some(i) = open_editor {
             self.edit_roi_in_editor(slot, i);

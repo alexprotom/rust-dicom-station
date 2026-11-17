@@ -687,6 +687,10 @@ impl ViewerApp {
     /// The structure meshes of an open window rebuilt in the background
     /// when its structures changed - one build in flight, the camera kept.
     fn refresh_d3_meshes(&mut self, w: &mut D3Window) {
+        // The posture window hands its meshes over itself.
+        if self.posture_owns(w.slot) {
+            return;
+        }
         let key = self.d3_key(w.slot);
         if w.job.is_some() || w.key == key {
             return;
@@ -784,8 +788,16 @@ impl ViewerApp {
             return;
         }
         let key = self.d3_key(slot);
-        let ss = self.slots[slot].active_structures().cloned();
-        if ss.is_none() && self.slots[slot].segs().is_empty() {
+        // The posture window hands its workspace's meshes over itself
+        // ([`Self::install_scene_meshes`]), carried to the time on screen:
+        // nothing is meshed here for it.
+        let owned = self.posture_owns(slot);
+        let ss = if owned {
+            None
+        } else {
+            self.slots[slot].active_structures().cloned()
+        };
+        if !owned && ss.is_none() && self.slots[slot].segs().is_empty() {
             return;
         }
         // Initial auto-fit from the volume extents; replaced by the meshes'
@@ -805,7 +817,7 @@ impl ViewerApp {
             });
             Job { progress, rx }
         });
-        let no_structs = job.is_none();
+        let no_structs = job.is_none() && !owned;
         self.d3_windows.push(D3Window {
             slot,
             yaw: 0.7,
@@ -851,6 +863,22 @@ impl ViewerApp {
             show_list: false,
             roi_alpha: std::collections::HashMap::new(),
         });
+    }
+
+    /// Put meshes on a workspace's scene from outside: the posture window's,
+    /// carried to the time it shows. The scene is made when it is not there
+    /// yet; its camera fits the first set it is given and holds after that.
+    pub(super) fn install_scene_meshes(&mut self, slot: usize, meshes: Arc<Vec<RoiMesh>>) {
+        self.ensure_d3_window(slot);
+        let key = self.d3_key(slot);
+        if let Some(w) = self.d3_windows.iter_mut().find(|w| w.slot == slot) {
+            w.job = None;
+            w.key = key;
+            if w.refit && fit_to_meshes(w, &meshes) {
+                w.refit = false;
+            }
+            set_meshes(w, meshes);
+        }
     }
 
     // -- 3D scenes (upkeep) --------------------------------------------------

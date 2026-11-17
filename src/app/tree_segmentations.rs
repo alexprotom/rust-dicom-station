@@ -302,6 +302,8 @@ impl ViewerApp {
         }
         if let Some(i) = activate {
             self.slots[slot].active_seg = i;
+            // And a segment picked is: the drawing tools paint into it.
+            self.tools.subject = super::seg_edit::EditSubject::Segmentation;
         }
         if cancel_tool {
             if let Some((_, p)) = self.running_tool(slot) {

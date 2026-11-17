@@ -226,6 +226,7 @@ impl ViewerApp {
             play::PlayTarget::Slices { .. } => self.play.slice_fps,
             play::PlayTarget::Phases { .. } => self.play.phase_fps,
             play::PlayTarget::DoseLog { .. } => self.play.log_fps,
+            play::PlayTarget::Model { .. } => self.posture.fps,
         }
     }
 
@@ -239,6 +240,7 @@ impl ViewerApp {
             }
             play::PlayTarget::Phases { slot } => self.current_phase(slot).map(|(at, _)| at),
             play::PlayTarget::DoseLog { .. } => self.dose_est.cursor,
+            play::PlayTarget::Model { .. } => self.posture_position(),
         }
     }
 

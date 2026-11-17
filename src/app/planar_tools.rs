@@ -1,6 +1,7 @@
 //! The contour tools of the MPR views on a planar pane: polygon, spline,
-//! freehand, live wire, contour brush and nudge, with the Auto / Extend /
-//! Subtract rule and undo, on the 2D contours of a planar structure set.
+//! freehand, live wire, paint, erase and nudge, with the Auto / Extend /
+//! Subtract rule of the curves and undo, on the 2D contours of a planar
+//! structure set.
 //!
 //! The pane is a second *target* of the toolbar's Draw structure row: a
 //! stroke on a planar pane makes it the target (`Planar2d::target`), a
@@ -13,8 +14,11 @@
 //! the brush stamp are the volume tools' own ([`contours::auto_cuts`],
 //! [`contours::spline_points`], [`crate::planar_structs::brush`]); the
 //! brush radius is millimetres of the image's own pixel spacing. The live
-//! wire runs on the image's pixels under the pane's window. The voxel tools
-//! (brush, erase, grow) have no planar meaning and do nothing on a pane.
+//! wire runs on the image's pixels under the pane's window. Paint and Erase
+//! are the contour brush here, as on an RT structure: Paint adds, Erase
+//! cuts, Alt reverses either. A planar image has no segments, so the strip's
+//! subject is always the planar structure; the region grower needs a volume
+//! and does nothing on a pane.
 
 use super::*;
 
@@ -46,7 +50,7 @@ pub(super) enum PlanarEdit {
     Drag([f64; 2]),
     /// Close the contour under construction.
     Close,
-    /// A sample of the contour brush; `erase` with Alt.
+    /// A sample of Paint or Erase; `erase` for Erase, reversed by Alt.
     Brush {
         image: usize,
         at: [f64; 2],
@@ -64,9 +68,7 @@ impl ViewerApp {
     /// The workspace whose planar pane is the contour tools' target, while a
     /// contour tool is in hand.
     pub(super) fn planar_tool_target(&self) -> Option<usize> {
-        self.planar2d
-            .target
-            .filter(|_| self.seg_tool.draws_contours())
+        self.planar2d.target.filter(|_| self.seg_tool.on_planar())
     }
 
     /// The pointer on a planar pane with a contour tool in hand, over image
@@ -121,13 +123,14 @@ impl ViewerApp {
                     out.push(PlanarEdit::Close);
                 }
             }
-            SegTool::ContourBrush => {
+            SegTool::Brush | SegTool::Erase => {
+                let erase = (self.seg_tool == SegTool::Erase) != alt;
                 if resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
                     if let Some(mp) = pos {
                         out.push(PlanarEdit::Brush {
                             image,
                             at: at(mp),
-                            erase: alt,
+                            erase,
                         });
                     }
                 }
@@ -431,7 +434,6 @@ impl ViewerApp {
         if first {
             self.push_planar_undo(slot, k, j);
         }
-        let mode = self.draw_mode;
         let r = self.brush_radius_mm as f64;
         // The smart brush cuts the stamp back to what looks bright or dark
         // in the pane's window; with it off, the capsule itself.
@@ -446,17 +448,9 @@ impl ViewerApp {
         };
         let s = &mut set.structures[j];
         let c = s.contour_entry(&uid);
-        // Auto: a stroke that starts inside adds, one that starts outside
-        // cuts, decided once at the start of the stroke.
-        if first && mode == DrawMode::Auto {
-            self.planar2d.brush_cut = !c.region.contains(from);
-        }
-        let cut = erase
-            || match mode {
-                DrawMode::Subtract => true,
-                DrawMode::Extend => false,
-                DrawMode::Auto => self.planar2d.brush_cut,
-            };
+        // Paint adds and Erase cuts, whatever the curves' drawing mode: the
+        // brush says what it does by which of the two is in hand.
+        let cut = erase;
         match smart {
             Some(rings) => {
                 for ring in &rings {
@@ -662,7 +656,7 @@ impl ViewerApp {
         on: Rect,
         hover: Option<[f64; 2]>,
     ) {
-        if !self.seg_tool.draws_contours() {
+        if !self.seg_tool.on_planar() {
             return;
         }
         let Some(img) = self.slots[slot]
@@ -718,7 +712,10 @@ impl ViewerApp {
                 painter.add(egui::Shape::line(screen, stroke));
             }
         }
-        if matches!(self.seg_tool, SegTool::ContourBrush | SegTool::Nudge) {
+        if matches!(
+            self.seg_tool,
+            SegTool::Brush | SegTool::Erase | SegTool::Nudge
+        ) {
             if let Some(h) = hover {
                 // The radius in screen pixels along a row (a round brush in
                 // millimetres is an ellipse in pixels of unequal sides).

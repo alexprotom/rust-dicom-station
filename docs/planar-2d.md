@@ -84,8 +84,10 @@ own pixel spacing (an ellipse in pixels when the spacings differ). The
 live wire runs on the image's pixels under the pane's window. The smart
 brush's *Bright* and *Dark* bands cut the stamp back to what looks bright
 or dark in the pane's window, as on a slice; *Bone* and *Air* are CT numbers
-and leave the stamp as it is on a radiograph. The voxel tools (brush, erase,
-grow) edit segmentations and do nothing on a pane. Undo is
+and leave the stamp as it is on a radiograph. A pane has no segments, so
+every tool acts on its planar structure: Paint and Erase are its contour
+brush (Paint adds, Erase cuts, Alt reverses), and Grow, which needs a volume,
+does nothing on a pane. Undo is
 `planar_structs::Undo` (32 steps, per workspace).
 
 ## Projection

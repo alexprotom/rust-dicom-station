@@ -196,6 +196,15 @@ fn exercise(policy: PhiPolicy, tag: &str) {
     )
     .unwrap();
     assert!(cmp["dice"].as_f64().unwrap() > 0.9, "{cmp}");
+    // The posture model returns tables only, the states by their handles.
+    call(
+        c,
+        l,
+        "build_posture_model",
+        json!({"datasets": ["ds1", "ds1"], "anchor": "BODY", "lattice_mm": 12.0,
+               "analysis_mm": 4.0, "write": true}),
+    )
+    .unwrap();
     let dvh = call(
         c,
         l,
@@ -416,6 +425,49 @@ fn the_archive_tools_name_nobody() {
     common::dose_report_into(&folder, "WILSON^JAMES");
     // A findings PDF whose title names the patient's ID and a physician.
     common::document_into(&folder, "Dr. WILSON");
+    // A structure set with no Series Description, labelled with the
+    // patient's name: the PACS lists the series by that label, which no
+    // listing may carry.
+    {
+        use dicom_core::{DataElement, PrimitiveValue, VR};
+        use dicom_dictionary_std::tags;
+        let rs = walkdir::WalkDir::new(&folder)
+            .into_iter()
+            .flatten()
+            .map(|e| e.into_path())
+            .find(|p| {
+                dicom_object::open_file(p).is_ok_and(|o| {
+                    o.element(tags::MODALITY)
+                        .ok()
+                        .and_then(|e| e.to_str().ok())
+                        .is_some_and(|m| m.trim() == "RTSTRUCT")
+                })
+            })
+            .expect("the phantom's structure set");
+        let mut o = dicom_object::open_file(&rs).unwrap().into_inner();
+        let sop = rust_dicom_station::dicom_export::new_uid();
+        for (tag, vr, v) in [
+            (tags::SOP_INSTANCE_UID, VR::UI, sop.clone()),
+            (
+                tags::SERIES_INSTANCE_UID,
+                VR::UI,
+                rust_dicom_station::dicom_export::new_uid(),
+            ),
+            (tags::STRUCTURE_SET_LABEL, VR::SH, "JANE DOE".to_string()),
+        ] {
+            o.put(DataElement::new(tag, vr, PrimitiveValue::from(v)));
+        }
+        o.remove_element(tags::SERIES_DESCRIPTION);
+        o.with_meta(
+            dicom_object::FileMetaTableBuilder::new()
+                .transfer_syntax("1.2.840.10008.1.2.1")
+                .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.481.3")
+                .media_storage_sop_instance_uid(sop),
+        )
+        .unwrap()
+        .write_to_file(folder.join("RS_named.dcm"))
+        .unwrap();
+    }
     let pacs = dir.join("pacs");
     let ar = Archive::new(&pacs);
     ar.import(&folder, &Progress::default()).expect("filed");
@@ -454,6 +506,14 @@ fn the_archive_tools_name_nobody() {
 
     let d = call(c, l, "describe_archive_study", json!({"study": study})).unwrap();
     let series = d["series"].as_array().unwrap();
+    // The set labelled with the name is listed by its label, scrubbed.
+    assert!(
+        series.iter().any(|s| s["modality"] == "RTSTRUCT"
+            && s["description"]
+                .as_str()
+                .is_some_and(|t| t.contains("[redacted]"))),
+        "{d}"
+    );
     let page = series
         .iter()
         .find(|s| s["description"] == "Patientenprotokoll")

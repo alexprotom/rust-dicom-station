@@ -1312,7 +1312,7 @@ impl ViewerApp {
             && !placing
             && !self.hand_pan
             && kind_of_pane(k) == PlanarKind::Projection
-            && self.seg_tool.draws_contours()
+            && self.seg_tool.on_planar()
             && !near_img.sop_instance_uid.is_empty();
         let planar_edits = if contour_on && !over_buttons {
             self.planar_contour_input(

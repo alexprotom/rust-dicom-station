@@ -1375,3 +1375,269 @@ fn a_new_object_is_filed_beside_its_series_and_never_loose_in_a_cohort() {
     assert_eq!(cohorts_of(&archive, "P01"), before);
     let _ = std::fs::remove_dir_all(&src);
 }
+
+/// The study `uid` as the PACS window lists it.
+fn listed_study(archive: &Archive, uid: &str) -> rust_dicom_station::archive::StudyEntry {
+    archive
+        .tree()
+        .patients()
+        .into_iter()
+        .flat_map(|p| p.studies)
+        .find(|s| s.study_uid == uid)
+        .expect("the study is listed")
+}
+
+/// A structure set's row reads by its label when its files carry no
+/// Series Description (`RTSTRUCT 2 - SynthStructs`), a plan's by its RT Plan
+/// Label; and a catalog written before the label was kept has those series
+/// read again, once, by the next scan.
+#[test]
+fn rt_objects_without_a_series_description_are_listed_by_their_own_name() {
+    use rust_dicom_station::archive::catalog;
+
+    let root = scratch("test_archive_object_labels");
+    let study_dir = root.join("Trial").join("PHANTOM");
+    gen_test_data::generate(&study_dir, &GenParams::default(), &Progress::default())
+        .expect("test data generation succeeds");
+    let archive = Archive::new(&root);
+    archive.refresh(&Progress::default()).expect("scan");
+    let study = loader::load_directory(&study_dir, &Progress::default()).expect("the study loads");
+    let uid = study.series[study.active_series].study_uid.clone();
+    let titles = |archive: &Archive| -> Vec<String> {
+        listed_study(archive, &uid)
+            .series
+            .iter()
+            .map(|s| s.title())
+            .collect()
+    };
+    let now = titles(&archive);
+    assert!(
+        now.iter().any(|t| t == "RTSTRUCT 2 - SynthStructs"),
+        "{now:?}"
+    );
+    assert!(now.iter().any(|t| t == "RTPLAN 3 - SynthProton"), "{now:?}");
+    assert!(now.iter().any(|t| t == "CT 1 - Synthetic CT"), "{now:?}");
+
+    // A catalog of before: no label kept. Listed as before until the next
+    // scan, which reads those series again.
+    catalog::update(&root, |c| {
+        for s in c.series.values_mut() {
+            s.object_label = None;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert!(titles(&archive).iter().any(|t| t == "RTSTRUCT 2"));
+    archive.refresh(&Progress::default()).expect("rescan");
+    assert_eq!(titles(&archive), now, "the names are back");
+    let c = catalog::load(&root);
+    assert!(
+        c.series
+            .values()
+            .filter(|s| catalog::LABEL_MODALITIES.contains(&s.modality.as_str()))
+            .filter(|s| s.description.trim().is_empty())
+            .all(|s| s.object_label.is_some()),
+        "every RT series without a description looked at"
+    );
+    // Once: a further scan finds nothing to read and writes nothing.
+    let stamp = std::fs::read_to_string(catalog::path_in(&root)).unwrap();
+    archive.refresh(&Progress::default()).expect("rescan");
+    assert_eq!(
+        std::fs::read_to_string(catalog::path_in(&root)).unwrap(),
+        stamp,
+        "the catalog is not written again"
+    );
+}
+
+/// *Save to the PACS* on a changed structure set: *Update* writes it back
+/// into its series (same Series Instance UID and number, a new SOP Instance
+/// UID) and the earlier instance goes, so two updates leave one series with
+/// one file; *Save as a new series* adds a series numbered after the
+/// study's last; a set a plan names is kept beside its update.
+#[test]
+fn saving_a_changed_set_updates_its_series_or_adds_a_new_one() {
+    use rust_dicom_station::archive::save::{save_objects, SaveAs};
+    use rust_dicom_station::dicom_export::DerivedKind;
+
+    let root = scratch("test_archive_update_series");
+    let study_dir = root.join("Trial").join("PHANTOM");
+    gen_test_data::generate(&study_dir, &GenParams::default(), &Progress::default())
+        .expect("test data generation succeeds");
+    let archive = Archive::new(&root);
+    archive.refresh(&Progress::default()).expect("scan");
+    let mut study =
+        loader::load_directory(&study_dir, &Progress::default()).expect("the study loads");
+    let uid = study.series[study.active_series].study_uid.clone();
+    let structure_series = |archive: &Archive| -> Vec<rust_dicom_station::archive::SeriesEntry> {
+        listed_study(archive, &uid)
+            .series
+            .into_iter()
+            .filter(|s| s.modality == "RTSTRUCT")
+            .collect()
+    };
+    let last_number = listed_study(&archive, &uid)
+        .series
+        .iter()
+        .filter_map(|s| s.number.trim().parse::<i64>().ok())
+        .max()
+        .unwrap();
+    assert_eq!(structure_series(&archive).len(), 1, "the phantom's set");
+
+    // A set drawn here: never in the PACS, a series of its own, numbered
+    // after the study's last, named after the set.
+    let mut drawn = study.structure_sets[0].clone();
+    drawn.sop_instance_uid.clear();
+    drawn.series_instance_uid.clear();
+    drawn.file_name.clear();
+    drawn.label = "Drawn here".into();
+    study.structure_sets.push(drawn);
+    let i = study.structure_sets.len() - 1;
+    let params = ExportParams::for_study(&study);
+    let save = |study: &loader::LoadedStudy, idx: usize, how: SaveAs| {
+        save_objects(&archive, study, &params, &Progress::default(), &|k, j| {
+            (k == DerivedKind::StructureSet && j == idx).then(|| how.clone())
+        })
+        .expect("the save succeeds")
+    };
+    let first = save(
+        &study,
+        i,
+        SaveAs::NewSeries {
+            description: String::new(),
+        },
+    );
+    assert_eq!(first.objects.len(), 1);
+    let o = first.objects[0].clone();
+    assert!(o.replaced.is_none());
+    let ours = o.series_instance_uid.clone();
+    let listed = structure_series(&archive);
+    assert_eq!(listed.len(), 2);
+    let row = listed.iter().find(|s| s.series_uid == ours).unwrap();
+    assert_eq!(
+        row.title(),
+        format!("RTSTRUCT {} - Drawn here", last_number + 1)
+    );
+    // The workspace takes on its identity, as the window does.
+    study.structure_sets[i].sop_instance_uid = o.sop_instance_uid.clone();
+    study.structure_sets[i].series_instance_uid = o.series_instance_uid.clone();
+
+    // Edited and updated twice: the same series, one file, the earlier
+    // instance gone from the disk and from the catalog.
+    let mut path = o.path.clone();
+    for round in 0..2 {
+        study.structure_sets[i].rois[0].name = format!("edited {round}");
+        let before = study.structure_sets[i].sop_instance_uid.clone();
+        let saved = save(
+            &study,
+            i,
+            SaveAs::Update {
+                replaces: before.clone(),
+            },
+        );
+        assert!(
+            saved.failed.is_none() && saved.notes.is_empty(),
+            "{saved:?}"
+        );
+        let o = &saved.objects[0];
+        assert_eq!(o.series_instance_uid, ours, "into its series");
+        assert_ne!(o.sop_instance_uid, before, "a new instance");
+        assert_eq!(o.replaced.as_deref(), Some(before.as_str()));
+        assert_eq!(o.path.parent(), path.parent(), "beside the one it replaced");
+        assert!(o.path.is_file());
+        assert!(!path.exists(), "the earlier file is gone");
+        assert!(archive.held_sops([before.as_str()]).is_empty());
+        assert!(archive
+            .held_sops([o.sop_instance_uid.as_str()])
+            .contains(&o.sop_instance_uid));
+        path = o.path.clone();
+        study.structure_sets[i].sop_instance_uid = o.sop_instance_uid.clone();
+    }
+    let listed = structure_series(&archive);
+    assert_eq!(listed.len(), 2, "no series more: {listed:?}");
+    let row = listed.iter().find(|s| s.series_uid == ours).unwrap();
+    assert_eq!(row.files, 1, "one current file");
+    assert_eq!(
+        row.number.trim(),
+        (last_number + 1).to_string(),
+        "its number kept"
+    );
+    assert_eq!(
+        row.title(),
+        format!("RTSTRUCT {} - Drawn here", last_number + 1),
+        "and its description"
+    );
+    // The file says so too.
+    let back = rust_dicom_station::rtstruct::load(&path).expect("the saved set reads back");
+    assert_eq!(back.rois[0].name, "edited 1");
+    assert_eq!(back.series_instance_uid, ours);
+
+    // Saved as a new series: a second series of its own, the one it came
+    // from left as it was.
+    let saved = save(
+        &study,
+        i,
+        SaveAs::NewSeries {
+            description: "Drawn here v2".into(),
+        },
+    );
+    let o = &saved.objects[0];
+    assert_ne!(o.series_instance_uid, ours);
+    assert!(o.replaced.is_none());
+    let listed = structure_series(&archive);
+    assert_eq!(listed.len(), 3);
+    let row = listed
+        .iter()
+        .find(|s| s.series_uid == o.series_instance_uid)
+        .unwrap();
+    assert_eq!(
+        row.title(),
+        format!("RTSTRUCT {} - Drawn here v2", last_number + 2)
+    );
+    assert_eq!(
+        listed.iter().find(|s| s.series_uid == ours).unwrap().files,
+        1,
+        "the series it came from is untouched"
+    );
+
+    // The phantom's set is named by its plan: its update joins the series,
+    // and the instance the plan names stays.
+    let named = study.structure_sets[0].sop_instance_uid.clone();
+    study.structure_sets[0].rois[0].name = "edited".into();
+    let saved = save(
+        &study,
+        0,
+        SaveAs::Update {
+            replaces: named.clone(),
+        },
+    );
+    assert!(
+        saved.notes.iter().any(|n| n.contains("plan")),
+        "{:?}",
+        saved.notes
+    );
+    assert!(archive.held_sops([named.as_str()]).contains(&named));
+    let listed = structure_series(&archive);
+    assert_eq!(listed.len(), 3);
+    assert_eq!(
+        listed
+            .iter()
+            .find(|s| s.series_uid == saved.objects[0].series_instance_uid)
+            .unwrap()
+            .files,
+        2,
+        "both instances, in the one series"
+    );
+
+    // A rescan from the files alone says the same.
+    let before: Vec<(String, usize)> = structure_series(&archive)
+        .into_iter()
+        .map(|s| (s.series_uid, s.files))
+        .collect();
+    std::fs::remove_file(rust_dicom_station::archive::catalog::path_in(&root)).unwrap();
+    archive.refresh(&Progress::default()).expect("rescan");
+    let after: Vec<(String, usize)> = structure_series(&archive)
+        .into_iter()
+        .map(|s| (s.series_uid, s.files))
+        .collect();
+    assert_eq!(after, before);
+}

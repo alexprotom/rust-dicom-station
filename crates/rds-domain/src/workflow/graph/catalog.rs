@@ -19,6 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::autoseg::classes;
+use crate::posture::Mode;
 use crate::zoo::AutoModel;
 
 // The parameters every caller of an engine shares - the workflow file, the
@@ -239,10 +240,11 @@ pub enum Kind {
     Drr,
     SynthesizeCt,
     EvaluateSct,
+    Posture,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 31] = [
+    pub const ALL: [Kind; 32] = [
         Kind::LoadFolder,
         Kind::LoadFolders,
         Kind::LoadFromArchive,
@@ -274,6 +276,7 @@ impl Kind {
         Kind::Drr,
         Kind::SynthesizeCt,
         Kind::EvaluateSct,
+        Kind::Posture,
     ];
 
     pub fn info(self) -> &'static KindInfo {
@@ -589,6 +592,18 @@ impl Kind {
                 ends_a_branch: false,
                 writes: true,
             },
+            Kind::Posture => &KindInfo {
+                name: "Posture model",
+                glyph: "🎞",
+                category: Category::Measure,
+                blurb: "The way from one position of the patient to another: two or three \
+                        image series of one patient (lying and seated, prone and supine) as \
+                        the states of an invertible path, each bone moved on its own screw. \
+                        The report: every bone's turn, the joints' angles, every structure's \
+                        volume change and shift, the model's checks.",
+                ends_a_branch: false,
+                writes: false,
+            },
             Kind::Drr => &KindInfo {
                 name: "DRR",
                 glyph: "☢",
@@ -711,6 +726,27 @@ impl Kind {
                     &[T::Image],
                     "the MR or CBCT series to synthesize a CT from",
                 )];
+                P
+            }
+            Kind::Posture => {
+                const P: &[PortSpec] = &[
+                    PortSpec::one(
+                        "Start",
+                        &[T::Image],
+                        "the first state: an image series and its structures",
+                    ),
+                    PortSpec::one(
+                        "Next",
+                        &[T::Image],
+                        "the second state, of the same patient in another position",
+                    ),
+                    PortSpec::one(
+                        "Then",
+                        &[T::Image],
+                        "a third state: the path becomes a chain",
+                    )
+                    .optional(),
+                ];
                 P
             }
             Kind::EvaluateSct => {
@@ -982,6 +1018,14 @@ impl Kind {
                 )];
                 P
             }
+            Kind::Posture => {
+                const P: &[OutSpec] = &[out(
+                    "Report",
+                    T::Report,
+                    "bones, joints, structures and the model's checks",
+                )];
+                P
+            }
             Kind::ArchiveImport => &[],
             Kind::SelectImage => {
                 const P: &[OutSpec] = &[out("Image", T::Image, "the image series found")];
@@ -1117,6 +1161,7 @@ impl Kind {
             Kind::Drr => Op::Drr(Default::default()),
             Kind::SynthesizeCt => Op::SynthesizeCt(Default::default()),
             Kind::EvaluateSct => Op::EvaluateSct(Default::default()),
+            Kind::Posture => Op::Posture(Default::default()),
             Kind::SelectImage => Op::SelectImage(Default::default()),
             Kind::SelectGroup => Op::SelectGroup(Default::default()),
             Kind::SelectStructures => Op::SelectStructures(Default::default()),
@@ -1167,6 +1212,7 @@ pub enum Op {
     Drr(Drr),
     SynthesizeCt(SynthesizeCt),
     EvaluateSct(EvaluateSct),
+    Posture(Posture),
     SelectImage(SelectImage),
     SelectGroup(SelectGroup),
     SelectStructures(SelectStructures),
@@ -1203,6 +1249,7 @@ impl Op {
             Op::Drr(_) => Kind::Drr,
             Op::SynthesizeCt(_) => Kind::SynthesizeCt,
             Op::EvaluateSct(_) => Kind::EvaluateSct,
+            Op::Posture(_) => Kind::Posture,
             Op::SelectImage(_) => Kind::SelectImage,
             Op::SelectGroup(_) => Kind::SelectGroup,
             Op::SelectStructures(_) => Kind::SelectStructures,
@@ -1235,6 +1282,27 @@ impl Op {
     pub fn summary(&self) -> Vec<String> {
         let quoted = |s: &str| format!("'{}'", s.trim());
         match self {
+            Op::Posture(p) => vec![
+                format!(
+                    "{}, anchor {}",
+                    Mode::from_key(&p.mode).map_or("?", |m| m.label()),
+                    if p.anchor.trim().is_empty() {
+                        "the image"
+                    } else {
+                        p.anchor.trim()
+                    }
+                ),
+                if p.bodies.trim().is_empty() {
+                    "rigid: the bones".to_string()
+                } else {
+                    format!("rigid: {}", p.bodies.trim())
+                },
+                format!(
+                    "lattice {:.0} mm{}",
+                    p.lattice_mm,
+                    if p.residual { ", residual" } else { "" }
+                ),
+            ],
             Op::LoadFolder(p) => {
                 let path = p.path.trim().replace('\\', "/");
                 let tail: Vec<&str> = path.rsplit('/').filter(|s| !s.is_empty()).take(2).collect();
@@ -1614,6 +1682,14 @@ impl Op {
     pub fn param_problems(&self) -> Vec<String> {
         let mut v = Vec::new();
         match self {
+            Op::Posture(p) => {
+                if Mode::from_key(&p.mode).is_none() {
+                    v.push("the mode is diffeomorphic or linear".into());
+                }
+                if !(2.0..=30.0).contains(&p.lattice_mm) {
+                    v.push("the lattice is 2 to 30 mm".into());
+                }
+            }
             Op::LoadFolder(p) if p.path.trim().is_empty() => {
                 v.push("no folder is given (set one here or in the run dialog)".into());
             }
@@ -2958,6 +3034,45 @@ impl Default for SynthesizeCt {
             mask: "network".into(),
             device: Device::default(),
             folder: "sct/{input}".into(),
+        }
+    }
+}
+
+/// The posture model between two or three images ([`crate::workflow::posture`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Posture {
+    /// A structure on every state, `image` or `scanner`.
+    pub anchor: String,
+    /// `diffeomorphic` or `linear`.
+    pub mode: String,
+    /// Rigid bodies, comma separated; empty: the bones; `none`: none.
+    pub bodies: String,
+    /// A B-spline residual on top of the bodies.
+    pub residual: bool,
+    pub lattice_mm: f64,
+    pub reach_mm: f64,
+    /// The WEPL to each structure along a beam at these IEC angles.
+    pub wepl: bool,
+    pub gantry_deg: f64,
+    pub couch_deg: f64,
+    /// Three states: bodies on curves through the middle one.
+    pub smooth_chain: bool,
+}
+
+impl Default for Posture {
+    fn default() -> Self {
+        Posture {
+            anchor: "image".into(),
+            mode: "diffeomorphic".into(),
+            bodies: String::new(),
+            residual: false,
+            lattice_mm: 6.0,
+            reach_mm: 40.0,
+            wepl: false,
+            gantry_deg: 90.0,
+            couch_deg: 0.0,
+            smooth_chain: true,
         }
     }
 }

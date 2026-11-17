@@ -21,7 +21,9 @@ use super::*;
 impl ViewerApp {
     /// Is this pane drawn in a window of its own rather than in its row?
     pub(super) fn is_detached(&self, slot: usize, kind: PaneKind) -> bool {
-        self.detached_panes.contains(&(slot, kind))
+        // The posture model's panes are in that window: never in a row,
+        // and ⛶ there maximizes the window.
+        self.posture_owns(slot) || self.detached_panes.contains(&(slot, kind))
     }
 
     /// Take a pane out of its row into a window, or put it back.
@@ -48,6 +50,10 @@ impl ViewerApp {
         slot: usize,
         kind: PaneKind,
     ) -> bool {
+        // The posture window's panes have no row to go back to.
+        if self.posture_owns(slot) {
+            return false;
+        }
         let out = self.is_detached(slot, kind);
         ui.put(rect, egui::Button::new(if out { "⤵" } else { "⤴" }).small())
             .tip(if out {

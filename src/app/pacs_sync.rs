@@ -13,7 +13,7 @@
 //! series, one structure set or segmentation series), with the new and the
 //! changed objects of that scope ticked and nothing else; the window looks
 //! up the PACS on a job, files each object beside the series it was drawn on
-//! ([`crate::archive::save::save_derived`], under the path limit, PHI kept
+//! ([`crate::archive::save::save_objects`], under the path limit, PHI kept
 //! out of the file names), says what was saved and what failed, and keeps
 //! the failures ticked. *Show the whole workspace* there lifts the scope.
 //! The save path writes structure sets and segmentation series; the other

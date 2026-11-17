@@ -41,6 +41,7 @@ use super::{safe_name, Node};
 
 mod more;
 mod planar;
+mod posture;
 mod setup;
 mod synth;
 
@@ -99,6 +100,11 @@ pub(super) fn run_node(
         Op::SynthesizeCt(p_) => synth::synthesize_ct(ctx, node, need(0)?, p_, p),
         Op::EvaluateSct(p_) => {
             synth::evaluate_sct(ctx, node, need(0)?, need(1)?, one(2), one(3), p_, p)
+        }
+        Op::Posture(p_) => {
+            let mut images = vec![need(0)?, need(1)?];
+            images.extend(one(2));
+            posture::posture(ctx, node, &images, p_, p)
         }
     }
 }

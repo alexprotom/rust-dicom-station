@@ -178,7 +178,9 @@ impl ViewerApp {
     /// Does this row show the surface scene? The toolbar's *3D* button for
     /// that workspace steps aside when it does.
     pub(super) fn row_shows_scene(&self, slot: usize) -> bool {
-        self.is_open(slot) && self.row_panes(slot).contains(&PaneKind::Scene3d)
+        // The posture window draws its workspace's scene itself.
+        self.posture_owns(slot)
+            || (self.is_open(slot) && self.row_panes(slot).contains(&PaneKind::Scene3d))
     }
 
     pub(super) fn study_row(&mut self, ui: &mut egui::Ui, slot: usize, row_rect: Rect) {
@@ -971,17 +973,18 @@ impl ViewerApp {
             }
         }
 
-        // Deformation vector field.
-        if self.field_on
-            && self
-                .registration
-                .as_ref()
-                .is_some_and(|r| r.shows_fixed(slot, &self.slots))
+        // Deformation vector field: the registration's, or the posture
+        // model's displacement in its window's workspace.
+        let posture_max = self.posture_field(slot).map(|(f, _, _)| f.max_mag as f32);
+        if posture_max.is_some()
+            || (self.field_on
+                && self
+                    .registration
+                    .as_ref()
+                    .is_some_and(|r| r.shows_fixed(slot, &self.slots)))
         {
-            let max = self
-                .registration
-                .as_ref()
-                .map(|r| r.field.max_mag as f32)
+            let max = posture_max
+                .or_else(|| self.registration.as_ref().map(|r| r.field.max_mag as f32))
                 .unwrap_or(1.0)
                 .max(1e-6);
             let scale = self.field_scale;
@@ -1258,27 +1261,18 @@ impl ViewerApp {
             let hover = ui
                 .input(|i| i.pointer.hover_pos())
                 .filter(|p| rect.contains(*p));
+            // In the colour of what the tool acts on - the structure or the
+            // segment - and red while the brush cuts.
+            let subject_c = self.subject_color(slot);
             match self.seg_tool {
-                SegTool::Brush | SegTool::Erase | SegTool::Nudge | SegTool::ContourBrush => {
+                SegTool::Brush | SegTool::Erase | SegTool::Nudge => {
                     if let Some(mp) = hover {
-                        let erase =
-                            self.seg_tool == SegTool::Erase || ui.input(|i| i.modifiers.alt);
-                        let col = if erase && self.seg_tool == SegTool::ContourBrush {
-                            Color32::from_rgba_unmultiplied(255, 90, 90, 200)
-                        } else if matches!(self.seg_tool, SegTool::Nudge | SegTool::ContourBrush) {
-                            let c = self
-                                .edit_roi_name(slot)
-                                .map(|(_, c)| c)
-                                .unwrap_or([255, 235, 60]);
-                            Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 220)
-                        } else if erase {
+                        let erase = self.seg_tool != SegTool::Nudge
+                            && ((self.seg_tool == SegTool::Erase) != ui.input(|i| i.modifiers.alt));
+                        let col = if erase {
                             Color32::from_rgba_unmultiplied(255, 90, 90, 200)
                         } else {
-                            let c = slot_state
-                                .segs()
-                                .get(slot_state.active_seg)
-                                .map(|s| s.color)
-                                .unwrap_or([140, 255, 140]);
+                            let c = subject_c;
                             Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 220)
                         };
                         painter.circle_stroke(
@@ -1314,10 +1308,7 @@ impl ViewerApp {
                 }
                 SegTool::Polygon | SegTool::Spline | SegTool::Freehand | SegTool::LiveWire => {
                     if let Some(mp) = hover {
-                        let c = self
-                            .edit_roi_name(slot)
-                            .map(|(_, c)| c)
-                            .unwrap_or([255, 235, 60]);
+                        let c = subject_c;
                         let s = Stroke::new(
                             1.5,
                             Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 220),
@@ -1367,10 +1358,7 @@ impl ViewerApp {
                     px_to_screen([pp[0] as f32, pp[1] as f32])
                 })
                 .collect();
-            let c = self
-                .edit_roi_name(slot)
-                .map(|(_, c)| c)
-                .unwrap_or([255, 235, 60]);
+            let c = self.subject_color(slot);
             let col = theme::rgb(c);
             if scr.len() >= 2 {
                 painter.add(egui::Shape::line(scr.clone(), Stroke::new(1.8, col)));
@@ -1970,22 +1958,34 @@ impl ViewerApp {
         let mut cbrush_to: Option<([f64; 3], bool)> = None;
         let mut cbrush_done = false;
         let mut pick_at: Option<[f64; 3]> = None;
+        // What the tools act on here: the same gesture lands in a
+        // structure's contours or in a segment's voxels.
+        let on_structure = self.edit_subject(slot) == super::seg_edit::EditSubject::Structure;
         if seg_active && !over_buttons {
             let to_voxel = |mp: Pos2| {
                 let px = screen_to_px(mp);
                 vol.plane_pixel_to_voxel(plane, cur_slice, px[0] as f64, px[1] as f64)
             };
             match self.seg_tool {
+                // Paint and Erase, Alt reversing either: the contour brush
+                // on a structure, the voxel brush on a segment.
                 SegTool::Brush | SegTool::Erase => {
+                    let erase = (self.seg_tool == SegTool::Erase) != ui.input(|i| i.modifiers.alt);
                     if resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
                         if let Some(mp) = resp.interact_pointer_pos() {
-                            let erase =
-                                self.seg_tool == SegTool::Erase || ui.input(|i| i.modifiers.alt);
-                            paint_to = Some((to_voxel(mp), erase));
+                            if on_structure {
+                                cbrush_to = Some((to_voxel(mp), erase));
+                            } else {
+                                paint_to = Some((to_voxel(mp), erase));
+                            }
                         }
                     }
                     if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
-                        paint_done = true;
+                        if on_structure {
+                            cbrush_done = true;
+                        } else {
+                            paint_done = true;
+                        }
                     }
                 }
                 SegTool::Grow => {
@@ -2040,19 +2040,6 @@ impl ViewerApp {
                     }
                     if resp.drag_stopped_by(egui::PointerButton::Primary) {
                         draw_close = true;
-                    }
-                }
-                // The contour brush: the same gesture as the voxel brush,
-                // landing in the structure instead of in a mask.
-                SegTool::ContourBrush => {
-                    if resp.dragged_by(egui::PointerButton::Primary) || resp.clicked() {
-                        if let Some(mp) = resp.interact_pointer_pos() {
-                            let erase = ui.input(|i| i.modifiers.alt);
-                            cbrush_to = Some((to_voxel(mp), erase));
-                        }
-                    }
-                    if resp.drag_stopped_by(egui::PointerButton::Primary) || resp.clicked() {
-                        cbrush_done = true;
                     }
                 }
                 // Push the outline around: every sample of the drag moves the
@@ -2281,7 +2268,7 @@ impl ViewerApp {
             self.planar2d.target = None;
         }
         if let Some(v) = pick_at {
-            self.pick_roi_at(slot, plane, v);
+            self.pick_subject_at(slot, plane, v);
         }
         if let Some(v) = draw_click {
             if self.seg_tool == SegTool::LiveWire {
@@ -2303,12 +2290,17 @@ impl ViewerApp {
                 _ => to,
             };
             let radius = self.brush_radius_mm as f64;
-            self.nudge_contour(slot, plane, cur_slice, from, to, radius, first);
+            if on_structure {
+                self.nudge_contour(slot, plane, cur_slice, from, to, radius, first);
+            } else {
+                self.seg_nudge(slot, plane, cur_slice, from, to, radius);
+            }
             self.paint_last = Some((slot, to));
         }
         if nudge_done {
             self.paint_last = None;
             self.end_contour_stroke();
+            self.end_seg_nudge();
         }
         if let Some((v, erase)) = cbrush_to {
             let first = !matches!(self.paint_last, Some((s, _)) if s == slot);
@@ -2456,6 +2448,11 @@ impl ViewerApp {
         // The classes ticked in a waiting auto-segmentation run.
         let preview = self.autoseg_preview(slot);
         let seg_hash = preview.as_ref().map_or(seg_hash, |p| mix(seg_hash, p.key));
+        // The posture window's Jacobian wash, under the segments.
+        let wash = self.posture_wash(slot);
+        let seg_hash = wash.as_ref().map_or(seg_hash, |(_, _, gen, scan)| {
+            mix(seg_hash, 0x3A5C_0000 ^ *gen ^ ((*scan as u64) << 40))
+        });
         let (wc, ww) = self.window_of(slot);
         let dose_on = self.dose_mode != DoseMode::Off && self.slots[slot].dose_shown;
         let contours_on = self.show_contours && self.slots[slot].structs_shown;
@@ -2607,10 +2604,25 @@ impl ViewerApp {
         // Segmentation overlay: all visible masks plus the live
         // region-growing preview, blended into one RGBA texture. NEAREST
         // filtering keeps the voxel raster crisp while editing.
-        if !segs.is_empty() || grow_here || preview.is_some() {
+        if !segs.is_empty() || grow_here || preview.is_some() || wash.is_some() {
             let skey = seg_hash.wrapping_add((slice as u64).wrapping_mul(0x2545F4914F6CDD1D));
             if views[idx].seg_key != Some(skey) {
                 let mut rgba = vec![Color32::TRANSPARENT; w * h];
+                if let Some((lattice, values, _, scan)) = &wash {
+                    let px = crate::posture::apply::wash_plane(
+                        lattice,
+                        values,
+                        &vol.grid(),
+                        plane,
+                        slice,
+                        scan.then_some(&**vol),
+                    );
+                    if px.len() == rgba.len() {
+                        for (o, c) in rgba.iter_mut().zip(px) {
+                            *o = Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+                        }
+                    }
+                }
                 for (si, seg) in segs.iter().enumerate().filter(|(_, s)| s.visible) {
                     let alpha = if focused_segs.contains(&si) { 180 } else { 90 };
                     segmentation::overlay_slice_within(
@@ -2667,12 +2679,15 @@ impl ViewerApp {
     /// only when the slice, the style or the field itself does - not on
     /// every repaint, and certainly not on every pan.
     pub(super) fn refresh_field_cache(&mut self, slot: usize, idx: usize) {
-        let showing = self.field_on
-            && self.field_style != FieldStyle::None
-            && self
-                .registration
-                .as_ref()
-                .is_some_and(|r| r.shows_fixed(slot, &self.slots));
+        // The posture window's workspace draws its own displacement.
+        let posture = self.posture_field(slot);
+        let showing = posture.is_some()
+            || (self.field_on
+                && self.field_style != FieldStyle::None
+                && self
+                    .registration
+                    .as_ref()
+                    .is_some_and(|r| r.shows_fixed(slot, &self.slots)));
         if !showing {
             let view = &mut self.slots[slot].views[idx];
             if view.field_key.is_some() {
@@ -2682,15 +2697,17 @@ impl ViewerApp {
             }
             return;
         }
-        let Some(field) = self.registration.as_ref().map(|r| r.field.clone()) else {
-            return;
+        let (field, style, gen) = match posture {
+            Some(p) => p,
+            None => match self.registration.as_ref() {
+                Some(r) => (r.field.clone(), self.field_style, self.reg_gen),
+                None => return,
+            },
         };
         let Some(vol) = self.slots[slot].study.as_ref().map(|s| s.volume.clone()) else {
             return;
         };
-        let style = self.field_style;
         let step = self.field_step_mm;
-        let gen = self.reg_gen;
         let view = &mut self.slots[slot].views[idx];
         let plane = view.plane;
         let slice = view.slice;

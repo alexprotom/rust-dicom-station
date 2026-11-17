@@ -457,6 +457,7 @@ impl ViewerApp {
                 }
                 s.active_roi = item.idx;
                 self.drop_edit();
+                self.tools.subject = super::seg_edit::EditSubject::Structure;
             }
             SetKind::Segmentations => {
                 let s = &mut self.slots[slot];
@@ -464,6 +465,7 @@ impl ViewerApp {
                 s.active_seg = item.idx;
                 s.segs_shown = true;
                 self.settings_gen += 1;
+                self.tools.subject = super::seg_edit::EditSubject::Segmentation;
             }
         }
         self.localize_item(slot, item);

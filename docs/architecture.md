@@ -289,7 +289,11 @@ src/
                     z of every CT file, a structure set's referenced series;
                     staging folders never walked (IGNORED_FOLDERS + ignore),
                     a series that lost or changed a file read again whole,
-                    a study in one patient's folder that patient's      DICOM
+                    a study in one patient's folder that patient's;
+                    an RT object without a Series Description keeps its
+                    own name (object_label: structure set / plan label,
+                    dose comment, content label), read again once for a
+                    catalog of before, no version change               DICOM
     fourd.rs        the 4D sets of the catalog: the header rules over the
                     cached fields after every write, custom groups and
                     tombstones (fourd_custom) winning, structure sets linked
@@ -299,7 +303,11 @@ src/
                     JSON file by UID and patient key, merged into another
                     station's catalog (Settings > Export / Import tags)      DICOM
     save.rs         Save to the PACS: chosen derived objects written by
-                    export_derived_some and filed beside the series they
+                    export_derived_as (a new SOP UID each) into a new
+                    series (next free number) or back into their series
+                    (SaveAs::Update: new instance beside the old one, the
+                    old file removed after, one catalog update; a set a
+                    plan names kept), else filed beside the series they
                     were drawn on in any storage folder, never loose in a
                     cohort (Importer::beside_the_study + referencing,
                     Archive::study_home), with what each became and, when
@@ -494,7 +502,9 @@ src/
                       structure section: interpolation, per-slice copy /
                       paste / delete / clear / thin, tidying, transforms, ROI
                       type, the derived recipe) and the toolbar's draw row
-                      (the nine tools and the options of the one in hand)
+                      (the eight tools, one set acting on the RT structure
+                      or the segment that is the subject, the options of
+                      the one in hand, and the target line)
     derived_app.rs    derived structures in the app: resolving operands by
                       name, the status cache, re-evaluation as a job, the
                       override rule
@@ -557,6 +567,19 @@ src/
                       drawn): Export DICOM with one object ticked
                       (ExportPlan::select_only), a planar image with its 2D
                       contours burned in (DICOM or PNG)
+    posture_win.rs    Tools > Posture model (docs/posture-model.md): states,
+                      anchor, mode, bodies, Build on a job; the model
+                      workspace (a free letter kept off the main screen,
+                      posture_owns) whose planes, 3D scene and chart it draws
+                      through pane; live slices (three planes a step, GPU
+                      or CPU) or key frames, the exact frame on rest;
+                      PlayTarget::Model; the Jacobian wash and the dose
+                      carried for display; the offer of an automatic model
+                      for a state lacking structures; its own recorder; the
+                      exports. A tool window by decision, not a module
+    posture_table.rs  its four folds (States, Structures, Bones and joints,
+                      Model) following the slider, and the curves of a row
+                      in the chart pane (ChartSource::Posture)
     record.rs         saving a run: armed first, it takes the next run that
                       starts and ends after one full cycle. The pane, frame
                       by frame, out of egui's own screenshot, written as an
@@ -593,8 +616,11 @@ src/
                       not in it (changed: an edit fingerprint kept per SOP
                       UID in StudySlot::saved_marks), the new and changed
                       ones ticked, what the PACS holds read on a job, saved
-                      beside their series; a new object takes on its PACS
-                      identity on landing
+                      beside their series, each held one updating its
+                      series or saved as a new one (SaveMode); what was
+                      saved takes on its PACS identity on landing (a set
+                      a plan names keeps its own, its copy remembered in
+                      StudySlot::saved_copies)
     pacs_stats.rs     the PACS window's analytics panel (an edge_panel): the
                       patients' words (a chart per WordKind: age group,
                       sex, site, subject) and the modalities of the
@@ -715,7 +741,8 @@ src/
                     catalog_fix.rs (one patient entry per folder, study
                     labels, one code given to two people in two cohorts)         DICOM
   pathlen.rs        the 259-character limit every written path is held to       DICOM
-  gen_test_data.rs  synthetic RT phantom study generator                         Sim
+  gen_test_data.rs  synthetic RT phantom study generator; the articulated
+                    phantom of the posture model (two bones on a hinge)          Sim
   testdata.rs       the bundled real patient (data-test/) fetched from GitHub:
                     git trees listing, raw downloads, resumable                  Sim
   simulate.rs       known-transform study generator (registration QA)           Sim
@@ -779,6 +806,32 @@ src/
                     drift, Pearson r with p-values, Dice / HD95 / MSD overlap,
                     the closest-point rigid offset between two surfaces,
                     ITV unions, the motion report + CSV                          4D
+  posture/          the posture model (docs/posture-model.md): a continuous,
+                    invertible path between studies of one patient in
+                    different positions                                          Reg
+    se3.rs            log / exp of rigid transforms, screws, patient-axis
+                      angles, symmetric 3x3 eigen, stretch
+    svf.rs            lattices, displacement fields, stationary velocity
+                      fields: exp by scaling and squaring (exact rigid
+                      regions), composition, inverse, log, Jacobian
+    polyrigid.rs      the bodies' twists blended: swept regions, Shepard
+                      weights with a reach, the rigidity weight
+    fit.rs            a segment's three layers: rigid bodies (shape fit,
+                      principal-axes seeds), blend, B-spline residual
+    chain.rs          a chain's bodies on cubic Hermite curves through its
+                      states (Kim-Kim-Shin), the sparse blend weights, the
+                      corrected field at a time
+    apply.rs          the path on points, meshes, structure sets, masks,
+                      images and doses; what is shown (Sampler); the three
+                      planes on screen; key frames, the working grid; the
+                      Jacobian wash
+    gpu.rs            the three planes as a WGSL compute shader on the
+                      inference device, and the CPU fallback
+    measure.rs        the four tables, the model's checks, the WEPL along a
+                      beam, CSV
+    file.rs           the .rdsposture file
+    film.rs           the path as an animated GIF: exact frames, the planes
+                      laid out as the window has them, one palette, outlines
   dvh.rs            dose-volume histograms: sampling, curves, metrics,
                     protocol constraints, CSV                                    Dose
   derived.rs        the recipe a derived structure carries: the expression,
@@ -827,6 +880,11 @@ src/
     anchored.rs       the same anchored on a structure contoured on both sides
                       (a cardiac CT onto a 4DCT by the heart): centroids, a rigid
                       fit on the structure, a local refinement, Dice as the check
+    posture.rs        the posture model from studies: common structures,
+                      anchor, states into the anchor frame, segments, tables
+                      (build); a saved model's tables (reopen); the image at a
+                      time and the path as DICOM (export_frame,
+                      export_registration)
     graph/            user workflows: the steps above (and the engines, loading,
                       export) as nodes of a graph the user draws and saves
                       (docs/workflows.md)
@@ -846,6 +904,7 @@ src/
                         and DRR steps
       nodes/setup.rs    the 2D/3D registration and positioned copy steps
       nodes/planar.rs   the 2D/2D registration and projection steps
+      nodes/posture.rs  the Posture model step
       store.rs          the user's workflow folder, load / save, the recent
                         list, the examples compiled in
 
@@ -858,7 +917,7 @@ src/
     session.rs        open workspaces, transforms, reports, and their handles
     tools/            the tools as plain functions with schema-deriving
                       argument structs: session, segment, register, setup
-                      (2D/3D), fourd, analysis, output, archive (the
+                      (2D/3D), fourd, analysis, posture, output, archive (the
                       station's PACS listed under aliases or codes, paged or
                       summarised, a study described from its headers, opened
                       through the gate), curation/ (audit, duplicates,
@@ -1100,7 +1159,9 @@ What works on the images on screen is a **module**, a section of the right
 panel; what is about files and folders is a **tool window**. The windows
 that remain are the workflow editor (its canvas needs the width), the PACS
 (with its server page), the downloaded models, *Export DICOM*, *Save image*,
-the anonymizer and the two test-data dialogs (generate, download); the
+the anonymizer and the two test-data dialogs (generate, download) - and
+*Posture model*, which brings panes of its own (a model workspace drawn
+inside it, kept off the main screen) and so stays a window for now; the
 structure comparison, structure details, transfer by relationship,
 auto-segmentation results, DVH, structure motion with its results, and the
 workflow run were windows once and are sections now, and the 3D window is
@@ -1388,13 +1449,18 @@ cargo feature `pacs-server` (off by default) adds `axum`, `axum-server`
 
 ## Testing
 
-Twenty-seven integration suites plus in-module unit tests run against the same
+Twenty-eight integration suites plus in-module unit tests run against the same
 code paths the GUI uses, with no external data or tooling: the analytic
 phantom round trip (**synthetic_study**), simulate → export → reload
 (**simulate_export**), rigid and B-spline recovery of known transforms
 (**registration**), masks, growing, contours and meshing (**segmentation**),
 anonymize → reload (**anonymize**), SEG written and read back voxel for voxel
-(**dicomseg**), the body contour on phantoms with couch, chair and mask
+(**dicomseg**), the posture model against the analytic truth of an
+articulated phantom - a hinge's angle, the bones' screws and shapes, the
+organ's volume change, the linear mode's shrinking bone, the model file,
+a chain and its smooth curve through the middle state, the live planes
+against the rendered volume, the WEPL to the organ, a DICOM round trip
+(**posture**), the body contour on phantoms with couch, chair and mask
 (**body**), the archive round trip (**archive**), opening what is not a volume -
 RT images and a structure set on their own, a single slice, a folder of RT
 objects, and an image series added afterwards (**open_files**) - the DVH

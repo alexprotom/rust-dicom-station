@@ -92,6 +92,8 @@ mod planar_contours;
 mod planar_tools;
 mod play;
 mod poi;
+mod posture_table;
+mod posture_win;
 mod project_win;
 mod prompt_seg;
 mod propagate_win;
@@ -308,45 +310,52 @@ const WL_PRESETS: &[(&str, f32, f32)] = &[
 // Interactive segmentation tools
 
 /// Active viewport tool. `None` keeps the classic behavior (LMB navigates
-/// the crosshair); the segmentation tools take over the left mouse button.
+/// the crosshair); the drawing tools take over the left mouse button.
+///
+/// Every tool acts on the *subject* of the drawing strip - the RT structure
+/// or the segment selected ([`ViewerApp::edit_subject`]) - and does the same
+/// thing to either, in the representation each has: contours for the one,
+/// a voxel mask for the other. Which code runs is the program's business;
+/// the user picks a tool for what it does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SegTool {
     None,
-    /// Paint into the active segmentation (Alt temporarily erases).
+    /// Paint (Alt reverses): on a structure a round brush that pushes the
+    /// contour out, on a segment the voxel brush.
     Brush,
-    /// Erase from the active segmentation.
+    /// Erase (Alt reverses): the same brush, cutting.
     Erase,
     /// Seeded region growing: press to seed, drag up/down to widen/narrow
-    /// the intensity tolerance, release to commit (Esc cancels).
+    /// the intensity tolerance, release to commit (Esc cancels). Into the
+    /// segment's mask, or merged into the structure's contours.
     Grow,
-    /// Draw a polygon into the active RT structure, click by click.
+    /// Draw a polygon, click by click.
     Polygon,
     /// The same, through a closed spline fitted to the clicked points.
     Spline,
     /// Draw a contour freehand, in one drag.
     Freehand,
-    /// Push the contour under the pointer around, like a finger in clay.
+    /// Push the outline under the pointer around, like a finger in clay.
     Nudge,
-    /// Paint into the active RT structure: a round brush on the patient that
-    /// pushes the contour lines, rather than the voxel brush's mask.
-    ContourBrush,
     /// Draw along the edge under the pointer: the curve between two clicks
     /// is the cheapest path through the image gradient, not a straight line.
     LiveWire,
 }
 
 impl SegTool {
-    /// Does this tool edit RT structure contours rather than voxel masks?
-    fn draws_contours(self) -> bool {
+    /// Does this tool draw a closed curve, click by click or in one drag -
+    /// the tools the Auto / Extend / Subtract rule is about?
+    fn draws_curves(self) -> bool {
         matches!(
             self,
-            SegTool::Polygon
-                | SegTool::Spline
-                | SegTool::Freehand
-                | SegTool::Nudge
-                | SegTool::ContourBrush
-                | SegTool::LiveWire
+            SegTool::Polygon | SegTool::Spline | SegTool::Freehand | SegTool::LiveWire
         )
+    }
+
+    /// Does this tool work on a planar pane's 2D contours as well? All of
+    /// them but the region grower, which needs a volume to grow through.
+    fn on_planar(self) -> bool {
+        !matches!(self, SegTool::None | SegTool::Grow)
     }
 }
 
@@ -606,9 +615,10 @@ pub struct ViewerApp {
     /// *Restore the last session* button on the start screen replays it, and
     /// it is written to the settings file as it changes.
     session: [Vec<PathBuf>; MAX_WORKSPACES],
-    /// Sources still to load for a restore, drained one at a time as each
-    /// load finishes (the loader takes one folder at a time).
-    restore_queue: Vec<(usize, PathBuf)>,
+    /// Workspaces still to load for a restore, each with all its sources,
+    /// drained one workspace at a time as each load finishes: one load a
+    /// workspace ([`crate::loader::load_sources`]), never one a source.
+    restore_queue: Vec<(usize, Vec<PathBuf>)>,
     /// The session the previous run ended with, as read from the settings
     /// file. Emptied when it turns out its data is gone.
     last_session: [Vec<PathBuf>; MAX_WORKSPACES],
@@ -850,22 +860,27 @@ pub struct ViewerApp {
     seg_tool: SegTool,
     /// Brush radius in mm (shared by paint and erase).
     brush_radius_mm: f32,
-    /// Which tissue the contour brush is allowed to paint into: the smart
-    /// brush's edge setting.
+    /// Which tissue Paint and Erase are allowed to cover: the smart brush's
+    /// edge setting, on a structure and on a segment alike.
     brush_band: contour_edit::EdgeBand,
     /// Pull the interpolated contours onto the edges the image shows:
     /// smart interpolation.
     interp_snap: bool,
-    /// Whether the contour brush's current stroke is cutting: decided once,
-    /// when an Auto stroke starts, from whether it started inside.
-    brush_auto_cut: bool,
+    /// A Nudge stroke in progress on a segment: the slice's outline, kept
+    /// for the whole drag (see [`crate::segmentation::OutlineNudge`]).
+    seg_nudge: Option<seg::SegNudge>,
     /// The structure the ✨ Grow tool is not allowed to leave, if any.
     grow_limit: Option<combine::ItemRef>,
     /// How far past the band's own threshold the brush may still reach,
     /// as a fraction of the display window. 0 is the bare threshold.
     brush_sensitivity: f32,
-    /// Spherical 3D brush (paints across slices) vs. in-plane 2D circle.
+    /// Spherical 3D brush (paints across slices) vs. in-plane 2D circle,
+    /// on a segment.
     brush_3d: bool,
+    /// The same on an RT structure: a ball cut into the contours of every
+    /// slice it reaches. Off at start: a structure is drawn slice by slice,
+    /// and the brush a department uses most should not change under it.
+    contour_brush_3d: bool,
     /// Last brush sample of the stroke in progress: (slot, voxel coords).
     paint_last: Option<(usize, [f64; 3])>,
     /// Region-growing drag in progress.
@@ -1114,6 +1129,8 @@ pub struct ViewerApp {
     /// Playing through slices and through 4D phases: the settings the
     /// *Image playback* module carries, and the run in flight.
     play: play::PlayState,
+    /// *Tools ▸ Posture model* and the workspace it drives.
+    posture: posture_win::PostureWin,
     /// State of the *Image information* module.
     info: img_info::InfoState,
     dose_est_job: Option<Job<Vec<dose_est::DoseRow>>>,
@@ -1450,10 +1467,11 @@ impl ViewerApp {
             brush_radius_mm: 5.0,
             brush_band: contour_edit::EdgeBand::None,
             interp_snap: false,
-            brush_auto_cut: false,
+            seg_nudge: None,
             grow_limit: None,
             brush_sensitivity: 0.15,
             brush_3d: true,
+            contour_brush_3d: false,
             paint_last: None,
             grow: None,
             grow_state: GrowState::default(),
@@ -1506,6 +1524,7 @@ impl ViewerApp {
             modules_tracked: false,
             dose_est: dose_est::DoseEst::default(),
             play: play::PlayState::default(),
+            posture: Default::default(),
             info: img_info::InfoState::default(),
             dose_est_job: None,
             auto: auto_tools::AutoTools::default(),
@@ -1789,9 +1808,15 @@ impl ViewerApp {
             }
         }
         self.apply_modules_open = true;
-        for (slot, paths) in self.last_session.clone().iter().enumerate() {
-            for path in paths {
-                self.restore_queue.push((slot, path.clone()));
+        // A workspace's sources overlap (a folder and a folder inside it, a
+        // study folder of the PACS beside one of its series' folders) and
+        // can be many single files (radiographs taken from part of a
+        // folder): read one by one and merged, the overlap was found twice
+        // ("N series were already present") and every file was a load of
+        // its own. All of a workspace's sources are one load instead.
+        for (slot, paths) in self.last_session.clone().into_iter().enumerate() {
+            if !paths.is_empty() {
+                self.restore_queue.push((slot, paths));
             }
         }
     }
@@ -1838,7 +1863,9 @@ impl ViewerApp {
     /// (loading switches this on) or that were opened to load into, minus
     /// any the user has put aside under *View ▸ Workspaces*.
     pub(super) fn is_open(&self, slot: usize) -> bool {
-        slot == 0 || (slot < MAX_WORKSPACES && self.shown[slot])
+        // The posture window's model workspace is drawn in that window,
+        // never as a row of the main one.
+        slot == 0 || (slot < MAX_WORKSPACES && self.shown[slot] && !self.posture_owns(slot))
     }
 
     /// How many workspaces are on screen. One is the ordinary case; more
@@ -1869,7 +1896,14 @@ impl ViewerApp {
     /// the ones that exist, plus one more - never four letters when only A
     /// is open, and never a fifth.
     pub(super) fn copy_targets(&self, from: usize) -> Vec<usize> {
-        workspace_pick::transfer_targets(&std::array::from_fn(|s| self.is_open(s)), from)
+        // The posture model's workspace is taken, though not on screen: no
+        // load or copy may land in it.
+        let taken: [bool; MAX_WORKSPACES] =
+            std::array::from_fn(|s| self.is_open(s) || self.posture_owns(s));
+        workspace_pick::transfer_targets(&taken, from)
+            .into_iter()
+            .filter(|s| !self.posture_owns(*s))
+            .collect()
     }
 
     /// Where data can be loaded: every open workspace, plus one new letter
@@ -1881,7 +1915,7 @@ impl ViewerApp {
 
     /// Put a workspace on screen, loaded or not.
     pub(super) fn show_workspace(&mut self, slot: usize) {
-        if slot < MAX_WORKSPACES {
+        if slot < MAX_WORKSPACES && !self.posture_owns(slot) {
             self.shown[slot] = true;
         }
     }
@@ -1948,14 +1982,17 @@ impl eframe::App for ViewerApp {
             }
             if undo {
                 let slot = self.preferred_volume_slot();
-                // A contour tool undoes contours, a voxel tool voxels: the
-                // key follows the tool in hand rather than a global history.
+                // The key follows what the tools act on - the planar
+                // structure, the RT structure or the segment - rather than
+                // a global history: whichever tool made the edit, Ctrl+Z
+                // takes back the last one of the thing being edited.
                 if let Some(ps) = self.planar_tool_target() {
                     self.undo_planar_edit(ps);
-                } else if self.seg_tool.draws_contours() {
-                    self.undo_roi_edit(slot);
                 } else {
-                    self.undo_active_seg(slot);
+                    match self.edit_subject(slot) {
+                        seg_edit::EditSubject::Structure => self.undo_roi_edit(slot),
+                        seg_edit::EditSubject::Segmentation => self.undo_active_seg(slot),
+                    }
                 }
             }
             if esc && self.grow.is_some() {

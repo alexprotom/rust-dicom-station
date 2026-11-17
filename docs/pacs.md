@@ -47,6 +47,17 @@ The tree has four levels:
 📁 Unsorted                     1 patient · 756 files
 ```
 
+A series row is its modality, its number and its Series Description. A
+structure set, a plan, a dose or a segmentation whose files carry no
+Series Description (most planning systems and models write none) is
+named by what the object calls itself instead: `RTSTRUCT 201 -
+TotalSeg_v3_1.5mm` from its Structure Set Label (else its Structure Set
+Name), an RT Plan Label (else the plan's name), a dose's Dose Comment, a
+segmentation's Content Label. The rows of a paired server read the same
+way (a server of an earlier version sends the description alone), and the
+assistant's archive listing gives the same name, through its redactor as
+any text from a file.
+
 A study holding a 4DCT says so before anything is loaded ([4D sets](#4d-sets)):
 its row carries **🎞** and the number of scans (`🎞2`; `🎞?` while a set is
 only probable, `🎞 phases not in PACS` for a 4D scout or an ungated series
@@ -232,6 +243,12 @@ the person decided: the cohorts, who is in which, the names given.
   version 2 added it; a catalog of version 1 has every header read again,
   once, by the next scan, and keeps its names, cohorts and memberships.
   Version 3 added what the [4D sets](#4d-sets) are found from.
+* An RT object's series with no Series Description keeps the object's own
+  name beside it (`object_label`: the label read above). It is an optional
+  field, not a new version: a catalog written before it lists those series
+  as before until the next scan, which reads their files again once (a few
+  files per study) and keeps everything else; a program of an earlier
+  version reading the catalog ignores the field.
 * A file read again (it changed) says where it belongs: a series whose files
   now name another study moves to it, a study whose files now name another
   patient moves to them, and a study left with no series goes - so a study
@@ -389,7 +406,7 @@ each with what the PACS knows of it:
 |---|---|---|
 | **new** | made here and never saved | yes |
 | **not in the PACS** | read from a file the PACS does not hold | yes |
-| **changed** | the PACS holds an object with its SOP Instance UID, and it was edited here since it was loaded or last saved | yes; saved as a new object beside the old one, the old version staying |
+| **changed** | the PACS holds an object with its SOP Instance UID, and it was edited here since it was loaded or last saved | yes; by default it updates the series it is in (below) |
 | **in the PACS** | the PACS holds it, as it is here (loaded from there, or saved before, and not edited since) | no; ticked, it is saved again all the same |
 | **empty** | nothing drawn in it | cannot be |
 | **study not in the PACS** | the study it belongs to is not in the PACS: import the study first | cannot be |
@@ -416,12 +433,49 @@ series lie under two cohort folders has only the storage folder in common):
 then beside the study's largest series. Nothing is filed loose in a storage
 or a cohort folder, so the patient's cohorts stay as they were. The catalog
 learns the new files in the same step, so the tree lists them at once,
-without a rescan. Once saved, a new object takes on the identity of its copy
+without a rescan. Once saved, an object takes on the identity of its copy
 in the PACS (its SOP and Series Instance UIDs, its file name): it reads **in
-the PACS** from then on and is not offered a second time. An object loaded
-from the PACS and saved again keeps the identity it was loaded with, which a
-plan or a registration may refer to, and reads **in the PACS** again until
-the next edit.
+the PACS** from then on, is not offered a second time, and its next edit
+updates that copy.
+
+### Update the series, or a new one
+
+Each ticked row the PACS holds (*changed*, or *in the PACS* and ticked
+again) offers two ways in:
+
+* **Update RTSTRUCT 201 - TotalSeg** (the series' own name; the default):
+  the object goes back into the series it came from - the same Series
+  Instance UID, Series Number and Series Description - and replaces the
+  instance it was loaded or last saved as. Editing and saving a set five
+  times leaves one series with one file.
+* **Save as a new series**: a series of its own beside the one it came
+  from, which stays as it is, numbered one past the largest Series Number
+  of the study, with the description typed under it (the series' own to
+  begin with).
+
+What the PACS never held (*new*, *not in the PACS*) always goes into a
+series of its own, numbered the same way, its description typed the same
+way (the object's name when left empty). So two sets saved on one study
+no longer both read `RTSTRUCT 2`.
+
+**How an update replaces.** The new version is a new instance - a new SOP
+Instance UID in the old series, as the standard asks of changed content -
+not the old file overwritten under its old UID: the PACS files nothing
+whose SOP Instance UID it holds already, and a server's
+[mirror](pacs-server.md) syncs by SOP Instance UIDs, so a file changed
+under its old UID would reach neither. It is filed in the folder of the
+file it replaces; only once it is in its place is the old file deleted,
+and the catalog then forgets the old file and learns the new one in one
+update. A save that stops before the new file is in place leaves the old
+one where it was: the series is never without a file.
+
+**A set a plan refers to.** A plan names its structure set by SOP Instance
+UID. A set that a plan of the workspace names is not offered the update
+(the row says why): it goes into a new series the first time, keeps the
+identity the plan refers to, and the workspace remembers the copy, which
+its later saves update. A plan in the PACS that names the replaced set
+(read from the study's plan files at the save) keeps it too: the new
+instance joins the series beside it, and the window says so.
 
 A save that stops half way (a file that cannot be put in its place) keeps
 what it filed: the catalog learns those, they take on their PACS identity,
@@ -434,9 +488,9 @@ would duplicate hundreds of megabytes under new Instance UIDs.
 
 Each written object gets
 
-* a **fresh SOP Instance UID and Series Instance UID** - a new object, not a
-  replacement, which keeps the PACS append-only and a mistaken upload
-  harmless;
+* a **fresh SOP Instance UID**, and either the Series Instance UID and
+  number of the series it updates or a new series of its own
+  ([above](#update-the-series-or-a-new-one));
 * the **original Study Instance UID**, from the object itself where it says so
   and from the series it references otherwise, filing it under the patient and
   study it belongs to;
@@ -447,9 +501,8 @@ Each written object gets
 The objects are written to a scratch folder (removed afterwards) and filed
 through the ordinary import path, told to file a study's files beside the
 ones the PACS holds wherever they are, so a half-failed save leaves the PACS
-untouched. Every save creates new instances, so saving a set twice leaves two
-structure sets rather than overwriting one; the unwanted one can be removed
-as a series from the PACS.
+untouched. *Save as a new series* keeps every version as a series of its
+own; an unwanted one can be removed as a series from the PACS.
 
 ## What it is not
 
@@ -482,7 +535,14 @@ the folders, renaming, moving and copying patients between cohorts with no
 file touched and all of it surviving a rescan, what a selection stands for,
 moving a study's files into a new folder with its series folders kept, the
 catalog staying in the main folder, and removal taking the emptied folders
-with it.
+with it. Two more save a set drawn on the phantom and update it twice (one
+series, one file, its number and description kept, the earlier file gone
+from the disk and the catalog, a rescan from the files agreeing), save it as
+a new series (numbered after the study's last), update the phantom's own
+set that its plan names (both instances kept), and list the phantom's
+structure set and plan by their labels, also after a catalog of before is
+scanned again. `tests/ui.rs` saves a set changed twice through the window
+and finds *Update* offered and chosen the second time, and no series more.
 
 Unit tests in `crates/rds-domain/src/archive.rs` and `crates/rds-domain/src/archive/catalog.rs` cover the parts
 with no round trip: the folder-name sanitizer, a missing folder reading as an

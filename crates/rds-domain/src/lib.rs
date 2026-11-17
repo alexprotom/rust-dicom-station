@@ -44,6 +44,7 @@ pub mod par;
 pub mod pathlen;
 pub mod planar_structs;
 pub mod portal;
+pub mod posture;
 pub mod projection;
 pub mod propagate;
 pub mod registration;

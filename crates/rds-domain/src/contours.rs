@@ -930,6 +930,60 @@ impl Region {
             })
             .map(|(i, _)| i)
     }
+
+    /// The cells of a `w` x `h` raster whose centre the region covers, one
+    /// byte a cell (row-major, cell `(i, j)` centred on `(i, j)`) - the even-odd
+    /// fill [`crate::segmentation::rasterize_roi`] and [`Stack::rasterize`]
+    /// use, on one slice. This is how a curve drawn with the contour tools
+    /// lands in a segmentation's mask: the voxels whose centre it encloses.
+    pub fn rasterize(&self, w: usize, h: usize) -> Vec<u8> {
+        let mut out = vec![0u8; w * h];
+        if self.is_empty() || w == 0 || h == 0 {
+            return out;
+        }
+        // Only the rows the rings can reach; the rest stay empty.
+        let b = self.bbox();
+        let j0 = (b[1].floor().max(0.0) as usize).min(h);
+        let j1 = ((b[3].ceil() + 1.0).max(0.0) as usize).min(h);
+        fill_region_rows(self, -0.5, -0.5, w, j0..j1, 1.0, |j, i| out[j * w + i] = 1);
+        out
+    }
+}
+
+/// The outline of a binary slice (`w` x `h`, row-major, cell `(i, j)`
+/// centred on `(i, j)`) as a region: the marching-squares trace
+/// [`Stack::from_mask`] makes of every slice, so a mask slice read here is
+/// the contour a generator would have made of it. Filled back with
+/// [`Region::rasterize`] it gives the same cells: the outline runs half a
+/// cell from every centre, on the right side of each.
+///
+/// Only the box the filled cells occupy is traced, so an organ on a large
+/// slice costs its own size.
+pub fn region_of_mask(mask: &[u8], w: usize, h: usize) -> Region {
+    let (mut lo, mut hi) = ([usize::MAX; 2], [0usize; 2]);
+    for j in 0..h {
+        let row = &mask[j * w..(j + 1) * w];
+        if let (Some(a), Some(b)) = (
+            row.iter().position(|&m| m != 0),
+            row.iter().rposition(|&m| m != 0),
+        ) {
+            lo = [lo[0].min(a), lo[1].min(j)];
+            hi = [hi[0].max(b), hi[1].max(j)];
+        }
+    }
+    if lo[0] == usize::MAX {
+        return Region::new();
+    }
+    let (bw, bh) = (hi[0] - lo[0] + 1, hi[1] - lo[1] + 1);
+    let mut field = PaddedField::new(bw, bh);
+    for j in 0..bh {
+        for i in 0..bw {
+            if mask[(j + lo[1]) * w + i + lo[0]] != 0 {
+                field.set(i, j);
+            }
+        }
+    }
+    field.trace_region(lo[0] as f64, lo[1] as f64)
 }
 
 /// Is `inner` nested inside `outer`? Valid whenever the two do not cross,
@@ -1707,6 +1761,38 @@ impl Stack {
         Stack::from_mask_at(mask, dims, [0; 3], axis)
     }
 
+    /// [`Self::from_mask`] of the mask that holds exactly `voxels` (linear
+    /// indices on a lattice `dims`), tracing only the box they occupy: what a
+    /// region grown into an RT structure is, without a pass over the whole
+    /// volume for a few thousand voxels.
+    pub fn from_voxels(voxels: &[u32], dims: [usize; 3], axis: usize) -> Stack {
+        let [nx, ny, _] = dims;
+        let sl = nx * ny;
+        let (mut lo, mut hi) = ([usize::MAX; 3], [0usize; 3]);
+        let at = |v: u32| {
+            let v = v as usize;
+            [v % nx, (v % sl) / nx, v / sl]
+        };
+        for &v in voxels {
+            let c = at(v);
+            for a in 0..3 {
+                lo[a] = lo[a].min(c[a]);
+                hi[a] = hi[a].max(c[a]);
+            }
+        }
+        if lo[0] == usize::MAX || sl == 0 {
+            return Stack::empty(axis);
+        }
+        let sub = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
+        let mut mask = vec![0u8; sub[0] * sub[1] * sub[2]];
+        for &v in voxels {
+            let c = at(v);
+            let (i, j, k) = (c[0] - lo[0], c[1] - lo[1], c[2] - lo[2]);
+            mask[k * sub[0] * sub[1] + j * sub[0] + i] = 1;
+        }
+        Stack::from_mask_at(&mask, sub, lo, axis)
+    }
+
     /// [`Self::from_mask`] of a mask that is the box at `lo` of a larger
     /// lattice, the contours put in that lattice's coordinates.
     fn from_mask_at(mask: &[u8], dims: [usize; 3], lo: [usize; 3], axis: usize) -> Stack {
@@ -2281,6 +2367,304 @@ fn sdf_of(region: &Region, x0: f64, y0: f64, w: usize, h: usize) -> Vec<f32> {
             }
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The 3-D contour brush
+// ---------------------------------------------------------------------------
+
+/// The finest footprint cell, in millimetres: below this a finer cell
+/// changes nothing a hand can aim at, and only costs cells.
+const FOOT_MIN_CELL_MM: f64 = 0.2;
+/// A brush radius is cut into at least this many cells, so a small brush
+/// keeps its round outline while a large one does not paint millions of
+/// cells per mouse sample.
+const FOOT_CELLS_PER_RADIUS: f64 = 24.0;
+/// The most cells per voxel along an in-plane axis.
+const FOOT_MAX_SUB: usize = 8;
+
+/// What one stroke of the 3-D contour brush has covered so far, slice by
+/// slice of a [`Stack`] - a ball in patient millimetres swept along the
+/// pointer, cut by every slice it reaches.
+///
+/// A ball through a structure's contours is, on each slice, a disc (a
+/// capsule, swept) unioned with or cut out of that slice's region. Done as
+/// polygon booleans on every mouse sample, that is a boolean per reached
+/// slice per sample, which is what kept the contour brush on one slice.
+/// This keeps the stroke as a raster instead: each sample marks the cells
+/// the ball covers, which is a few thousand distance tests and nothing
+/// else, and the owner turns a slice's cells into an outline
+/// ([`Self::region`]) and merges it into the contours ([`Self::merged`])
+/// only when it wants to show or keep the result. The merge always starts
+/// from the slice as it was before the stroke, so however often it runs,
+/// nothing compounds: the rings the stroke did not reach keep their
+/// vertices, the boolean being exact on them ([`Region::boolean`]).
+///
+/// The geometry is the lattice's own: the distance from a cell centre to
+/// the swept segment is measured in patient millimetres through the grid's
+/// direction vectors and spacings, so a slice of a tilted acquisition, whose
+/// normal is not its stacking direction, gets the disc where the sphere
+/// really crosses it - the circle's radius from the distance along the
+/// slice normal, its centre shifted by the tilt. Cells are finer than the
+/// voxels (`sub` per voxel along each in-plane axis, from the radius), so a
+/// disc stays round on a 3 mm sagittal lattice; the edge band, when the
+/// owner gives one, is asked of the voxel each cell lies in, voxel by voxel
+/// as the segment brush has it.
+pub struct BallFootprint {
+    axis: usize,
+    dims: [usize; 3],
+    /// Cells per voxel along the two in-plane axes, [`plane_axes`] order.
+    sub: [usize; 2],
+    /// `m[a]` is the patient vector (mm) of one step along lattice axis `a`.
+    m: [[f64; 3]; 3],
+    /// How many voxels along each lattice axis one millimetre of ball
+    /// radius can reach: the norms of the rows of the inverse of `m`, which
+    /// bound an ellipsoid's extent exactly. Along the stacking axis it is
+    /// one over the spacing along the slice normal.
+    reach: [f64; 3],
+    slices: std::collections::BTreeMap<usize, FootSlice>,
+}
+
+/// The cells one slice of a footprint holds.
+struct FootSlice {
+    /// One row of cells per entry; an empty row was never touched.
+    rows: Vec<Vec<u8>>,
+    /// The box of the marked cells, inclusive.
+    lo: [usize; 2],
+    hi: [usize; 2],
+    /// Marked since it was last taken (see [`BallFootprint::take_dirty`]).
+    dirty: bool,
+}
+
+impl BallFootprint {
+    /// An empty footprint on `grid`'s lattice, for a stack along `axis`,
+    /// with cells fine enough for a ball of `radius_mm`.
+    pub fn new(grid: &Grid, axis: usize, radius_mm: f64) -> BallFootprint {
+        let sp = grid.spacing;
+        let dirs = [grid.row_dir, grid.col_dir, grid.normal];
+        let m: [[f64; 3]; 3] =
+            std::array::from_fn(|a| [dirs[a].x * sp[a], dirs[a].y * sp[a], dirs[a].z * sp[a]]);
+        let v = |a: usize| Vec3::new(m[a][0], m[a][1], m[a][2]);
+        let det = v(0).dot(v(1).cross(v(2)));
+        let reach = if det.abs() > 1e-12 {
+            [
+                v(1).cross(v(2)).length() / det.abs(),
+                v(2).cross(v(0)).length() / det.abs(),
+                v(0).cross(v(1)).length() / det.abs(),
+            ]
+        } else {
+            // A degenerate lattice: the axis-aligned answer, which at
+            // least paints something.
+            std::array::from_fn(|a| 1.0 / sp[a].max(1e-6))
+        };
+        let cell = (radius_mm.max(0.01) / FOOT_CELLS_PER_RADIUS).max(FOOT_MIN_CELL_MM);
+        let [ua, va] = plane_axes(axis);
+        let sub = [ua, va].map(|a| ((sp[a] / cell).ceil() as usize).clamp(1, FOOT_MAX_SUB));
+        BallFootprint {
+            axis,
+            dims: grid.dims,
+            sub,
+            m,
+            reach,
+            slices: Default::default(),
+        }
+    }
+
+    pub fn axis(&self) -> usize {
+        self.axis
+    }
+
+    /// Nothing marked yet.
+    pub fn is_empty(&self) -> bool {
+        self.slices.is_empty()
+    }
+
+    /// The levels the stroke has reached, in order.
+    pub fn levels(&self) -> Vec<usize> {
+        self.slices.keys().copied().collect()
+    }
+
+    /// Mark the ball of `radius_mm` swept from `a` to `b` (fractional voxel
+    /// indices, `[i, j, k]`), on every slice it reaches. `keep` is asked of
+    /// the voxel (`[i, j, k]`) under each cell the ball covers; a cell whose
+    /// voxel it refuses stays unmarked. Returns whether any cell was newly
+    /// marked.
+    pub fn sweep(
+        &mut self,
+        a: [f64; 3],
+        b: [f64; 3],
+        radius_mm: f64,
+        keep: impl Fn([usize; 3]) -> bool,
+    ) -> bool {
+        let r = radius_mm.max(0.01);
+        let axis = self.axis;
+        let [ua, va] = plane_axes(axis);
+        let n = self.dims;
+        if n.contains(&0) {
+            return false;
+        }
+        // The box of the swept ball along each lattice axis, in voxels.
+        let lo: [f64; 3] = std::array::from_fn(|x| a[x].min(b[x]) - r * self.reach[x]);
+        let hi: [f64; 3] = std::array::from_fn(|x| a[x].max(b[x]) + r * self.reach[x]);
+        let l0 = lo[axis].ceil().max(0.0);
+        let l1 = hi[axis].floor().min(n[axis] as f64 - 1.0);
+        if l1 < l0 {
+            return false;
+        }
+        // Voxel coordinate x of cell c, with s cells per voxel: the cells
+        // tile the voxels exactly, from -0.5 to n - 0.5.
+        let cells = |x: usize| n[[ua, va][x]] * self.sub[x];
+        let range = |x: usize| -> Option<(usize, usize)> {
+            let s = self.sub[x] as f64;
+            let ax = [ua, va][x];
+            let c0 = ((lo[ax] + 0.5) * s - 0.5).ceil().max(0.0);
+            let c1 = ((hi[ax] + 0.5) * s - 0.5)
+                .floor()
+                .min(cells(x) as f64 - 1.0);
+            (c1 >= c0).then_some((c0 as usize, c1 as usize))
+        };
+        let (Some((cu0, cu1)), Some((cv0, cv1))) = (range(0), range(1)) else {
+            return false;
+        };
+        let m = self.m;
+        let to_mm = |d: [f64; 3]| -> [f64; 3] {
+            std::array::from_fn(|c| m[0][c] * d[0] + m[1][c] * d[1] + m[2][c] * d[2])
+        };
+        let dot = |p: [f64; 3], q: [f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+        let ab = to_mm([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+        let ab2 = dot(ab, ab);
+        let r2 = r * r;
+        let (su, sv) = (self.sub[0] as f64, self.sub[1] as f64);
+        let w = cells(0);
+        let h = cells(1);
+        let mut changed = false;
+        let mut hits: Vec<(usize, usize)> = Vec::new();
+        for level in (l0 as usize)..=(l1 as usize) {
+            hits.clear();
+            for cv in cv0..=cv1 {
+                let y = (cv as f64 + 0.5) / sv - 0.5;
+                for cu in cu0..=cu1 {
+                    let x = (cu as f64 + 0.5) / su - 0.5;
+                    let mut q = [0.0f64; 3];
+                    q[ua] = x;
+                    q[va] = y;
+                    q[axis] = level as f64;
+                    let d = to_mm([q[0] - a[0], q[1] - a[1], q[2] - a[2]]);
+                    let t = if ab2 > 1e-12 {
+                        (dot(d, ab) / ab2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let e = [d[0] - ab[0] * t, d[1] - ab[1] * t, d[2] - ab[2] * t];
+                    if dot(e, e) > r2 {
+                        continue;
+                    }
+                    let mut vox = [0usize; 3];
+                    vox[ua] = (x.round().max(0.0) as usize).min(n[ua] - 1);
+                    vox[va] = (y.round().max(0.0) as usize).min(n[va] - 1);
+                    vox[axis] = level;
+                    if keep(vox) {
+                        hits.push((cu, cv));
+                    }
+                }
+            }
+            if hits.is_empty() {
+                continue;
+            }
+            let s = self.slices.entry(level).or_insert_with(|| FootSlice {
+                rows: vec![Vec::new(); h],
+                lo: [usize::MAX; 2],
+                hi: [0; 2],
+                dirty: false,
+            });
+            for &(cu, cv) in &hits {
+                let row = &mut s.rows[cv];
+                if row.is_empty() {
+                    row.resize(w, 0);
+                }
+                if row[cu] == 0 {
+                    row[cu] = 1;
+                    s.lo = [s.lo[0].min(cu), s.lo[1].min(cv)];
+                    s.hi = [s.hi[0].max(cu), s.hi[1].max(cv)];
+                    s.dirty = true;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// The levels marked since the last call, in order; they count as
+    /// taken afterwards.
+    pub fn take_dirty(&mut self) -> Vec<usize> {
+        self.slices
+            .iter_mut()
+            .filter_map(|(l, s)| std::mem::take(&mut s.dirty).then_some(*l))
+            .collect()
+    }
+
+    /// Whether `level` was marked since it was last taken; it counts as
+    /// taken afterwards.
+    pub fn take_dirty_at(&mut self, level: usize) -> bool {
+        self.slices
+            .get_mut(&level)
+            .is_some_and(|s| std::mem::take(&mut s.dirty))
+    }
+
+    /// The stroke's outline on `level`, in the stack's in-plane voxel
+    /// coordinates: the marching-squares trace of its cells, as a mask
+    /// slice is traced everywhere else ([`region_of_mask`]), scaled back from
+    /// cells to voxels. Only the box of the marked cells is traced.
+    pub fn region(&self, level: usize) -> Region {
+        let Some(s) = self.slices.get(&level).filter(|s| s.lo[0] != usize::MAX) else {
+            return Region::new();
+        };
+        let (bw, bh) = (s.hi[0] - s.lo[0] + 1, s.hi[1] - s.lo[1] + 1);
+        let mut field = PaddedField::new(bw, bh);
+        for j in 0..bh {
+            let row = &s.rows[j + s.lo[1]];
+            if row.is_empty() {
+                continue;
+            }
+            for i in 0..bw {
+                if row[i + s.lo[0]] != 0 {
+                    field.set(i, j);
+                }
+            }
+        }
+        let (su, sv) = (self.sub[0] as f64, self.sub[1] as f64);
+        let (x0, y0) = (s.lo[0] as f64, s.lo[1] as f64);
+        let mut region = Region::new();
+        for pts in field.trace() {
+            region.rings.push(Poly::new(
+                pts.iter()
+                    .map(|p| {
+                        [
+                            (x0 + p[0] as f64 + 0.5) / su - 0.5,
+                            (y0 + p[1] as f64 + 0.5) / sv - 0.5,
+                        ]
+                    })
+                    .collect(),
+            ));
+        }
+        region.normalize();
+        region
+    }
+
+    /// `base` - a slice as it was before the stroke - with the stroke's
+    /// outline on `level` added (paint) or cut out (`erase`).
+    pub fn merged(&self, level: usize, base: &Region, erase: bool) -> Region {
+        let foot = self.region(level);
+        if foot.is_empty() {
+            return base.clone();
+        }
+        match (erase, base.is_empty()) {
+            (true, true) => Region::new(),
+            (false, true) => foot,
+            (true, false) => base.boolean(&foot, BoolOp::Subtract),
+            (false, false) => base.boolean(&foot, BoolOp::Union),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2996,5 +3380,232 @@ mod tests {
         assert!((c2[0] - c1[0]).abs() < 1e-9, "scaling keeps the centroid");
         st.rotate(std::f64::consts::FRAC_PI_2);
         assert!((st.volume_cm3([1.0; 3]) - 4.0 * v0).abs() < 1e-6 * v0);
+    }
+
+    /// A mask slice read as an outline and filled back is the same slice,
+    /// to the cell: islands, a hole, a single cell, cells touching only at
+    /// a corner, and cells on the border of the raster.
+    #[test]
+    fn a_mask_slice_round_trips_through_its_outline() {
+        let (w, h) = (24usize, 18usize);
+        let mut m = vec![0u8; w * h];
+        let mut set = |i: usize, j: usize| m[j * w + i] = 1;
+        // A ring with a hole.
+        for j in 3..12 {
+            for i in 3..12 {
+                if !(6..9).contains(&i) || !(6..9).contains(&j) {
+                    set(i, j);
+                }
+            }
+        }
+        // A cell on its own, a diagonal pair, and the raster's corners.
+        set(16, 4);
+        set(18, 8);
+        set(19, 9);
+        set(0, 0);
+        set(w - 1, h - 1);
+        set(w - 1, 0);
+        let region = region_of_mask(&m, w, h);
+        assert!(!region.is_empty());
+        assert_eq!(region.rasterize(w, h), m);
+        // Nothing in, nothing out.
+        assert!(region_of_mask(&vec![0u8; w * h], w, h).is_empty());
+        assert!(Region::new().rasterize(w, h).iter().all(|&v| v == 0));
+    }
+
+    /// A drawn ring fills the cells whose centre it encloses, and a ring
+    /// partly off the raster fills what is on it without a panic.
+    #[test]
+    fn a_ring_rasterizes_to_the_cells_whose_centre_it_holds() {
+        let (w, h) = (10usize, 8usize);
+        // From 1.5 to 4.5: the centres 2, 3 and 4 on each axis.
+        let got = Region::from_ring(square(1.5, 1.5, 3.0)).rasterize(w, h);
+        let n = got.iter().filter(|&&v| v != 0).count();
+        assert_eq!(n, 9);
+        assert_eq!(got[2 * w + 2], 1);
+        assert_eq!(got[4 * w + 4], 1);
+        assert_eq!(got[w + 1], 0);
+        let off = Region::from_ring(square(-5.0, -5.0, 6.5)).rasterize(w, h);
+        assert_eq!(off.iter().filter(|&&v| v != 0).count(), 4);
+    }
+
+    /// Contours of a set of voxels traced in their own box are the
+    /// contours of the whole mask.
+    #[test]
+    fn contours_of_voxels_are_those_of_their_mask() {
+        let dims = [30, 26, 9];
+        let mask = ball(dims, 6.0);
+        let voxels: Vec<u32> = mask
+            .iter()
+            .enumerate()
+            .filter(|(_, &v)| v != 0)
+            .map(|(i, _)| i as u32)
+            .collect();
+        for axis in 0..3 {
+            let a = Stack::from_mask(&mask, dims, axis);
+            let b = Stack::from_voxels(&voxels, dims, axis);
+            let la: Vec<usize> = a.slices.iter().map(|s| s.level).collect();
+            let lb: Vec<usize> = b.slices.iter().map(|s| s.level).collect();
+            assert_eq!(la, lb, "axis {axis}");
+            assert_eq!(a.rasterize(dims), b.rasterize(dims), "axis {axis}");
+            assert_eq!(b.rasterize(dims), mask, "axis {axis}");
+        }
+        assert!(Stack::from_voxels(&[], dims, 2).is_empty());
+    }
+
+    /// The area of a footprint slice in mm², from its outline.
+    fn foot_area(f: &BallFootprint, level: usize, sp: [f64; 3]) -> f64 {
+        let [ua, va] = plane_axes(f.axis());
+        f.region(level).area() * sp[ua] * sp[va]
+    }
+
+    fn near(got: f64, want: f64, rel: f64) -> bool {
+        (got - want).abs() <= rel * want
+    }
+
+    /// A ball on an isotropic lattice reaches the slices within its radius
+    /// and cuts each in the circle where the sphere crosses it.
+    #[test]
+    fn a_ball_cuts_each_slice_it_reaches_in_its_circle() {
+        let sp = [1.0, 1.0, 1.0];
+        let g = grid([40, 40, 30], sp);
+        let mut f = BallFootprint::new(&g, 2, 5.5);
+        assert!(f.is_empty());
+        let c = [20.0, 20.0, 15.0];
+        assert!(f.sweep(c, c, 5.5, |_| true));
+        assert_eq!(f.levels(), (10..=20).collect::<Vec<_>>());
+        let disc = |h: f64| std::f64::consts::PI * (5.5f64 * 5.5 - h * h);
+        for (level, h) in [(15, 0.0), (18, 3.0), (12, 3.0), (10, 5.0)] {
+            let a = foot_area(&f, level, sp);
+            assert!(near(a, disc(h), 0.04), "level {level}: {a} vs {}", disc(h));
+        }
+        // The same sample again marks nothing new.
+        assert_eq!(f.take_dirty().len(), 11);
+        assert!(f.take_dirty().is_empty());
+        assert!(!f.sweep(c, c, 5.5, |_| true));
+        assert!(!f.take_dirty_at(15));
+    }
+
+    /// On a 3 mm lattice the ball reaches one slice either side, and its
+    /// disc there is the sphere's circle in millimetres, not in voxels; a
+    /// sagittal stack of the same lattice gets an ellipse on the lattice.
+    #[test]
+    fn a_ball_follows_the_spacing_along_the_slice_normal() {
+        let sp = [0.8, 0.8, 3.0];
+        let g = grid([60, 60, 30], sp);
+        let c = [30.0, 30.0, 15.0];
+        let mut f = BallFootprint::new(&g, 2, 5.5);
+        f.sweep(c, c, 5.5, |_| true);
+        assert_eq!(f.levels(), vec![14, 15, 16]);
+        let a = foot_area(&f, 16, sp);
+        let want = std::f64::consts::PI * (5.5f64 * 5.5 - 9.0);
+        assert!(near(a, want, 0.04), "{a} vs {want}");
+        // Sideways: sagittal slices are 0.8 mm apart, and each is a disc in
+        // millimetres - an ellipse three and three quarters as wide in j as
+        // in k on the lattice.
+        let mut s = BallFootprint::new(&g, 0, 5.5);
+        s.sweep(c, c, 5.5, |_| true);
+        assert_eq!(s.levels().len(), 2 * 6 + 1);
+        let a = foot_area(&s, 30, sp);
+        let want = std::f64::consts::PI * 5.5 * 5.5;
+        assert!(near(a, want, 0.04), "{a} vs {want}");
+        let b = s.region(30).bbox();
+        let (wj, wk) = ((b[2] - b[0]) * sp[1], (b[3] - b[1]) * sp[2]);
+        assert!(
+            (wj - 11.0).abs() < 0.8 && (wk - 11.0).abs() < 1.6,
+            "{wj} x {wk}"
+        );
+    }
+
+    /// A tilted acquisition: the slices are stacked along a direction that
+    /// is not their normal. The ball reaches as far as the spacing along the
+    /// normal allows, and the circle on a neighbouring slice is shifted by
+    /// the tilt, as the sphere really crosses it.
+    #[test]
+    fn a_ball_on_a_tilted_lattice_is_cut_where_the_sphere_crosses() {
+        let t = 20f64.to_radians();
+        let sp = [1.0, 1.0, 2.0];
+        let mut g = grid([40, 40, 30], sp);
+        g.normal = Vec3::new(0.0, t.sin(), t.cos());
+        let c = [20.0, 20.0, 15.0];
+        let mut f = BallFootprint::new(&g, 2, 5.5);
+        f.sweep(c, c, 5.5, |_| true);
+        // 2 mm along the stack is 1.88 mm along the normal: two slices out.
+        assert_eq!(f.levels(), (13..=17).collect::<Vec<_>>());
+        let h = sp[2] * t.cos();
+        let shift = sp[2] * t.sin();
+        let want = std::f64::consts::PI * (5.5f64 * 5.5 - h * h);
+        let a = foot_area(&f, 16, sp);
+        assert!(near(a, want, 0.04), "{a} vs {want}");
+        let b = f.region(16).bbox();
+        let (cx, cy) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+        assert!((cx - 20.0).abs() < 0.1, "{cx}");
+        assert!(
+            (cy - (20.0 - shift)).abs() < 0.1,
+            "{cy} vs {}",
+            20.0 - shift
+        );
+        let b = f.region(14).bbox();
+        assert!(((b[1] + b[3]) / 2.0 - (20.0 + shift)).abs() < 0.1);
+    }
+
+    /// The edge band is asked voxel by voxel, and a swept ball is a
+    /// capsule on the slice it was drawn on.
+    #[test]
+    fn a_swept_ball_is_a_capsule_and_keeps_only_what_the_band_allows() {
+        let sp = [1.0, 1.0, 1.0];
+        let g = grid([60, 40, 20], sp);
+        let (a, b) = ([15.0, 20.0, 10.0], [35.0, 20.0, 10.0]);
+        let mut f = BallFootprint::new(&g, 2, 4.0);
+        f.sweep(a, b, 4.0, |_| true);
+        let want = 20.0 * 8.0 + std::f64::consts::PI * 16.0;
+        let got = foot_area(&f, 10, sp);
+        assert!(near(got, want, 0.03), "{got} vs {want}");
+        // Only the voxels left of i = 25 are allowed.
+        let mut half = BallFootprint::new(&g, 2, 4.0);
+        half.sweep(a, b, 4.0, |v| v[0] < 25);
+        let got = foot_area(&half, 10, sp);
+        let r = half.region(10).bbox();
+        assert!(near(got, want / 2.0, 0.05), "{got} vs {}", want / 2.0);
+        assert!(r[2] <= 24.6, "{r:?}");
+        // A band that allows nothing marks nothing.
+        let mut none = BallFootprint::new(&g, 2, 4.0);
+        assert!(!none.sweep(a, b, 4.0, |_| false));
+        assert!(none.is_empty());
+    }
+
+    /// Merging adds the stroke to a slice or cuts it out, always from the
+    /// slice as it was, and leaves a slice the stroke never reached as it
+    /// is, vertices and all.
+    #[test]
+    fn a_footprint_merges_into_the_slice_it_started_from() {
+        let sp = [1.0, 1.0, 1.0];
+        let g = grid([60, 60, 20], sp);
+        let base = Region::from_ring(square(10.0, 10.0, 30.0));
+        let mut f = BallFootprint::new(&g, 2, 5.0);
+        // Inside the square: erasing makes a hole of the disc.
+        f.sweep([25.0, 25.0, 10.0], [25.0, 25.0, 10.0], 5.0, |_| true);
+        let disc = std::f64::consts::PI * 25.0;
+        let cut = f.merged(10, &base, true);
+        assert!(near(cut.area(), 900.0 - disc, 0.01), "{}", cut.area());
+        let inside = f.merged(10, &base, false).area();
+        assert!(near(inside, 900.0, 0.005), "{inside}");
+        // On an empty slice, paint is the disc and erase is nothing.
+        assert!(near(f.merged(10, &Region::new(), false).area(), disc, 0.03));
+        assert!(f.merged(10, &Region::new(), true).is_empty());
+        // Off the ball, the slice comes back untouched.
+        let far = f.merged(2, &base, true);
+        assert_eq!(far.rings[0].pts, base.rings[0].pts);
+        // Half over the edge: painting pushes the outline out by the half
+        // disc outside it, and does it the same however often it merges.
+        let mut edge = BallFootprint::new(&g, 2, 5.0);
+        edge.sweep([40.0, 25.0, 10.0], [40.0, 25.0, 10.0], 5.0, |_| true);
+        let once = edge.merged(10, &base, false);
+        assert!(
+            near(once.area(), 900.0 + disc / 2.0, 0.02),
+            "{}",
+            once.area()
+        );
+        assert!((edge.merged(10, &base, false).area() - once.area()).abs() < 1e-9);
     }
 }

@@ -505,12 +505,47 @@ pub(crate) fn build_rtstruct(
     sop_uid: &str,
     image: &ImageRef,
 ) -> InMemDicomObject {
+    let series = SeriesIdent {
+        series_uid: new_uid(),
+        series_number,
+        description: String::new(),
+    };
+    build_rtstruct_in(ss, ctx, &series, sop_uid, image)
+}
+
+/// [`build_rtstruct`] into a series decided by the caller: its Series
+/// Instance UID (empty: a new one), number and Series Description (written
+/// when not empty).
+pub(crate) fn build_rtstruct_in(
+    ss: &crate::rtstruct::StructureSet,
+    ctx: &Ctx,
+    series: &SeriesIdent,
+    sop_uid: &str,
+    image: &ImageRef,
+) -> InMemDicomObject {
     let mut o = InMemDicomObject::new_empty();
     common_elements(&mut o, ctx, "RTSTRUCT");
     put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_RTSTRUCT);
     put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, sop_uid.to_string());
-    put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
-    put_is(&mut o, tags::SERIES_NUMBER, series_number);
+    put_str(
+        &mut o,
+        tags::SERIES_INSTANCE_UID,
+        VR::UI,
+        if series.series_uid.is_empty() {
+            new_uid()
+        } else {
+            series.series_uid.clone()
+        },
+    );
+    put_is(&mut o, tags::SERIES_NUMBER, series.series_number);
+    if !series.description.trim().is_empty() {
+        put_str(
+            &mut o,
+            tags::SERIES_DESCRIPTION,
+            VR::LO,
+            truncate(series.description.trim(), 64),
+        );
+    }
     put_str(
         &mut o,
         tags::STRUCTURE_SET_LABEL,
@@ -1432,6 +1467,39 @@ pub fn export_derived_some(
     progress: &Progress,
     keep: &dyn Fn(DerivedKind, usize) -> bool,
 ) -> Result<Vec<DerivedFile>> {
+    export_derived_as(study, dir, params, progress, &|kind, i| {
+        keep(kind, i).then(|| SeriesIdent {
+            series_uid: new_uid(),
+            series_number: match kind {
+                DerivedKind::StructureSet => 2 + i as i64,
+                DerivedKind::Segmentation => 20 + i as i64,
+            },
+            description: String::new(),
+        })
+    })
+}
+
+/// The series a derived object is written into: its Series Instance UID,
+/// Series Number and Series Description (empty: none for a structure set,
+/// the label for a segmentation series).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SeriesIdent {
+    pub series_uid: String,
+    pub series_number: i64,
+    pub description: String,
+}
+
+/// [`export_derived_some`] with the series of each object decided by
+/// `series`: `None` leaves the object out. Every object written gets a
+/// fresh SOP Instance UID, whatever its series: a changed object is a new
+/// instance, also when it goes back into the series it came from.
+pub fn export_derived_as(
+    study: &LoadedStudy,
+    dir: &Path,
+    params: &ExportParams,
+    progress: &Progress,
+    series: &dyn Fn(DerivedKind, usize) -> Option<SeriesIdent>,
+) -> Result<Vec<DerivedFile>> {
     std::fs::create_dir_all(dir).with_context(|| format!("create directory {}", dir.display()))?;
     let (today_date, today_time) = today();
     let vol_for = study.volume.frame_of_reference_uid.clone();
@@ -1439,9 +1507,12 @@ pub fn export_derived_some(
     let mut written = Vec::new();
 
     for (si, ss) in study.structure_sets.iter().enumerate() {
-        if ss.rois.is_empty() || !keep(DerivedKind::StructureSet, si) {
+        if ss.rois.is_empty() {
             continue;
         }
+        let Some(into) = series(DerivedKind::StructureSet, si) else {
+            continue;
+        };
         progress.set(format!(
             "Writing RTSTRUCT {}/{}",
             si + 1,
@@ -1465,7 +1536,7 @@ pub fn export_derived_some(
             study_uid: ctx.study_uid.clone(),
             ..ImageRef::default()
         };
-        let o = build_rtstruct(ss, &ctx, 2 + si as i64, &new_uid(), &image);
+        let o = build_rtstruct_in(ss, &ctx, &into, &new_uid(), &image);
         let path = dir.join(format!("RS_derived_{si}.dcm"));
         write_object(o, SOP_RTSTRUCT, &path)?;
         written.push(DerivedFile {
@@ -1476,9 +1547,12 @@ pub fn export_derived_some(
     }
 
     for (gi, ser) in study.seg_series.iter().enumerate() {
-        if ser.segs.iter().all(|s| s.count == 0) || !keep(DerivedKind::Segmentation, gi) {
+        if ser.segs.iter().all(|s| s.count == 0) {
             continue;
         }
+        let Some(into) = series(DerivedKind::Segmentation, gi) else {
+            continue;
+        };
         progress.set(format!("Writing SEG {}/{}", gi + 1, study.seg_series.len()));
         let study_uid = study_of(&ser.study_uid, &ser.referenced_series_uid);
         let for_uid = if ser.grid.frame_of_reference_uid.is_empty() {
@@ -1491,13 +1565,15 @@ pub fn export_derived_some(
             for_uid: &for_uid,
             date: &today_date,
             time: &today_time,
-            series_number: 20 + gi as i64,
+            series_number: into.series_number,
             // The image series it was drawn on is already in the archive, so
             // naming it is a real cross-reference rather than a claim about
             // files written beside it.
             image_series_uid: &ser.referenced_series_uid,
             image_sop_uids: &[],
             params,
+            series_uid: &into.series_uid,
+            series_description: &into.description,
         };
         let path = dir.join(format!("SEG_derived_{gi}.dcm"));
         dicomseg::write(ser, &seg_ctx, &path)?;

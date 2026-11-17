@@ -21,7 +21,14 @@ starts the work; the two below it are the shortcuts.
   closed. Each workspace's sources are remembered in `session_a` to
   `session_d` in the settings file as they are loaded, so an unclean exit
   loses nothing. If the folders it names have since moved or been deleted, it
-  says so and forgets the session.
+  says so and forgets the session. A workspace comes back in one load,
+  however many sources it had (`loader::load_sources`): the sources overlap
+  - a folder and a folder inside it, a study folder of the PACS beside the
+  folder of one of its series, radiographs listed one file each beside the
+  folder they lie in - and each file is read once, so a plain restore never
+  reports *N series were already present* (that note is for adding the same
+  series to a workspace a second time), and forty radiographs are one load,
+  not forty-one in a row.
 * **PACS** opens the local patient archive and the paired servers; an
   empty archive is where its storage folders and the pairing get set up,
   so the button is always live.
@@ -413,7 +420,9 @@ needs it. Every choice is remembered between runs, and with all of them off
 there is no right panel at all. Every section starts folded; which ones were
 unfolded is remembered too, and *Restore the last session* unfolds them
 again. The drawing tools are not in the panel: the toolbar's **✏
-Draw structure** button unfolds them on the toolbar. The *Tools* menu keeps
+Draw structure** button unfolds them on the toolbar, one row of eight for
+RT structures and segments alike, followed by the line that says which of
+the two they act on. The *Tools* menu keeps
 what is about files and folders rather than the images on screen, each a
 window: **🏥 PACS**, **📦 Downloaded models**, **🔏 Anonymize DICOM folder**,
 **📐 Generate test data** and **📥 Download test data** (*Export DICOM*,
@@ -574,13 +583,22 @@ are seen.
 | Middle drag | Pan |
 | Right drag | Window/level (x = width, y = center) |
 
-With a segmentation tool active the left button paints instead of navigating -
-see [segmentation.md](segmentation.md) - and with a contour tool it draws into
-the RT structure being edited ([contours.md](contours.md)): click by click for
-the polygon and spline tools (right-click, double-click or Enter closes,
-Esc cancels), one drag for freehand and nudge, Ctrl-click to pick the
-structure under the pointer. The full bindings of whichever tool is in hand
-are under the status bar's *?*.
+With a drawing tool in hand the left button draws instead of navigating,
+into whatever the *Draw structure* strip's target line names - an RT
+structure or a segment; the tools are the same for both and the program
+works out what each means for the one selected ([contours.md](contours.md#the-tools),
+[segmentation.md](segmentation.md)): one drag for paint, erase, grow,
+freehand and nudge, click by click for the polygon, spline and live wire
+(right-click, double-click or Enter closes, Esc cancels), Alt reversing
+paint and erase, Ctrl-click to make what is under the pointer the subject,
+Ctrl+Z to take back the subject's last stroke. Paint and erase have a *3D*
+toggle on either kind (kept per kind, off for structures at start): a ball
+instead of a disc, through the neighbouring slices it reaches - voxels on a
+segment, the circle where the sphere meets each slice on a structure's
+contours ([contours.md](contours.md#the-3-d-contour-brush)); a planar pane
+has none. Clicking a structure or a
+segment in the data tree makes it the subject too. The full bindings of the
+tool in hand, for the current subject, are under the status bar's *?*.
 
 ## Workspaces and the patient ▶ study ▶ series tree
 
@@ -916,9 +934,9 @@ the ticked segments as their own SEG file. *Copy to* and *Move to* open the
 destination submenu described below. The buttons grey out when nothing is
 ticked. Ctrl+Z undoes the last stroke, *Copy to ▶ an RT structure set* is
 what →RS did, and **🗑** deletes the ticked rows. Clicking an item's **name**
-selects it - the segmentation the voxel tools paint, the structure the
-contour tools and the Structure editor work on - independently of whether
-it is shown. Under a study whose images are not on screen a structure's name
+selects it - the segment or the structure the drawing tools and the
+Structure editor work on next, whichever kind it is - independently of
+whether it is shown. Under a study whose images are not on screen a structure's name
 still takes its menu and the keyboard (rename, copy, remove need no image);
 selecting it and the menu's entries that draw (*Edit in the Structure
 editor*, *Localize*, the point entries) wait for that study's images. New

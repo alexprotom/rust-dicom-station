@@ -144,6 +144,7 @@ bar carries a `*` while there are unsaved changes.
 | 📐 Dose estimation | structures (several) | report | One row of dose metrics per structure against the physical or the RBE-weighted dose, as the *Dose analysis* module shows it. |
 | 🔮 Synthetic CT | image | image (the sCT), report | A CT synthesized from the MR or CBCT ([synthetic-ct.md](synthetic-ct.md)): the app (`sct_mr`, `sct_cbct`, `sct_mr_cbct`, `sct_mr_dixon`, or a checkpoint folder's), CV_0 or every checkpoint, 0 to 2 mirrors, what sets the air outside (`network`, `classical`, `none`, or a structure on the image), optionally the members' spread. Written as a new CT series of the study into a folder of the run; the image it puts out is that series, which the next steps take like any image. |
 | ⚖ Evaluate synthetic CT | sCT, reference, registration (optional), mask (optional) | report | The sCT against a CT of the same patient, resampled onto the sCT through the registration (either way round) or on the same frame of reference: MAE, ME, RMSE per HU class, PSNR, SSIM inside the mask (the reference's body when none arrives), optionally the water-equivalent thickness and TotalSegmentator's organ Dice, and the difference as a series. |
+| 🎞 Posture model | start, next, then (optional) | report | The posture model of [posture-model.md](posture-model.md) between two or three image series of one patient in different positions: the anchor (a structure on every state, `image` or `scanner`), the mode, the rigid bodies (names, empty for the bones, `none`), an optional residual, the lattice and the reach, the WEPL along a beam (gantry and couch), and with three states whether the bodies ride curves through the middle one. Changes no study; the report has the bones (angle, axis, travel, fit, stretch), the joints, the structures (volume change, contoured and model shift, rotation, model check, WEPL first and its change) and the model's checks. |
 | ☢ DRR | image | report | Radiographs of the image at the gantry angles listed, or at the plan's beams: PNG files in the run folder, and optionally planar images of the study. |
 | 💾 Export DICOM | studies (several) | - | Writes each study it is given: its structures as RTSTRUCT or SEG - only the sets the run made or added to, or all - and optionally its images, doses and plans, keeping the UIDs or minting new ones. Image series the run made (a synthetic CT, its spread, a difference) are always written. |
 | 📋 Save report | reports (several) | - | One CSV per table of every report (the motion report also as its full CSV) and one Markdown summary. |
@@ -402,6 +403,7 @@ crates/rds-domain/src/workflow/graph/
                copy-to-phases, DVH, dose, archive-import and DRR steps
   nodes/setup.rs the 2D/3D registration and positioned copy steps
   nodes/planar.rs the 2D/2D registration and projection steps
+  nodes/posture.rs the posture model step
   store.rs     the user folder, load / save, the recent list, the shipped examples
   examples/    the example workflows, compiled in
 src/app/

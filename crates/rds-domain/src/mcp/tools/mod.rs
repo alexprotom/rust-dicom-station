@@ -14,6 +14,7 @@ pub mod curation;
 pub mod fourd;
 pub mod output;
 pub mod planar;
+pub mod posture;
 pub mod register;
 pub mod segment;
 pub mod session;
@@ -219,6 +220,8 @@ registry! {
          (D95, V20Gy, Dmean and the like), an optional protocol of constraints, and CSV text."),
     "motion_report" => (analysis::RunArgs, analysis::motion_report, false,
         "The report of an earlier analyse_motion run, as JSON and as CSV."),
+    "build_posture_model" => (posture::PostureArgs, posture::build_posture_model, true,
+        "The posture model between two or more datasets of one patient in different positions          (lying and seated, prone and supine, a full and an empty bladder): every state laid          onto the first by an anchor (a structure on every state, the image, or nothing), each          rigid body (the bones, or the structures named) given its own screw, the space          between them blended into an invertible path, optionally a B-spline residual on top.          Returns the tables: per state the transform into the anchor frame and the body          volume; per structure the volume change, the centroid shift as contoured and as the          model carries it, the rotation of its own motion, what is left after a rigid fit,          the Jacobian inside, the mean HU, and the model check (the first contour carried          to the last state against its own); per body its screw (angle, axis, pivot,          travel) and the largest stretch inside; per joint the relative angles about RL, AP,          SI; the model's checks (inverse consistency, Jacobian, folding). mode linear walks          straight lines instead (it shrinks a turning bone). write puts the tables (CSV),          the model file and the path as a DICOM deformable registration in the output folder.          An interpolation between scans, for measuring along, not for planning."),
 
     // ---- output -------------------------------------------------------
     "export" => (output::ExportArgs, output::export, true,
