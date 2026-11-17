@@ -59,6 +59,8 @@ pub struct SeriesEntry {
     pub series_uid: String,
     pub modality: String,
     pub number: String,
+    /// Its Series Description, or for an RT object that has none its own
+    /// name ([`catalog::SeriesRec::shown_description`]): text from a file.
     pub description: String,
     /// The name given in the PACS window; empty: none.
     pub label: String,
@@ -321,6 +323,53 @@ pub struct SaveTargets {
     pub homes: BTreeMap<(String, String), Option<PathBuf>>,
     /// The SOP Instance UIDs asked about that the PACS holds.
     pub held: HashSet<String>,
+    /// The series each of [`SaveTargets::held`] is in: what *Update the
+    /// existing series* writes into, and what *Save as a new series* starts
+    /// its description from.
+    pub series: HashMap<String, HeldSeries>,
+}
+
+/// The series of the PACS an object it holds is in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeldSeries {
+    pub series_uid: String,
+    pub number: String,
+    /// Its Series Description as the files say it (empty: none).
+    pub description: String,
+    /// What the PACS window calls it: `RTSTRUCT 201 - TotalSeg`.
+    pub title: String,
+}
+
+/// The series of `sops` the catalog `c` lists in a folder of this PACS.
+fn held_series_in(
+    c: &Catalog,
+    map: &HashMap<u32, usize>,
+    sops: &HashSet<String>,
+) -> HashMap<String, HeldSeries> {
+    let mut out = HashMap::new();
+    if sops.is_empty() {
+        return out;
+    }
+    for (uid, s) in &c.series {
+        for f in &s.files {
+            if map.contains_key(&f.0) && sops.contains(&f.4) {
+                out.entry(f.4.clone()).or_insert_with(|| HeldSeries {
+                    series_uid: uid.clone(),
+                    number: s.number.trim().to_string(),
+                    description: s.description.trim().to_string(),
+                    title: SeriesEntry {
+                        modality: s.modality.clone(),
+                        number: s.number.clone(),
+                        description: s.shown_description().to_string(),
+                        label: s.label.clone(),
+                        ..Default::default()
+                    }
+                    .title(),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Which of `sops` the catalog `c` lists in a folder of this PACS (`map`).
@@ -650,7 +699,9 @@ impl Archive {
                 series_uid: uid.clone(),
                 modality: s.modality.clone(),
                 number: s.number.clone(),
-                description: s.description.clone(),
+                // An RT object without a Series Description by its own
+                // name: `RTSTRUCT 201 - TotalSeg`, not `RTSTRUCT 201`.
+                description: s.shown_description().to_string(),
                 label: s.label.clone(),
                 files: sops.len(),
                 dir: common_dir(paths.iter().map(PathBuf::as_path)),
@@ -1181,10 +1232,12 @@ impl Archive {
                 e.insert(self.study_home_in(&c, &map, &tops, study, series));
             }
         }
+        let held = held_in(&c, &map, sops.iter().map(String::as_str));
         SaveTargets {
             catalog: true,
             homes,
-            held: held_in(&c, &map, sops.iter().map(String::as_str)),
+            series: held_series_in(&c, &map, &held),
+            held,
         }
     }
 
@@ -1240,6 +1293,7 @@ impl Archive {
             take_files: false,
             beside_study: None,
             referencing: HashMap::new(),
+            placed: HashMap::new(),
         }
     }
 
@@ -1753,6 +1807,9 @@ pub struct Importer<'a> {
     /// The image series each file to be filed was drawn on, by SOP Instance
     /// UID ([`Importer::referencing`]).
     referencing: HashMap<String, String>,
+    /// The folder some files go into, by SOP Instance UID
+    /// ([`Importer::placing`]).
+    placed: HashMap<String, PathBuf>,
 }
 
 impl Importer<'_> {
@@ -1784,6 +1841,23 @@ impl Importer<'_> {
     /// header reading does not take from the file.
     pub fn referencing(mut self, series_of: HashMap<String, String>) -> Self {
         self.referencing = series_of;
+        self
+    }
+
+    /// The folder each of some files goes into, by SOP Instance UID, before
+    /// any other rule: a new instance of a series of the PACS, beside the
+    /// file it replaces. Only a folder of one of the storage folders is
+    /// taken; any other falls back to the rules.
+    pub fn placing(mut self, dirs: HashMap<String, PathBuf>) -> Self {
+        self.placed = dirs
+            .into_iter()
+            .filter(|(_, d)| {
+                self.archive
+                    .roots
+                    .iter()
+                    .any(|r| d.starts_with(r) && d != r)
+            })
+            .collect();
         self
     }
 
@@ -1908,6 +1982,9 @@ impl Importer<'_> {
     /// the main folder, if it has any there; with
     /// [`Importer::beside_the_study`], wherever the study is.
     fn home_of(&mut self, h: &Head) -> PathBuf {
+        if let Some(dir) = self.placed.get(&h.sop) {
+            return dir.clone();
+        }
         let series = self.referencing.get(&h.sop).cloned().unwrap_or_default();
         let key = (h.study.clone(), series);
         if let Some(home) = self.homes.get(&key) {
@@ -1943,13 +2020,36 @@ impl Importer<'_> {
     /// Bring the catalog up to date with everything filed: one update for
     /// the whole import.
     pub fn finish(self) -> Result<()> {
-        if self.filed.is_empty() {
+        self.finish_dropping(&[])
+    }
+
+    /// [`Importer::finish`], the catalog forgetting the files `gone` (paths
+    /// of the PACS removed from the disk after this import filed what
+    /// replaces them) in the same update.
+    pub fn finish_dropping(self, gone: &[PathBuf]) -> Result<()> {
+        if self.filed.is_empty() && gone.is_empty() {
             return Ok(());
         }
         let main = self.archive.root().to_path_buf();
         let roots = self.archive.roots.clone();
         let filed = self.filed;
+        let gone = gone.to_vec();
         catalog::update(&main, move |c| {
+            // The storage folder a path lies in (the nearest, should one be
+            // inside another), and its catalog path.
+            let place = |c: &mut Catalog, p: &Path| {
+                roots
+                    .iter()
+                    .filter_map(|r| catalog::rel_of(r, p).map(|rel| (r, rel)))
+                    .min_by_key(|(_, rel)| rel.len())
+                    .map(|(root, rel)| (storage_index(c, root), rel))
+            };
+            let gone: HashSet<(u32, String)> = gone.iter().filter_map(|p| place(c, p)).collect();
+            if !gone.is_empty() {
+                for s in c.series.values_mut() {
+                    s.files.retain(|f| !gone.contains(&(f.0, f.1.clone())));
+                }
+            }
             for (h, dest, bytes) in &filed {
                 // The storage folder the file lies in: the nearest, should
                 // one be inside another.

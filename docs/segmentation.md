@@ -36,15 +36,25 @@ file. See [viewer.md](viewer.md#structures-and-segmentations-in-the-tree).
 ## Tools
 
 The toolbar's **✏ Draw structure** button unfolds the drawing tools as one
-row of glyphs, followed by the options of the tool in hand and the
-segmentation or structure being drawn into (with a **+** to start another).
-A tool takes over the left mouse button in the MPR views:
+row of glyphs, followed by the options of the tool in hand and the target
+line: the segment or RT structure the tools act on (a picker over both
+kinds, with a **+** to start another). The row is one set for segments and
+structures - each tool does its thing to whichever is the subject
+([contours.md](contours.md#the-tools) has the table) - so with a segment
+selected (clicked in the *Segmentations* list, picked on the target line,
+or Ctrl-clicked in a view) the curve tools and Nudge work on the mask as
+well: a polygon, spline, freehand outline or live wire fills the voxels
+whose centre it encloses into the slice, or cuts them out, by the *Auto /
+Extend / Subtract* rule, and Nudge pushes the slice's outline. A tool takes
+over the left mouse button in the MPR views:
 
 * **🎨 Paint / ⊖ Erase** - a spherical, spacing-aware **3D brush** (radius in
   mm, set on the toolbar, `Shift+wheel` or `[` `]`) paints in any of the
   three views; a **3D** toggle switches to a flat 2D circle confined to the
   displayed slice. Strokes are swept as capsules between pointer samples, so
-  fast drags stay gap-free; `Alt` temporarily erases while painting.
+  fast drags stay gap-free; `Alt` reverses the tool (erases while painting,
+  paints while erasing). The *edge* band (*bone*, *air*, *bright*, *dark*)
+  limits the brush to the voxels whose value falls in it.
 * **✨ Grow** - interactive **organ-wise** segmentation by geodesic fast
   marching, not a plain threshold: a Dijkstra front expands from the seed, the
   cost of each step rising exponentially with the voxel's intensity deviation
@@ -69,9 +79,9 @@ A tool takes over the left mouse button in the MPR views:
 | Input (tool active) | Action |
 |---|---|
 | Left drag | Paint / erase - or, with ✨, seed and drag ↑↓ to grow/shrink |
-| Alt | Erase while painting |
+| Alt | Erase while painting, paint while erasing |
 | Shift + wheel, `[`, `]` | Brush radius |
-| Ctrl + Z | Undo the last stroke |
+| Ctrl + Z | Undo the last stroke (a brush drag, a grow, a filled curve, a nudge drag) |
 | Esc | Cancel the running region grow |
 
 Masks appear instantly in **all three MPR views** (crisp nearest-neighbor

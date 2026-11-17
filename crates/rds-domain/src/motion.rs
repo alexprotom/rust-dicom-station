@@ -1216,8 +1216,9 @@ pub fn csv_file_bytes(text: &str) -> Vec<u8> {
     out
 }
 
-/// A number with a fixed count of decimals, never `-0.000`.
-fn num(v: f64, decimals: usize) -> String {
+/// A number with a fixed count of decimals, never `-0.000`; empty when it
+/// is not finite.
+pub fn num(v: f64, decimals: usize) -> String {
     if !v.is_finite() {
         return String::new();
     }
@@ -1251,14 +1252,20 @@ fn p_value(p: f64) -> String {
 }
 
 /// CSV text being built: cells made plain (see [`plain_text`]) and quoted
-/// where they need it.
+/// where they need it. The writer of the motion report, and of the posture
+/// model's tables ([`crate::posture::measure`]).
 #[derive(Default)]
-struct Csv {
+pub struct Csv {
     text: String,
 }
 
 impl Csv {
-    fn cell(&mut self, v: &str) {
+    /// The text written so far.
+    pub fn finish(self) -> String {
+        self.text
+    }
+
+    pub fn cell(&mut self, v: &str) {
         let v = plain_text(v);
         if v.contains([',', '"']) || v.starts_with(' ') || v.ends_with(' ') {
             self.text.push('"');
@@ -1269,7 +1276,7 @@ impl Csv {
         }
     }
 
-    fn row<'a>(&mut self, cells: impl IntoIterator<Item = &'a str>) {
+    pub fn row<'a>(&mut self, cells: impl IntoIterator<Item = &'a str>) {
         for (i, c) in cells.into_iter().enumerate() {
             if i > 0 {
                 self.text.push(',');
@@ -1279,7 +1286,7 @@ impl Csv {
         self.text.push('\n');
     }
 
-    fn blank(&mut self) {
+    pub fn blank(&mut self) {
         self.text.push('\n');
     }
 

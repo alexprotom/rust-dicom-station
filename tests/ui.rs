@@ -789,6 +789,555 @@ fn save_changes_to_the_pacs_opens_on_the_study_with_what_changed() {
     );
 }
 
+/// Saving a set changed twice: the second save offers *Update* the series
+/// the first one wrote (or the set came from), ticked by default beside
+/// *Save as a new series*, and makes no further series in the PACS.
+#[test]
+fn a_set_saved_twice_updates_its_series_rather_than_adding_one() {
+    let _turn = turn();
+    struct Clear(PathBuf);
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let archive = rust_dicom_station::archive::Archive::station();
+    let _clear = Clear(archive.root().to_path_buf());
+    archive
+        .import(
+            &phantom(),
+            &rust_dicom_station::progress::Progress::default(),
+        )
+        .expect("the phantom goes into the PACS");
+    let structure_series = || {
+        archive
+            .tree()
+            .patients()
+            .iter()
+            .flat_map(|p| p.studies.iter())
+            .flat_map(|s| s.series.iter())
+            .filter(|s| s.modality == "RTSTRUCT")
+            .count()
+    };
+    let mut ui = with_phantom(false);
+    let mut nodes = 0;
+    let study = fold_title(&ui, |_| {
+        nodes += 1;
+        nodes == 2
+    });
+    let entry = Target::containing("Save changes to the PACS").role("button");
+    let save = Target::label("📤 Save 1 object").role("button");
+    ui.click(&Target::label("None").role("button")).unwrap();
+    ui.settle(SETTLE);
+
+    let mut after_first = 0;
+    for (round, roi) in ["CORD  [", "BODY  ["].into_iter().enumerate() {
+        right_click(&mut ui, &Target::containing(roi).role("button"));
+        ui.click(&Target::containing("🗑 Remove").role("button"))
+            .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+        ui.settle(SETTLE);
+        right_click(&mut ui, &Target::label(&study));
+        ui.click(&entry)
+            .unwrap_or_else(|e| panic!("round {round}: {e:#}\n{}", ui.tree_text()));
+        assert!(ui.settle(SETTLE), "the lookup did not land");
+        if round == 1 {
+            let update = ui
+                .find(&Target::containing("Update RTSTRUCT"))
+                .unwrap_or_else(|e| panic!("no update offered: {e:#}\n{}", ui.tree_text()));
+            assert_eq!(
+                update.checked,
+                Some(true),
+                "not the default: {}",
+                update.text
+            );
+            assert!(
+                ui.has(&Target::containing("Save as a new series")),
+                "{}",
+                ui.tree_text()
+            );
+        }
+        ui.click(&save)
+            .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+        assert!(ui.settle(SETTLE), "the save did not land");
+        assert!(
+            ui.has(&Target::containing("1 object saved into the PACS")),
+            "round {round}:\n{}",
+            ui.tree_text()
+        );
+        if round == 0 {
+            after_first = structure_series();
+            // The window over the views goes, for the next edit.
+            ui.click(&Target::label("Close window")).unwrap();
+            ui.settle(SETTLE);
+        }
+    }
+    assert!(
+        ui.has(&Target::containing("into the series it came from")),
+        "{}",
+        ui.tree_text()
+    );
+    assert_eq!(structure_series(), after_first, "the update made no series");
+}
+
+/// *Tools ▸ Posture model* on the articulated phantom (two bones on a
+/// hinge, `gen_test_data::articulated_pair`): the window opens, the anchor
+/// is picked, the model builds, its tables name the bodies and the joint,
+/// stepping to the end reads the hinge's angle, playing moves the time,
+/// and nothing in the window is unnamed.
+#[test]
+fn the_posture_window_builds_steps_and_plays_the_phantom() {
+    let _turn = turn();
+    static FOLDERS: OnceLock<[PathBuf; 2]> = OnceLock::new();
+    let [a, b] = FOLDERS
+        .get_or_init(|| {
+            rust_dicom_station::gen_test_data::generate_articulated(
+                &common::target_dir("ui-test-posture"),
+                &rust_dicom_station::gen_test_data::ArticulatedParams::default(),
+                &rust_dicom_station::progress::Progress::default(),
+            )
+            .expect("the phantom is written")
+        })
+        .clone();
+    let mut ui = Ui::open(Opts {
+        datasets: [Some(a), Some(b)],
+        ..Opts::default()
+    });
+    assert!(ui.settle(SETTLE), "the two states did not load");
+    fn fail(ui: &Ui, what: &str) -> ! {
+        panic!(
+            "{what}:
+{}",
+            ui.tree_text()
+        )
+    }
+    ui.click(&Target::label("Tools").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Posture model").role("button"))
+        .unwrap_or_else(|e| fail(&ui, &format!("{e:#}")));
+    ui.settle(SETTLE);
+    if !ui.has(&Target::containing("Posture model").role("window")) {
+        fail(&ui, "no posture window");
+    }
+    ui.click(&Target::containing("(pick a structure)")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("BONE_UPPER")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Build").role("button"))
+        .unwrap();
+    if !ui.settle(SETTLE) {
+        fail(&ui, "the model did not build");
+    }
+    for name in [
+        "States",
+        "Structures",
+        "Bones and joints",
+        "BONE_LOWER",
+        "ORGAN",
+    ] {
+        if !ui.has(&Target::containing(name)) {
+            fail(&ui, &format!("no {name}"));
+        }
+    }
+    assert!(ui.has_label("t 0.00"));
+    // The model's workspace is the window's, not a row of the main screen.
+    assert!(!ui.has_label("Workspace C"), "{}", ui.tree_text());
+    // Live slices by default, the WEPL column along the default beam, and
+    // the Jacobian wash a tick away.
+    for name in ["Live slices", "WEPL mm", "dWEPL mm"] {
+        if !ui.has(&Target::containing(name)) {
+            fail(&ui, &format!("no {name}"));
+        }
+    }
+    ui.click(&Target::label("Jacobian wash"))
+        .unwrap_or_else(|e| fail(&ui, &format!("{e:#}")));
+    assert!(ui.settle(SETTLE), "the wash did not land");
+
+    // At the end, the lower bone has turned through the hinge's 40 degrees.
+    ui.click(&Target::label("To the last state")).unwrap();
+    assert!(ui.settle(SETTLE));
+    assert!(ui.has_label("t 1.00"), "{}", ui.tree_text());
+    let angles: Vec<f64> = ui
+        .find_all(&Target::containing("."))
+        .iter()
+        .filter(|h| h.role == "label")
+        .filter_map(|h| h.text.trim().parse::<f64>().ok())
+        .collect();
+    assert!(
+        angles.iter().any(|v| (v.abs() - 40.0).abs() < 2.0),
+        "no 40 degree reading in {angles:?}"
+    );
+
+    // Playing moves the time along the key frames.
+    ui.click(&Target::label("To the first state")).unwrap();
+    assert!(ui.settle(SETTLE));
+    ui.click(&Target::label("Play the path")).unwrap();
+    for _ in 0..90 {
+        ui.step();
+    }
+    ui.click(&Target::label("Pause")).unwrap();
+    ui.settle(SETTLE);
+    assert!(
+        !ui.has_label("t 0.00"),
+        "the run did not move:
+{}",
+        ui.tree_text()
+    );
+    assert_all_named(&ui, "the posture window");
+}
+
+/// A state that lacks structures the other has: the window says which, and
+/// offers the automatic model that makes them (not run here: it would
+/// download its weights).
+#[test]
+fn the_posture_window_offers_a_model_for_missing_structures() {
+    let _turn = turn();
+    static FOLDERS: OnceLock<[PathBuf; 2]> = OnceLock::new();
+    let [a, b] = FOLDERS
+        .get_or_init(|| {
+            use rust_dicom_station::gen_test_data::{articulated_pair, ArticulatedParams};
+            let dir = common::target_dir("ui-test-posture-missing");
+            let mut pair = articulated_pair(&ArticulatedParams::default());
+            // The organ is "liver" on A, and B has none.
+            for r in &mut pair[0].structure_sets[0].rois {
+                if r.name == "ORGAN" {
+                    r.name = "liver".into();
+                }
+            }
+            pair[1].structure_sets[0].rois.retain(|r| r.name != "ORGAN");
+            let out = [dir.join("state_a"), dir.join("state_b")];
+            for (study, folder) in pair.iter().zip(&out) {
+                if folder.exists() {
+                    std::fs::remove_dir_all(folder).unwrap();
+                }
+                let ep = rust_dicom_station::dicom_export::ExportParams::for_study(study);
+                rust_dicom_station::dicom_export::export_study(
+                    study,
+                    folder,
+                    &ep,
+                    &rust_dicom_station::progress::Progress::default(),
+                )
+                .expect("the state is written");
+            }
+            out
+        })
+        .clone();
+    let mut ui = Ui::open(Opts {
+        datasets: [Some(a), Some(b)],
+        ..Opts::default()
+    });
+    assert!(ui.settle(SETTLE), "the two states did not load");
+    ui.click(&Target::label("Tools").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Posture model").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert!(
+        ui.has(&Target::containing("B lacks 1 structure")),
+        "{}",
+        ui.tree_text()
+    );
+    assert!(
+        ui.has(&Target::containing("Contour B with").role("button")),
+        "{}",
+        ui.tree_text()
+    );
+    assert_all_named(&ui, "the posture window with an offer");
+}
+
+/// The eight tools of the *Draw structure* strip, by the names their
+/// tooltips give them.
+const DRAW_TOOLS: [&str; 8] = [
+    "Paint",
+    "Erase",
+    "Grow",
+    "Polygon",
+    "Spline",
+    "Free",
+    "Live wire",
+    "Nudge",
+];
+
+/// The strip's target line: the picker that names what the tools act on.
+fn draw_target(ui: &Ui) -> String {
+    ui.find(&Target::containing("▸").role("combobox"))
+        .unwrap_or_else(|e| panic!("no target line: {e:#}\n{}", ui.tree_text()))
+        .text
+}
+
+/// Every tool of the strip is there, under its own name.
+fn assert_draw_tools(ui: &Ui, subject: &str) {
+    for tool in DRAW_TOOLS {
+        assert!(
+            ui.has(&Target::label(tool).role("button")),
+            "no {tool} with {subject} the subject:\n{}",
+            ui.tree_text()
+        );
+    }
+}
+
+/// Make a new segment the strip's subject through its picker (invoked:
+/// a popup entry is acted on, not clicked at a position).
+fn pick_new_segment(ui: &mut Ui) {
+    ui.click(&Target::containing("▸").role("combobox")).unwrap();
+    ui.settle(SETTLE);
+    ui.invoke(&Target::label("New segmentation"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.settle(SETTLE);
+}
+
+/// *Draw structure* is one row of tools whatever is selected: the same
+/// eight buttons with a structure as the subject and with a segment, the
+/// target line naming the subject, and the *Edit:* switch once both kinds
+/// are there. Picking a structure in the data tree makes it the subject.
+#[test]
+fn the_draw_strip_is_one_row_for_structures_and_segments() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    ui.click(&Target::containing("Draw structure").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("Paint").role("button")).unwrap();
+    ui.settle(SETTLE);
+
+    ui.click(&Target::containing("TARGET  [").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert_draw_tools(&ui, "a structure");
+    assert_eq!(draw_target(&ui), "▸ TARGET");
+    assert!(!ui.has_label("Edit:"), "a switch with nothing to switch to");
+    // The brush's 3D is there for a structure too, and off until asked
+    // for: a structure is drawn slice by slice.
+    let ball = ui.find(&Target::label("3D").role("button")).unwrap();
+    assert_eq!(ball.checked, Some(false), "{}", ui.tree_text());
+    assert_all_named(&ui, "the draw strip on a structure");
+
+    pick_new_segment(&mut ui);
+    assert_draw_tools(&ui, "a segment");
+    assert_eq!(draw_target(&ui), "▸ Seg 1");
+    assert!(ui.has_label("Edit:"), "{}", ui.tree_text());
+    let seg = ui
+        .find(&Target::label("Segmentation").role("button"))
+        .unwrap();
+    assert_eq!(seg.checked, Some(true));
+    let ball = ui.find(&Target::label("3D").role("button")).unwrap();
+    assert_eq!(ball.checked, Some(true), "{}", ui.tree_text());
+    assert_all_named(&ui, "the draw strip on a segment");
+
+    // The data tree's structure row takes the subject back.
+    ui.click(&Target::containing("TARGET  [").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(draw_target(&ui), "▸ TARGET");
+    let structure = ui.find(&Target::label("Structure").role("button")).unwrap();
+    assert_eq!(structure.checked, Some(true));
+}
+
+/// A Paint stroke in the axial view changes the structure that is the
+/// subject - its volume in the editor's readout moves - and Ctrl+Z takes
+/// the stroke back; the same stroke with a segment as the subject paints
+/// the segment instead, and leaves the structure alone.
+#[test]
+fn a_paint_stroke_changes_the_subject_structure_or_segment() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let out = common::target_dir("ui-test-out");
+    for step in [
+        r#"{"click": {"label": "Modules", "role": "button"}}"#,
+        r#"{"click": {"label": "Structure editor", "role": "checkbox"}}"#,
+        r#"{"key": "Escape"}"#,
+    ] {
+        ui.run_step(&serde_json::from_str(step).unwrap(), &out)
+            .unwrap_or_else(|e| panic!("{step}: {e:#}\n{}", ui.tree_text()));
+    }
+    let arrow = Target::label("Unfold Structure editor");
+    if ui.has(&arrow) {
+        ui.invoke(&arrow).unwrap();
+    } else {
+        ui.invoke(&Target::label("Structure editor").role("button"))
+            .unwrap();
+    }
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("TARGET  [").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Draw structure").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("Paint").role("button")).unwrap();
+    ui.settle(SETTLE);
+
+    // The editor's one line about the structure: volume, slices, points.
+    let readout = |ui: &Ui| -> String {
+        ui.find(&Target::containing(" points · ").role("label"))
+            .unwrap_or_else(|e| panic!("no readout: {e:#}\n{}", ui.tree_text()))
+            .text
+    };
+    // The axial pane: between its maximize button and its slice slider.
+    let stroke = |ui: &mut Ui| {
+        let top = ui.find(&Target::label("Maximize Axial")).unwrap().rect;
+        let bottom = ui.find(&Target::label("Axial slice")).unwrap().rect;
+        let pane = egui::Rect::from_min_max(
+            egui::pos2(bottom.left(), top.bottom()),
+            egui::pos2(bottom.right(), bottom.top()),
+        );
+        let at = pane.center() + egui::vec2(pane.width() * 0.15, 0.0);
+        ui.drag(
+            at,
+            at + egui::vec2(25.0, 15.0),
+            egui::PointerButton::Primary,
+        );
+        ui.settle(SETTLE);
+    };
+
+    let before = readout(&ui);
+    stroke(&mut ui);
+    let painted = readout(&ui);
+    assert_ne!(before, painted, "the stroke did not change TARGET");
+    ui.key("Ctrl+Z").unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(readout(&ui), before, "Ctrl+Z did not take the stroke back");
+
+    // The same stroke on a segment: the segment's volume moves, the
+    // structure's does not.
+    pick_new_segment(&mut ui);
+    let seg_volume = |ui: &Ui| -> String {
+        ui.find(&Target::containing(" voxels").role("label"))
+            .unwrap_or_else(|e| panic!("no segment readout: {e:#}\n{}", ui.tree_text()))
+            .text
+    };
+    assert!(
+        seg_volume(&ui).ends_with(" 0 voxels"),
+        "{}",
+        seg_volume(&ui)
+    );
+    stroke(&mut ui);
+    assert!(
+        !seg_volume(&ui).ends_with(" 0 voxels"),
+        "the stroke did not paint the segment: {}",
+        seg_volume(&ui)
+    );
+    ui.click(&Target::label("Structure").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(readout(&ui), before, "the segment's stroke changed TARGET");
+}
+
+/// With *3D* on, a Paint stroke on a structure is a ball: one drag in the
+/// axial view puts contours on the slices above and below the one drawn
+/// on, and one Ctrl+Z takes the whole stroke back, every slice of it.
+#[test]
+fn a_3d_paint_stroke_reaches_the_neighbouring_slices_of_a_structure() {
+    let _turn = turn();
+    let mut ui = with_phantom(false);
+    let out = common::target_dir("ui-test-out");
+    for step in [
+        r#"{"click": {"label": "Modules", "role": "button"}}"#,
+        r#"{"click": {"label": "Structure editor", "role": "checkbox"}}"#,
+        r#"{"key": "Escape"}"#,
+    ] {
+        ui.run_step(&serde_json::from_str(step).unwrap(), &out)
+            .unwrap_or_else(|e| panic!("{step}: {e:#}\n{}", ui.tree_text()));
+    }
+    let arrow = Target::label("Unfold Structure editor");
+    if ui.has(&arrow) {
+        ui.invoke(&arrow).unwrap();
+    } else {
+        ui.invoke(&Target::label("Structure editor").role("button"))
+            .unwrap();
+    }
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("TARGET  [").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Draw structure").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("Paint").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("3D").role("button")).unwrap();
+    ui.settle(SETTLE);
+    let ball = ui.find(&Target::label("3D").role("button")).unwrap();
+    assert_eq!(ball.checked, Some(true), "{}", ui.tree_text());
+    // A new, empty structure, so every slice with a contour is the stroke's.
+    ui.click(&Target::containing("▸").role("combobox")).unwrap();
+    ui.settle(SETTLE);
+    ui.invoke(&Target::label("New RT structure"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.settle(SETTLE);
+    assert_ne!(draw_target(&ui), "▸ TARGET");
+
+    // How many slices carry a contour, from the editor's readout.
+    let readout = |ui: &Ui| -> String {
+        ui.find(&Target::containing(" points · ").role("label"))
+            .unwrap_or_else(|e| panic!("no readout: {e:#}\n{}", ui.tree_text()))
+            .text
+    };
+    let slices = |ui: &Ui| -> usize {
+        let r = readout(ui);
+        r.split(" · ")
+            .find_map(|part| part.strip_suffix(" slice(s)"))
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no slice count in {r:?}"))
+    };
+    let before = readout(&ui);
+    assert_eq!(slices(&ui), 0, "{before}");
+
+    let top = ui.find(&Target::label("Maximize Axial")).unwrap().rect;
+    let bottom = ui.find(&Target::label("Axial slice")).unwrap().rect;
+    let pane = egui::Rect::from_min_max(
+        egui::pos2(bottom.left(), top.bottom()),
+        egui::pos2(bottom.right(), bottom.top()),
+    );
+    let at = pane.center() + egui::vec2(pane.width() * 0.15, 0.0);
+    ui.drag(
+        at,
+        at + egui::vec2(25.0, 15.0),
+        egui::PointerButton::Primary,
+    );
+    ui.settle(SETTLE);
+    let n = slices(&ui);
+    assert!(n > 1, "a 3D stroke reached {n} slice(s): {}", readout(&ui));
+
+    ui.key("Ctrl+Z").unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(readout(&ui), before, "Ctrl+Z did not take the stroke back");
+
+    // The same ball in the sagittal view, drawn one move a frame so that
+    // it is written back while it goes (the axial slices it reached only):
+    // it lands on axial slices, and one Ctrl+Z takes all of it back.
+    let top = ui.find(&Target::label("Maximize Sagittal")).unwrap().rect;
+    let bottom = ui.find(&Target::label("Sagittal slice")).unwrap().rect;
+    let pane = egui::Rect::from_min_max(
+        egui::pos2(bottom.left(), top.bottom()),
+        egui::pos2(bottom.right(), bottom.top()),
+    );
+    let path: Vec<egui::Pos2> = (0..24)
+        .map(|i| pane.center() + egui::vec2(i as f32 * 2.0, i as f32))
+        .collect();
+    ui.drag_timed(&path, egui::PointerButton::Primary);
+    ui.settle(SETTLE);
+    let n = slices(&ui);
+    assert!(
+        n > 1,
+        "a sagittal 3D stroke reached {n} slice(s): {}",
+        readout(&ui)
+    );
+    ui.key("Ctrl+Z").unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(readout(&ui), before, "Ctrl+Z did not take the stroke back");
+
+    // With 3D off the same stroke stays on its slice.
+    ui.click(&Target::label("3D").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.drag(
+        at,
+        at + egui::vec2(25.0, 15.0),
+        egui::PointerButton::Primary,
+    );
+    ui.settle(SETTLE);
+    assert_eq!(slices(&ui), 1, "{}", readout(&ui));
+}
+
 /// The frame as a picture: the size asked for, and an image in the views
 /// rather than an empty window. Needs a graphics adapter (a software one
 /// will do).
@@ -816,4 +1365,468 @@ fn gpu_snapshot_shows_the_views() {
         lit > 20_000,
         "{lit} lit pixels in the views: the phantom was not drawn"
     );
+}
+
+/// The study of the restore tests (`common::study_with_radiographs`): the
+/// synthetic RT study in `study/ct`, forty radiographs filed beside it in
+/// `study`. Written once.
+fn restore_fixture() -> (PathBuf, PathBuf, Vec<PathBuf>) {
+    static FIXTURE: OnceLock<(PathBuf, PathBuf, Vec<PathBuf>)> = OnceLock::new();
+    FIXTURE
+        .get_or_init(|| {
+            let (study, ct, kv) =
+                common::study_with_radiographs(&common::target_dir("ui-test-restore"), 40);
+            // Absolute, as the session keeps them.
+            let abs = |p: &PathBuf| p.canonicalize().expect("written");
+            (abs(&study), abs(&ct), kv.iter().map(abs).collect())
+        })
+        .clone()
+}
+
+/// Restore a session whose workspace A was loaded from `sources`: the start
+/// screen's button, waited for. How long it took.
+fn restore_session(sources: Vec<PathBuf>) -> (Ui, std::time::Duration) {
+    let mut s = rust_dicom_station::settings::load();
+    s.session[0] = sources;
+    rust_dicom_station::settings::save(&s).expect("the settings are written");
+    let mut ui = start_screen();
+    let restore = Target::containing("Restore last session").role("button");
+    assert!(
+        !ui.find(&restore).unwrap().disabled,
+        "no session to restore:\n{}",
+        ui.tree_text()
+    );
+    let start = std::time::Instant::now();
+    ui.click(&restore).unwrap();
+    assert!(ui.settle(SETTLE), "the restore did not finish");
+    (ui, start.elapsed())
+}
+
+/// The workspace's load warnings, unfolded (the arrow left of the header
+/// is unnamed: egui's own), one line each.
+fn load_warnings(ui: &mut Ui) -> Vec<String> {
+    let Ok(header) = ui.find(&Target::containing("Warnings (").role("label")) else {
+        return Vec::new();
+    };
+    let before = ui.tree_text();
+    ui.click_at(
+        header.rect.left_center() - egui::vec2(10.0, 0.0),
+        egui::PointerButton::Primary,
+        1,
+    );
+    ui.settle(SETTLE);
+    assert_ne!(before, ui.tree_text(), "the warnings did not unfold");
+    ui.find_all(&Target::containing("").role("label"))
+        .into_iter()
+        .map(|h| h.text)
+        .collect()
+}
+
+/// Every radiograph and the CT listed once in the data tree: the planar
+/// images' section counts the generator's two and the `kv` filed beside
+/// them, and unfolded names each once.
+fn assert_each_once(ui: &mut Ui, kv: usize) {
+    let series = ui.find_all(&Target::containing(" sl.)").role("button"));
+    assert_eq!(series.len(), 1, "the CT is listed {} times", series.len());
+    let section = Target::label(&format!("Planar images ({})", kv + 2)).role("button");
+    assert!(
+        ui.has(&section),
+        "not {} planar images:\n{}",
+        kv + 2,
+        ui.tree_text()
+    );
+    ui.click(&section).unwrap();
+    ui.settle(SETTLE);
+    for i in 1..=kv {
+        let label = format!("KV {i:02}");
+        let n = ui.find_all(&Target::containing(&label)).len();
+        assert_eq!(n, 1, "{label} is listed {n} times:\n{}", ui.tree_text());
+    }
+}
+
+/// *Restore last session* of a workspace loaded from a study folder of the
+/// PACS and the folder of its series inside it (what a selection of the
+/// whole study gives the session): one load, no "already present" warning,
+/// the series and every radiograph once.
+#[test]
+fn restoring_a_study_folder_and_its_series_folder_reports_nothing_twice() {
+    let _turn = turn();
+    let (study, ct, kv) = restore_fixture();
+    let (mut ui, took) = restore_session(vec![study, ct]);
+    eprintln!("restore of [study, study/ct] took {took:.2?}");
+    assert!(ui.has_label("Workspace A"), "{}", ui.tree_text());
+    let warnings = load_warnings(&mut ui);
+    assert!(
+        !warnings.iter().any(|w| w.contains("already present")),
+        "a plain restore says something was added twice: {warnings:?}"
+    );
+    assert_each_once(&mut ui, kv.len());
+}
+
+/// *Restore last session* of a workspace loaded from a series folder and
+/// forty radiographs one file each (a selection of the PACS that took part
+/// of a folder): one load, not forty-one, and each image once.
+#[test]
+fn restoring_radiographs_listed_one_by_one_is_one_load() {
+    let _turn = turn();
+    let (_, ct, kv) = restore_fixture();
+    let mut sources = vec![ct];
+    sources.extend(kv.iter().cloned());
+    let (mut ui, took) = restore_session(sources);
+    eprintln!(
+        "restore of [study/ct + {} radiographs] took {took:.2?}",
+        kv.len()
+    );
+    let warnings = load_warnings(&mut ui);
+    assert!(
+        !warnings.iter().any(|w| w.contains("already present")),
+        "{warnings:?}"
+    );
+    assert_each_once(&mut ui, kv.len());
+}
+
+/// *Save GIF* in the posture window: once the model is built the button is
+/// on the bar, and its menu lists the five views - *All views* (the
+/// default), *Axial*, *Sagittal*, *Coronal*, *3D* - with the pane last
+/// clicked chosen (a click in the axial pane makes it *Axial*) and any
+/// other picked in the list; the *Vector field* option, the width and the
+/// way back. The arrow spacing is on the window's bar, and in the main
+/// viewer's *Settings ▸ Viewer*; nothing in either is unnamed. (The file
+/// dialog is the operating system's and is not opened.)
+#[test]
+fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
+    let _turn = turn();
+    let [a, b] = rust_dicom_station::gen_test_data::generate_articulated(
+        &common::target_dir("ui-test-posture-gif"),
+        &rust_dicom_station::gen_test_data::ArticulatedParams::default(),
+        &rust_dicom_station::progress::Progress::default(),
+    )
+    .expect("the phantom is written");
+    let mut ui = Ui::open(Opts {
+        datasets: [Some(a), Some(b)],
+        ..Opts::default()
+    });
+    assert!(ui.settle(SETTLE), "the two states did not load");
+
+    // The main viewer's arrow spacing: Settings > Viewer.
+    ui.click(&Target::label("Settings").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Viewer").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    let spacing = ui
+        .find(&Target::label("Arrow spacing").role("slider"))
+        .unwrap_or_else(|_| panic!("no arrow spacing in Settings > Viewer:\n{}", ui.tree_text()));
+    assert!(spacing.text.contains("Arrow spacing"), "{}", spacing.text);
+    assert_all_named(&ui, "Settings > Viewer");
+    ui.key("Escape").unwrap();
+    ui.settle(SETTLE);
+    ui.key("Escape").unwrap();
+    ui.settle(SETTLE);
+
+    ui.click(&Target::label("Tools").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Posture model").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    let gif = Target::label("Save GIF").role("button");
+    assert!(!ui.has(&gif), "a GIF before there is a model");
+    ui.click(&Target::containing("(pick a structure)")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("BONE_UPPER")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Build").role("button"))
+        .unwrap();
+    assert!(ui.settle(SETTLE), "the model did not build");
+    assert!(ui.has(&gif), "no Save GIF:\n{}", ui.tree_text());
+
+    // The window's own arrow spacing, on its bar.
+    let window = ui
+        .find(&Target::containing("Posture model").role("window"))
+        .unwrap();
+    assert!(
+        ui.find_all(&Target::label("Arrow spacing"))
+            .iter()
+            .any(|h| window.rect.contains(h.rect.center())),
+        "no arrow spacing on the posture window's bar:\n{}",
+        ui.tree_text()
+    );
+
+    let views = ["All views", "Axial", "Sagittal", "Coronal", "3D"];
+    let radio = |name: &str| Target::label(name).role("radiobutton");
+    ui.click(&gif).unwrap();
+    ui.settle(SETTLE);
+    for choice in views {
+        assert!(
+            ui.has(&radio(choice)),
+            "no \"{choice}\" view in the menu:\n{}",
+            ui.tree_text()
+        );
+    }
+    for choice in ["Vector field", "There and back", "Width", "Save..."] {
+        assert!(
+            ui.has(&Target::label(choice)),
+            "no \"{choice}\" in the menu:\n{}",
+            ui.tree_text()
+        );
+    }
+    let field = ui
+        .find(&Target::label("Vector field").role("checkbox"))
+        .unwrap();
+    assert_eq!(field.checked, Some(false), "the field is asked for");
+    let all = ui.find(&radio("All views")).unwrap();
+    assert_eq!(all.checked, Some(true), "all views is the default");
+    // Any view from the list, the 3D scene too.
+    ui.click(&radio("3D")).unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(
+        ui.find(&radio("3D")).unwrap().checked,
+        Some(true),
+        "{}",
+        ui.tree_text()
+    );
+    ui.click(&Target::label("Vector field").role("checkbox"))
+        .unwrap();
+    ui.settle(SETTLE);
+    assert_eq!(
+        ui.find(&Target::label("Vector field").role("checkbox"))
+            .unwrap()
+            .checked,
+        Some(true)
+    );
+    assert_all_named(&ui, "the posture window's Save GIF menu");
+    ui.key("Escape").unwrap();
+    ui.settle(SETTLE);
+
+    // The axial pane of the window is above its slice slider (the main
+    // screen's, behind the window, start right of the data tree): a click
+    // in it selects it, and the menu offers it.
+    let slider = ui
+        .find_all(&Target::label("Axial slice"))
+        .into_iter()
+        .filter(|h| window.rect.contains(h.rect.center()))
+        .min_by(|x, y| x.rect.left().total_cmp(&y.rect.left()))
+        .unwrap_or_else(|| panic!("no axial pane in the window:\n{}", ui.tree_text()));
+    ui.click_at(
+        slider.rect.center_top() - egui::vec2(0.0, 120.0),
+        egui::PointerButton::Primary,
+        1,
+    );
+    ui.settle(SETTLE);
+    ui.click(&gif).unwrap();
+    ui.settle(SETTLE);
+    for choice in views {
+        let checked = ui.find(&radio(choice)).unwrap().checked;
+        assert_eq!(
+            checked,
+            Some(choice == "Axial"),
+            "{choice} after a click in the axial pane:\n{}",
+            ui.tree_text()
+        );
+    }
+    assert_all_named(&ui, "the posture window's Save GIF menu");
+}
+
+/// What a brush stroke costs a frame on a real structure: a drag delivered
+/// one pointer move a frame (`Ui::drag_timed`), with the 3-D contour brush,
+/// the slice brush and the voxel brush on a segment, at three radii. Prints
+/// the median and the worst frame of the moves and the release frame; it
+/// asserts nothing about time, which depends on the machine. Needs a CT
+/// with its RT structure set, one phase of the 4D-Lung data by default:
+///
+/// ```text
+/// RDS_BRUSH_TIMING=1 cargo test --test ui -- --ignored --nocapture brush_frame_timing
+/// RDS_BRUSH_CT=dir RDS_BRUSH_RS=file RDS_BRUSH_ROI=name ... (any other study)
+/// ```
+#[test]
+#[ignore]
+fn brush_frame_timing() {
+    if std::env::var_os("RDS_BRUSH_TIMING").is_none() {
+        eprintln!("RDS_BRUSH_TIMING not set: skipped");
+        return;
+    }
+    let _turn = turn();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ct = std::env::var_os("RDS_BRUSH_CT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            root.join("data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS/1_CT_4DFBCT__Gated__0.0_A")
+        });
+    let rs = std::env::var_os("RDS_BRUSH_RS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("data-test/TCIA_4D-LUNG/P102/4DFBCT+RTS/RS_RTS__0.0_A.dcm"));
+    let roi = std::env::var("RDS_BRUSH_ROI").unwrap_or_else(|_| "RLung_c00".into());
+    // One folder with the CT and its structure set, so it loads as one study.
+    let data = common::target_dir("brush-timing-data");
+    for e in std::fs::read_dir(&ct).expect("the CT folder") {
+        let p = e.unwrap().path();
+        if p.is_file() {
+            std::fs::copy(&p, data.join(p.file_name().unwrap())).unwrap();
+        }
+    }
+    std::fs::copy(&rs, data.join(rs.file_name().unwrap())).unwrap();
+    let mut ui = Ui::open(Opts {
+        datasets: [Some(data), None],
+        ..Opts::default()
+    });
+    assert!(ui.settle(SETTLE), "the study did not load");
+    let out = common::target_dir("ui-test-out");
+    for step in [
+        r#"{"click": {"label": "Modules", "role": "button"}}"#,
+        r#"{"click": {"label": "Structure editor", "role": "checkbox"}}"#,
+        r#"{"key": "Escape"}"#,
+    ] {
+        ui.run_step(&serde_json::from_str(step).unwrap(), &out)
+            .unwrap_or_else(|e| panic!("{step}: {e:#}\n{}", ui.tree_text()));
+    }
+    let arrow = Target::label("Unfold Structure editor");
+    if ui.has(&arrow) {
+        ui.invoke(&arrow).unwrap();
+    } else {
+        ui.invoke(&Target::label("Structure editor").role("button"))
+            .unwrap();
+    }
+    ui.settle(SETTLE);
+    ui.click(&Target::containing(&format!("{roi}  [")).role("button"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Draw structure").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::label("Paint").role("button")).unwrap();
+    ui.settle(SETTLE);
+
+    let top = ui.find(&Target::label("Maximize Axial")).unwrap().rect;
+    let bottom = ui.find(&Target::label("Axial slice")).unwrap().rect;
+    let pane = egui::Rect::from_min_max(
+        egui::pos2(bottom.left(), top.bottom()),
+        egui::pos2(bottom.right(), bottom.top()),
+    );
+    // Back and forth across the right side of the body, a few points a
+    // frame: the outline is crossed again and again, as a correction does.
+    let path: Vec<egui::Pos2> = (0..60)
+        .map(|i| {
+            let t = i as f32 / 59.0;
+            let x = 0.22 + 0.2 * (t * std::f32::consts::TAU * 1.5).sin().abs();
+            pane.center() + egui::vec2(pane.width() * x, pane.height() * (t - 0.5) * 0.3)
+        })
+        .collect();
+    let report = |what: &str, mut d: Vec<std::time::Duration>| {
+        let release = d.pop().unwrap_or_default();
+        let press = d.remove(0);
+        let mut ms: Vec<f64> = d.iter().map(|d| d.as_secs_f64() * 1e3).collect();
+        ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "{what:<34} press {:7.1}  move median {:7.1}  worst {:7.1}  release {:7.1} ms",
+            press.as_secs_f64() * 1e3,
+            ms[ms.len() / 2],
+            ms[ms.len() - 1],
+            release.as_secs_f64() * 1e3,
+        );
+    };
+    // An idle frame with the pointer moving over the view, for scale.
+    let mut idle = Vec::new();
+    for p in &path {
+        ui.hover_at(*p);
+        let t = std::time::Instant::now();
+        ui.step();
+        idle.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    idle.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!(
+        "idle frame (pointer over the view)  median {:7.1} ms",
+        idle[idle.len() / 2]
+    );
+
+    let readout = |ui: &Ui| -> String {
+        ui.find(&Target::containing(" points · ").role("label"))
+            .map(|h| h.text)
+            .unwrap_or_default()
+    };
+    let mut steps_up = 0;
+    for (radius, presses) in [(10, 4), (20, 8), (40, 12)] {
+        while steps_up < presses {
+            ui.key("]").unwrap();
+            steps_up += 1;
+        }
+        ui.settle(SETTLE);
+        let r = 5.0 * 1.2f64.powi(presses);
+        for ball in [true, false] {
+            let three_d = ui.find(&Target::label("3D").role("button")).unwrap();
+            if three_d.checked != Some(ball) {
+                ui.click(&Target::label("3D").role("button")).unwrap();
+                ui.settle(SETTLE);
+            }
+            let before = readout(&ui);
+            let d = ui.drag_timed(&path, egui::PointerButton::Primary);
+            let t = std::time::Instant::now();
+            ui.settle(SETTLE);
+            let settle = t.elapsed();
+            report(
+                &format!(
+                    "{roi} {} r {r:.1} mm (~{radius})",
+                    if ball { "3D" } else { "2D" }
+                ),
+                d,
+            );
+            println!(
+                "    settle after {:.1} ms; {before} -> {}",
+                settle.as_secs_f64() * 1e3,
+                readout(&ui)
+            );
+            ui.key("Ctrl+Z").unwrap();
+            ui.settle(SETTLE);
+        }
+    }
+    // The ball in the sagittal view: a stack re-cut onto the axial contours
+    // the structure is stored as, every 150 ms and on release.
+    while steps_up > 8 {
+        ui.key("[").unwrap();
+        steps_up -= 1;
+    }
+    ui.settle(SETTLE);
+    let three_d = ui.find(&Target::label("3D").role("button")).unwrap();
+    if three_d.checked != Some(true) {
+        ui.click(&Target::label("3D").role("button")).unwrap();
+        ui.settle(SETTLE);
+    }
+    let top = ui.find(&Target::label("Maximize Sagittal")).unwrap().rect;
+    let bottom = ui.find(&Target::label("Sagittal slice")).unwrap().rect;
+    let sag = egui::Rect::from_min_max(
+        egui::pos2(bottom.left(), top.bottom()),
+        egui::pos2(bottom.right(), bottom.top()),
+    );
+    let sag_path: Vec<egui::Pos2> = path
+        .iter()
+        .map(|p| sag.center() + (*p - pane.center()) * 0.6)
+        .collect();
+    let before = readout(&ui);
+    let d = ui.drag_timed(&sag_path, egui::PointerButton::Primary);
+    ui.settle(SETTLE);
+    report(&format!("{roi} 3D sagittal r 21.5 mm"), d);
+    println!("    {before} -> {}", readout(&ui));
+    ui.key("Ctrl+Z").unwrap();
+    ui.settle(SETTLE);
+
+    // The voxel brush on a new segment, 3D (its default).
+    pick_new_segment(&mut ui);
+    ui.click(&Target::label("Paint").role("button")).unwrap();
+    ui.settle(SETTLE);
+    for presses in [12, 8, 4] {
+        while steps_up > presses {
+            ui.key("[").unwrap();
+            steps_up -= 1;
+        }
+        while steps_up < presses {
+            ui.key("]").unwrap();
+            steps_up += 1;
+        }
+        ui.settle(SETTLE);
+        let r = 5.0 * 1.2f64.powi(presses);
+        let d = ui.drag_timed(&path, egui::PointerButton::Primary);
+        ui.settle(SETTLE);
+        report(&format!("segment 3D r {r:.1} mm"), d);
+        ui.key("Ctrl+Z").unwrap();
+        ui.settle(SETTLE);
+    }
 }

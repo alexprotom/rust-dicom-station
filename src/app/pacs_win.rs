@@ -851,7 +851,9 @@ impl ViewerApp {
                     Page::Move(d) => {
                         move_page(ui, d, busy, &mut acts);
                         if let Some(p) = &job_progress {
-                            progress_row(ui, p);
+                            if progress_row(ui, p) {
+                                p.cancel();
+                            }
                         }
                         return;
                     }
@@ -1551,8 +1553,11 @@ fn local_body(
             reset_filters(w, acts);
         }
     });
+    // The bar's Cancel stops the job; the job's landing says so.
     if let Some(p) = job_progress {
-        progress_row(ui, p);
+        if progress_row(ui, p) {
+            p.cancel();
+        }
     }
     if let Some(s) = &w.status {
         ui.weak(s);

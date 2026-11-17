@@ -590,7 +590,7 @@ impl ViewerApp {
         let fixed_ready = fshown.then(|| self.pick_displayed_volume(fpick)).flatten();
         let moving_ready = mshown.then(|| self.pick_displayed_volume(mpick)).flatten();
         let fixed_slot = fpick.slot;
-        let step = self.field_step_mm;
+        let step = self.arrow_spacing_mm();
         let warp_only = self.field_warp_only;
         let progress = Arc::new(Progress::default());
         progress.set("starting");

@@ -684,6 +684,52 @@ impl Ui {
         self.harness.step();
     }
 
+    /// Move the pointer to a position, without a button (the frame is the
+    /// next [`Self::step`]).
+    pub fn hover_at(&mut self, pos: egui::Pos2) {
+        self.harness.event(egui::Event::PointerMoved(pos));
+    }
+
+    /// A drag as a hand gives it: the press, then one pointer move a frame
+    /// through `points`, then the release, each in a frame of its own. What
+    /// each frame took, in order (the press, every move, the release), is
+    /// what comes back: the cost of a tool per mouse sample with everything
+    /// the frame redraws after it. [`Self::drag`] hands the whole drag to
+    /// one frame instead.
+    pub fn drag_timed(
+        &mut self,
+        points: &[egui::Pos2],
+        button: egui::PointerButton,
+    ) -> Vec<Duration> {
+        let mut out = Vec::with_capacity(points.len() + 1);
+        let Some((&first, rest)) = points.split_first() else {
+            return out;
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.harness.event(egui::Event::PointerMoved(first));
+        self.harness.event(press(first, true));
+        let t = Instant::now();
+        self.harness.step();
+        out.push(t.elapsed());
+        for &p in rest {
+            self.harness.event(egui::Event::PointerMoved(p));
+            let t = Instant::now();
+            self.harness.step();
+            out.push(t.elapsed());
+        }
+        let last = *points.last().unwrap_or(&first);
+        self.harness.event(press(last, false));
+        let t = Instant::now();
+        self.harness.step();
+        out.push(t.elapsed());
+        out
+    }
+
     /// Turn the wheel over a position: `delta` in points, positive `y`
     /// moving the content down (so the view scrolls up).
     pub fn scroll(&mut self, at: egui::Pos2, delta: egui::Vec2) {

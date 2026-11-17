@@ -32,11 +32,9 @@ pub(super) struct Planar2d {
     pub(super) draw: Option<super::planar_tools::PlanarDraw>,
     /// Undo snapshots of planar structures, newest last.
     pub(super) undo: crate::planar_structs::Undo,
-    /// The contour brush's and the nudge's last sample, whether the brush
-    /// stroke cuts (decided at its start) and whether the stroke has taken
-    /// its undo snapshot.
+    /// The brush's and the nudge's last sample, and whether the stroke has
+    /// taken its undo snapshot.
     pub(super) last_sample: Option<[f64; 2]>,
-    pub(super) brush_cut: bool,
     pub(super) stroke_saved: bool,
     /// The live wire on the image being drawn on.
     pub(super) wire: Option<super::planar_tools::PlanarWire>,

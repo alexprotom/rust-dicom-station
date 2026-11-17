@@ -34,12 +34,13 @@ fn track_color(i: usize) -> Color32 {
 /// The reference structure's curve gets the manuscript's dashed red.
 const REF_COLOR: Color32 = Color32::from_rgb(0xd6, 0x45, 0x45);
 
-/// One line of a line chart: label, color, y per phase.
-struct Series {
-    label: String,
-    color: Color32,
-    values: Vec<f64>,
-    dashed: bool,
+/// One line of a line chart: label, color, y per phase. Shared with the
+/// posture model's chart (`posture_table.rs`).
+pub(super) struct Series {
+    pub(super) label: String,
+    pub(super) color: Color32,
+    pub(super) values: Vec<f64>,
+    pub(super) dashed: bool,
 }
 
 /// Ticks of a value axis that has to cover `lo..=hi`: a step of 1, 2 or 5
@@ -106,7 +107,7 @@ fn nice_ticks(lo: f64, hi: f64, target: usize, min_span: f64) -> (f64, f64, f64,
 /// is measured from the labels that go in it, so the axis labels and the
 /// last phase are never cut off. Hovering shows the values of the phase
 /// under the pointer; a click on the chart returns that phase.
-fn line_chart(
+pub(super) fn line_chart(
     ui: &mut egui::Ui,
     phases: &[String],
     series: &[Series],

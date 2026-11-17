@@ -36,6 +36,7 @@ impl ViewerApp {
         self.pass_raise_requests(ctx);
         self.generator_window(ctx);
         self.testdata_window(ctx);
+        self.posture_window(ctx);
         self.save_image_window(ctx);
         self.anonymize_window(ctx);
         self.models_window(ctx);

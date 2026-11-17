@@ -20,6 +20,7 @@ pub mod graph;
 pub mod group;
 pub mod motion;
 pub mod params;
+pub mod posture;
 pub mod select;
 pub mod session;
 

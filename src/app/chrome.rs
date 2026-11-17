@@ -10,6 +10,7 @@ impl ViewerApp {
         let mut clear_all = false;
         let mut open_gen = false;
         let mut open_testdata = false;
+        let mut open_posture = false;
         let mut open_save_img = false;
         let mut open_models = false;
         let mut open_pacs = false;
@@ -121,6 +122,12 @@ impl ViewerApp {
                         // holds - this is the screen, not the data.
                         ui.menu_button("Workspaces", |ui| {
                             for (slot, name) in SLOT_NAMES.iter().enumerate() {
+                                // The posture model's workspace is that
+                                // window's, not the main screen's.
+                                if self.posture_owns(slot) {
+                                    ui.weak(format!("{name} · the posture model"));
+                                    continue;
+                                }
                                 let holds = self.slots[slot].study.is_some();
                                 let mut on = self.is_open(slot);
                                 let label = if holds {
@@ -237,6 +244,15 @@ impl ViewerApp {
                     ) {
                         self.anon_open = true;
                         self.raise_window("anonymize");
+                        ui.close();
+                    }
+                    if tip_button(
+                        ui,
+                        "🎞 Posture model",
+                        "The way from one position of the patient to another: two or more \
+                         studies as states, played and measured along the path",
+                    ) {
+                        open_posture = true;
                         ui.close();
                     }
                     ui.separator();
@@ -367,7 +383,14 @@ impl ViewerApp {
                                         .named_with(|| format!("Ruler on {name}"));
                                 }
                             });
-                            if self.overlays != before {
+                            ui.separator();
+                            // A registration's field over the views; saved
+                            // when the drag ends, not at every step of it.
+                            ui.label("Deformation field");
+                            let r = arrow_spacing_slider(ui, &mut o.arrow_spacing_mm);
+                            let spacing_done = r.drag_stopped();
+                            let dragging = r.dragged() && !spacing_done;
+                            if (self.overlays != before && !dragging) || spacing_done {
                                 save_settings = true;
                             }
                         });
@@ -498,6 +521,9 @@ impl ViewerApp {
                 self.save_img = Some(snapshot::SaveImgDialog::default());
             }
             self.raise_window("save_image");
+        }
+        if open_posture {
+            self.open_posture();
         }
         if open_testdata {
             self.testdata_open = true;
@@ -960,7 +986,7 @@ impl ViewerApp {
                     // The readouts are what the bar is for, so the mouse
                     // bindings fold into a single "?" that the pointer opens -
                     // always the bindings of the tool in force.
-                    let hint = super::struct_tools::mouse_hint(self.seg_tool);
+                    let hint = super::struct_tools::mouse_hint(self.seg_tool, self.tool_subject());
                     // `Sense::hover`: it looks like a button and answers the
                     // pointer, but there is nothing to click.
                     ui.add(egui::Button::new("?").small().sense(egui::Sense::hover()))

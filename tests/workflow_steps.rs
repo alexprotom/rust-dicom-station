@@ -333,6 +333,62 @@ fn register_by_structures_aligns_two_studies_on_their_targets() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The *Posture model* step on the articulated phantom: two image series
+/// in, the hinge's angle in the report's bones table.
+#[test]
+fn the_posture_model_step_reads_the_hinge_of_the_articulated_phantom() {
+    let dir = common::target_dir("test_workflow_steps_posture");
+    let params = gen_test_data::ArticulatedParams::default();
+    let [a_dir, b_dir] = gen_test_data::generate_articulated(&dir, &params, &Progress::default())
+        .expect("the phantom is written");
+    let mut wf = Workflow::new("posture");
+    let a = wf.add(load(&a_dir), "Lying", [0.0, 0.0]);
+    let b = wf.add(load(&b_dir), "Flexed", [0.0, 300.0]);
+    let ia = wf.add(Op::SelectImage(SelectImage::default()), "", [250.0, 0.0]);
+    let ib = wf.add(Op::SelectImage(SelectImage::default()), "", [250.0, 300.0]);
+    let pm = wf.add(
+        Op::Posture(Posture {
+            anchor: "BONE_UPPER".into(),
+            ..Posture::default()
+        }),
+        "",
+        [500.0, 150.0],
+    );
+    wf.link(a, 0, ia, 0);
+    wf.link(b, 0, ib, 0);
+    wf.link(ia, 0, pm, 0);
+    wf.link(ib, 0, pm, 1);
+    assert!(wf.check().ok(), "{:?}", wf.check().errors);
+    let wf = Workflow::from_json(&wf.to_json()).expect("reads back");
+    let out = run(&wf, &options(&dir, &wf));
+    assert!(out.ok(), "{:?}", out.error);
+    let rep = out
+        .reports
+        .iter()
+        .find(|r| r.title.starts_with("Posture model"))
+        .expect("a report");
+    let lower = rep.tables[0]
+        .rows
+        .iter()
+        .find(|r| r[0] == "BONE_LOWER")
+        .unwrap_or_else(|| panic!("{:?}", rep.tables[0].rows));
+    let angle: f64 = lower[1].parse().unwrap();
+    assert!((angle - params.angle_deg).abs() < 2.0, "{angle} deg");
+    assert_eq!(
+        rep.tables[1].rows.len(),
+        1,
+        "one joint: {:?}",
+        rep.tables[1].rows
+    );
+    // A mode the step does not know is a problem the editor shows.
+    let bad = Op::Posture(Posture {
+        mode: "sideways".into(),
+        ..Posture::default()
+    });
+    assert_eq!(bad.param_problems().len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Steps that write files always run again; everything else is compared.
 fn ran_again(out: &Outcome, wf: &Workflow) -> Vec<String> {
     out.records

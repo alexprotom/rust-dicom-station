@@ -11,14 +11,28 @@
 //!   never saved - ticked;
 //! - **not in the PACS**: read from a file outside it - ticked;
 //! - **changed**: the PACS holds an object with its SOP Instance UID, and it
-//!   was edited here since it was loaded or last saved - ticked; saved as a
-//!   new object beside the old one, the old version staying;
+//!   was edited here since it was loaded or last saved - ticked;
 //! - **in the PACS**: the PACS holds it, and it is as it was loaded or
 //!   saved - not ticked; ticking it saves it again all the same;
 //! - **empty**, and objects of a study the PACS does not hold: nothing to
 //!   save, or nowhere to put it (import the study first);
 //! - **reading the PACS**, **PACS not read yet**: while the catalog is
 //!   looked up, and when there is none (a PACS never scanned).
+//!
+//! **Into which series** ([`SaveMode`], one choice per row the PACS holds):
+//! *Update* (the default) writes the object back into the series the PACS
+//! holds it in - same Series Instance UID and number, a new SOP Instance
+//! UID - and the old instance goes once the new one is in its place
+//! ([`crate::archive::save`]), so editing and saving a set five times
+//! leaves one series with one file, not five series. *Save as a new
+//! series* gives it a series of its own, the study's next free number and
+//! the description typed (the series' own to begin with). A set that a
+//! plan of the workspace names is not offered the update (the plan would
+//! name a set gone from the PACS): it goes into a new series once and
+//! keeps the identity the plan refers to, and the workspace remembers that
+//! copy ([`super::slot::StudySlot::saved_copies`]), which its later saves
+//! update. What was never in the PACS always gets a series of its own,
+//! its description typed the same way.
 //!
 //! *Changed* is told by an edit fingerprint kept on the workspace
 //! ([`super::slot::StudySlot::saved_marks`]): of every object as it was
@@ -31,14 +45,14 @@
 //! What the PACS holds is read from its catalog on a job
 //! ([`crate::archive::Archive::save_targets`]: one load of the catalog, one
 //! pass; never a scan), so the window opens at once and fills in. The
-//! writing is [`crate::archive::save::save_derived`] on another job, which
-//! reads the targets afresh after writing. When it lands, a new object
-//! takes on the identity of its copy in the PACS (SOP and Series Instance
-//! UIDs, file name), so it is *in the PACS* from then on and the window
-//! does not offer it a second time; an object saved again from the PACS
-//! keeps the identity it was loaded with (a plan or a registration may
-//! refer to it), and its fingerprint moves, so it reads *in the PACS* until
-//! the next edit. A save that stops half way keeps what it filed: those
+//! writing is [`crate::archive::save::save_objects`] on another job, which
+//! reads the targets afresh after writing. When it lands, every object
+//! saved takes on the identity of its copy in the PACS (SOP and Series
+//! Instance UIDs, file name) and its fingerprint moves to it, the old
+//! one's dropped, so it is *in the PACS* from then on, the window does not
+//! offer it a second time, and the next edit updates that copy; only a set
+//! a plan of the workspace names, saved as a new series, keeps the identity
+//! the plan refers to. A save that stops half way keeps what it filed: those
 //! objects take on their identity, the window says what stopped the rest,
 //! and the rest stay ticked. [`ViewerApp::open_pacs_save`] is the one way
 //! in: *File ▶ Save to the PACS*, the PACS window's *Send workspace*, and
@@ -46,11 +60,11 @@
 //! or a set ([`super::pacs_sync`]), which opens it on that row's objects
 //! alone (a [`SaveScope`]) with only the new and changed ones ticked.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
-use crate::archive::save::Saved;
+use crate::archive::save::{SaveAs, Saved};
 use crate::archive::{SaveTargets, Tree};
 use crate::dicom_export::{self, DerivedKind};
 use crate::dicomseg::SegSeries;
@@ -94,8 +108,11 @@ impl RowState {
         match self {
             RowState::New => "Made here and not saved yet",
             RowState::Outside => "Not in the PACS",
-            RowState::Changed => "Changed here; saved as a new object beside the old one",
-            RowState::InPacs => "Already in the PACS; saved again as a new object",
+            RowState::Changed => {
+                "Changed here since it was loaded or saved: updates its series in the PACS, \
+                 or goes into a new one"
+            }
+            RowState::InPacs => "Already in the PACS as it is here; ticked, it is saved again",
             RowState::Empty => "Empty: nothing to save",
             RowState::NoStudy => "Import its study into the PACS first",
             RowState::Reading => "Looking up the PACS",
@@ -129,6 +146,59 @@ pub(super) struct SaveRow {
     pub series_uid: String,
     pub state: RowState,
     pub tick: bool,
+    /// Its SOP Instance UID as the row was made: whose fingerprint the save
+    /// moves.
+    pub sop: String,
+    /// The instance *Update* replaces: the object's own, or for one kept
+    /// for a plan, its copy saved before ([`super::slot::StudySlot::saved_copies`]).
+    pub replaces: String,
+    /// The series of the PACS that instance is in (`RTSTRUCT 201 -
+    /// TotalSeg`): what *Update* writes into. `None`: not in the PACS, a
+    /// new series.
+    pub into: Option<String>,
+    /// Why it cannot update its series (a plan of the workspace names it,
+    /// and no copy of it was saved yet).
+    pub held_back: Option<String>,
+    pub mode: SaveMode,
+    /// The Series Description of a new series.
+    pub description: String,
+}
+
+/// Where a saved object goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SaveMode {
+    /// A new instance of the series the PACS holds it in, replacing it.
+    Update,
+    /// A series of its own.
+    NewSeries,
+}
+
+impl SaveRow {
+    /// Whether the object keeps its identity when saved: one of the PACS a
+    /// plan of the workspace names, which goes into (or updates) a copy.
+    fn kept_for_plan(&self) -> bool {
+        matches!(self.state, RowState::InPacs | RowState::Changed)
+            && !self.sop.is_empty()
+            && (self.held_back.is_some() || self.replaces != self.sop)
+    }
+
+    /// Whether it goes into a series of its own.
+    fn new_series(&self) -> bool {
+        self.into.is_none() || self.held_back.is_some() || self.mode == SaveMode::NewSeries
+    }
+
+    /// What the save is told for this row.
+    fn save_as(&self) -> SaveAs {
+        if self.new_series() || self.replaces.is_empty() {
+            SaveAs::NewSeries {
+                description: self.description.trim().to_string(),
+            }
+        } else {
+            SaveAs::Update {
+                replaces: self.replaces.clone(),
+            }
+        }
+    }
 }
 
 /// The window's state.
@@ -205,10 +275,14 @@ fn mark_of(study: &LoadedStudy, kind: DerivedKind, index: usize) -> Option<(Stri
     }
 }
 
+/// What a workspace's objects kept for a plan were saved as
+/// ([`super::slot::StudySlot::saved_copies`]).
+type Copies = HashMap<(DerivedKind, String), String>;
+
 /// The study and referenced series of every object of `study`, and their
-/// SOP Instance UIDs: what [`crate::archive::Archive::save_targets`] is
-/// asked about.
-fn lookup_keys(study: &LoadedStudy) -> (Vec<(String, String)>, Vec<String>) {
+/// SOP Instance UIDs and those of their `copies`: what
+/// [`crate::archive::Archive::save_targets`] is asked about.
+fn lookup_keys(study: &LoadedStudy, copies: &Copies) -> (Vec<(String, String)>, Vec<String>) {
     let mut keys = Vec::new();
     let mut sops = Vec::new();
     for s in &study.structure_sets {
@@ -225,6 +299,7 @@ fn lookup_keys(study: &LoadedStudy) -> (Vec<(String, String)>, Vec<String>) {
         ));
         sops.push(s.sop_instance_uid.clone());
     }
+    sops.extend(copies.values().cloned());
     sops.retain(|s| !s.is_empty());
     (keys, sops)
 }
@@ -233,11 +308,13 @@ fn lookup_keys(study: &LoadedStudy) -> (Vec<(String, String)>, Vec<String>) {
 /// (`targets`: what it holds and where each study's objects go; `None`
 /// while it is looked up). `changed(kind, index)`: whether an object was
 /// edited since it was loaded or saved. Ticked: what is not in the PACS
-/// yet, and what was changed.
+/// yet, and what was changed. `copies`: what the objects kept for a plan
+/// were saved as, which their *Update* replaces.
 pub(super) fn rows_of(
     study: &LoadedStudy,
     targets: Option<&SaveTargets>,
     changed: &dyn Fn(DerivedKind, usize) -> bool,
+    copies: &Copies,
 ) -> Vec<SaveRow> {
     let state = |kind: DerivedKind,
                  index: usize,
@@ -270,6 +347,18 @@ pub(super) fn rows_of(
             RowState::Outside
         }
     };
+    // The series of the PACS an object is in, and the description a new
+    // series of it starts from: that series' own, else the object's label.
+    let held = |st: RowState, sop: &str, label: &str| {
+        let series = matches!(st, RowState::Changed | RowState::InPacs)
+            .then(|| targets.and_then(|t| t.series.get(sop)))
+            .flatten();
+        let description = series
+            .map(|s| s.description.clone())
+            .filter(|d| !d.trim().is_empty())
+            .unwrap_or_else(|| label.to_string());
+        (series.map(|s| s.title.clone()), description)
+    };
     let mut rows = Vec::new();
     for (i, ss) in study.structure_sets.iter().enumerate() {
         let key = (
@@ -284,19 +373,62 @@ pub(super) fn rows_of(
             &ss.sop_instance_uid,
             !ss.read_from_file(),
         );
+        let label = if ss.label.is_empty() {
+            ss.file_name.clone()
+        } else {
+            ss.label.clone()
+        };
+        let (into, description) = held(st, &ss.sop_instance_uid, &label);
+        // A plan names a structure set by its SOP Instance UID: updating it
+        // would leave the plan naming a set gone from the PACS.
+        let held_back = (!ss.sop_instance_uid.is_empty())
+            .then(|| {
+                study
+                    .plans
+                    .iter()
+                    .find(|p| p.referenced_structset_uid == ss.sop_instance_uid)
+            })
+            .flatten()
+            .map(|p| {
+                let name = if p.label.trim().is_empty() {
+                    "a plan of the workspace".to_string()
+                } else {
+                    format!("plan {}", p.label.trim())
+                };
+                format!(
+                    "{name} refers to this set: it goes into a new series, and the set the \
+                     plan names stays in the PACS"
+                )
+            });
+        // Kept for a plan and saved before: its copy is what an update
+        // replaces, so saving it again does not make yet another series.
+        let copy = held_back
+            .as_ref()
+            .filter(|_| matches!(st, RowState::Changed | RowState::InPacs))
+            .and_then(|_| copies.get(&(DerivedKind::StructureSet, ss.sop_instance_uid.clone())))
+            .filter(|c| targets.is_some_and(|t| t.held.contains(c.as_str())));
+        let (replaces, into, description, held_back) = match copy {
+            Some(c) => {
+                let (into, description) = held(st, c, &label);
+                (c.clone(), into, description, None)
+            }
+            None => (ss.sop_instance_uid.clone(), into, description, held_back),
+        };
         rows.push(SaveRow {
             kind: DerivedKind::StructureSet,
             index: i,
-            label: if ss.label.is_empty() {
-                ss.file_name.clone()
-            } else {
-                ss.label.clone()
-            },
+            label,
             detail: plural(ss.rois.len(), "structure", "structures"),
             study_uid: key.0,
             series_uid: key.1,
             state: st,
             tick: st.ticked(),
+            sop: ss.sop_instance_uid.clone(),
+            replaces,
+            into,
+            held_back,
+            mode: SaveMode::Update,
+            description,
         });
     }
     for (i, ser) in study.seg_series.iter().enumerate() {
@@ -313,6 +445,7 @@ pub(super) fn rows_of(
             &ser.sop_instance_uid,
             ser.file_name.is_empty(),
         );
+        let (into, description) = held(st, &ser.sop_instance_uid, &ser.label);
         rows.push(SaveRow {
             kind: DerivedKind::Segmentation,
             index: i,
@@ -322,6 +455,12 @@ pub(super) fn rows_of(
             series_uid: key.1,
             state: st,
             tick: st.ticked(),
+            sop: ser.sop_instance_uid.clone(),
+            replaces: ser.sop_instance_uid.clone(),
+            into,
+            held_back: None,
+            mode: SaveMode::Update,
+            description,
         });
     }
     rows
@@ -337,6 +476,43 @@ fn unticked_outside(rows: &mut [SaveRow], scope: Option<&SaveScope>) {
             }
         }
     }
+}
+
+/// Where a ticked row goes: *Update* the series of the PACS it is in (the
+/// default) or *Save as a new series*, and the new series' description.
+fn save_choice(ui: &mut egui::Ui, r: &mut SaveRow, enabled: bool) {
+    ui.add_enabled_ui(enabled, |ui| {
+        if let Some(into) = &r.into {
+            if let Some(why) = &r.held_back {
+                ui.weak(format!("Into a new series: {why}."));
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.radio_value(&mut r.mode, SaveMode::Update, format!("Update {into}"))
+                        .on_hover_text(
+                            "Write it back into this series: the same series and number, the \
+                             earlier version replaced",
+                        );
+                    ui.radio_value(&mut r.mode, SaveMode::NewSeries, "Save as a new series")
+                        .on_hover_text(
+                            "A series of its own, numbered after the study's last; the series \
+                             it came from stays as it is",
+                        );
+                });
+            }
+        }
+        if r.new_series() {
+            ui.horizontal(|ui| {
+                let l = ui.label("Description");
+                ui.add(
+                    egui::TextEdit::singleline(&mut r.description)
+                        .desired_width(260.0)
+                        .hint_text(r.label.as_str()),
+                )
+                .labelled_by(l.id)
+                .on_hover_text("The new series' Series Description; empty: the object's name");
+            });
+        }
+    });
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -368,6 +544,7 @@ impl ViewerApp {
     pub(super) fn mark_all_saved(&mut self, slot: usize) {
         let s = &mut self.slots[slot];
         s.saved_marks.clear();
+        s.saved_copies.clear();
         let Some(study) = s.study.as_ref() else {
             return;
         };
@@ -402,7 +579,7 @@ impl ViewerApp {
                     .is_some_and(|then| *then != now)
             })
         };
-        rows_of(study, targets, &changed)
+        rows_of(study, targets, &changed, &s.saved_copies)
     }
 
     /// Open *Save to the PACS* on workspace `slot`; with `scope`, on those
@@ -434,7 +611,7 @@ impl ViewerApp {
         let Some(study) = self.slots[slot].study.as_ref() else {
             return;
         };
-        let (keys, sops) = lookup_keys(study);
+        let (keys, sops) = lookup_keys(study, &self.slots[slot].saved_copies);
         let archive = self.station_pacs();
         let progress = Arc::new(Progress::default());
         progress.set("Reading the PACS");
@@ -471,7 +648,7 @@ impl ViewerApp {
     /// Whether `targets` were asked about every object `study` holds now.
     fn targets_cover(&self, study: &LoadedStudy, targets: &SaveTargets) -> bool {
         !targets.catalog
-            || lookup_keys(study)
+            || lookup_keys(study, &Copies::new())
                 .0
                 .iter()
                 .all(|k| targets.homes.contains_key(k))
@@ -500,8 +677,9 @@ impl ViewerApp {
                 );
                 ui.weak(
                     "Structure sets and segmentations, written beside the study they belong \
-                     to in this station's PACS: new UIDs, the study's own Study and Frame of \
-                     Reference UIDs.",
+                     to in this station's PACS, with the study's own Study and Frame of \
+                     Reference UIDs. A changed object updates the series it came from (the \
+                     earlier version is replaced), or goes into a new series.",
                 );
                 ui.separator();
                 let mut whole = false;
@@ -526,37 +704,38 @@ impl ViewerApp {
                 if d.rows.is_empty() {
                     ui.weak("This workspace has no structure sets or segmentations.");
                 }
-                egui::Grid::new("pacs_save_rows")
-                    .num_columns(3)
-                    .spacing([10.0, 4.0])
-                    .show(ui, |ui| {
-                        for r in &mut d.rows {
-                            if d.scope
-                                .as_ref()
-                                .is_some_and(|sc| !sc.holds(r.kind, r.index))
-                            {
-                                continue;
-                            }
-                            let glyph = match r.kind {
-                                DerivedKind::StructureSet => "▣",
-                                DerivedKind::Segmentation => "◉",
-                            };
-                            ui.add_enabled_ui(r.state.savable() && !busy, |ui| {
-                                ui.checkbox(&mut r.tick, format!("{glyph} {}", r.label));
-                            });
-                            ui.weak(&r.detail);
-                            let state = egui::RichText::new(r.state.text());
-                            let state = if r.tick && r.state == RowState::InPacs {
-                                state.color(ui.visuals().warn_fg_color)
-                            } else if r.state.savable() {
-                                state
-                            } else {
-                                state.weak()
-                            };
-                            ui.label(state).on_hover_text(r.state.tip());
-                            ui.end_row();
-                        }
+                for (n, r) in d.rows.iter_mut().enumerate() {
+                    if d.scope
+                        .as_ref()
+                        .is_some_and(|sc| !sc.holds(r.kind, r.index))
+                    {
+                        continue;
+                    }
+                    let glyph = match r.kind {
+                        DerivedKind::StructureSet => "▣",
+                        DerivedKind::Segmentation => "◉",
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(r.state.savable() && !busy, |ui| {
+                            ui.checkbox(&mut r.tick, format!("{glyph} {}", r.label));
+                        });
+                        ui.weak(&r.detail);
+                        let state = egui::RichText::new(r.state.text());
+                        let state = if r.tick && r.state == RowState::InPacs {
+                            state.color(ui.visuals().warn_fg_color)
+                        } else if r.state.savable() {
+                            state
+                        } else {
+                            state.weak()
+                        };
+                        ui.label(state).on_hover_text(r.state.tip());
                     });
+                    if r.tick && r.state.savable() {
+                        ui.indent(("pacs_save_into", n), |ui| {
+                            save_choice(ui, r, !busy);
+                        });
+                    }
+                }
                 // Where they go, a line per folder.
                 if let Some(t) = &d.targets {
                     let homes: BTreeSet<&PathBuf> = d
@@ -631,16 +810,20 @@ impl ViewerApp {
             return;
         };
         let rows: Vec<SaveRow> = d.rows.iter().filter(|r| r.tick).cloned().collect();
-        let keep: HashSet<(DerivedKind, usize)> = rows.iter().map(|r| (r.kind, r.index)).collect();
+        let how: HashMap<(DerivedKind, usize), SaveAs> = rows
+            .iter()
+            .map(|r| ((r.kind, r.index), r.save_as()))
+            .collect();
         let study = study.clone();
+        let copies = self.slots[d.slot].saved_copies.clone();
         let params = dicom_export::ExportParams::for_study(&study);
         let archive = self.station_pacs();
         let slot = d.slot;
         let progress = Arc::new(Progress::default());
         progress.set("Writing");
         self.pacs_save_job = Some(Job::spawn(progress, move |p| {
-            let out = crate::archive::save::save_derived(&archive, &study, &params, p, &|k, i| {
-                keep.contains(&(k, i))
+            let out = crate::archive::save::save_objects(&archive, &study, &params, p, &|k, i| {
+                how.get(&(k, i)).cloned()
             })
             .map(|saved| {
                 // The fingerprints of what was written, from the copy it
@@ -654,7 +837,7 @@ impl ViewerApp {
                     })
                     .collect();
                 // What the PACS holds now, the saved copies included.
-                let (keys, mut sops) = lookup_keys(&study);
+                let (keys, mut sops) = lookup_keys(&study, &copies);
                 sops.extend(saved.objects.iter().map(|o| o.sop_instance_uid.clone()));
                 SaveLanded {
                     targets: archive.save_targets(&keys, &sops),
@@ -690,10 +873,17 @@ impl ViewerApp {
                     .iter()
                     .find(|(k, i, _)| *k == o.kind && *i == o.index)
                     .map(|(_, _, m)| *m);
-                // Only what was not in the PACS takes the saved copy's
-                // identity: one loaded from it (changed or not) keeps the
-                // identity a plan or a registration may refer to.
-                let keeps = matches!(was.state, RowState::InPacs | RowState::Changed);
+                // What was saved is its copy in the PACS from now on: the
+                // next edit updates that copy (an update's new instance, a
+                // new series), not the one it was loaded as. Only a set a
+                // plan of the workspace names keeps the identity the plan
+                // refers to (the set the plan names staying in the PACS),
+                // and remembers its copy for the next save to update.
+                let keeps = was.kept_for_plan();
+                if keeps && !was.sop.is_empty() {
+                    s.saved_copies
+                        .insert((o.kind, was.sop.clone()), o.sop_instance_uid.clone());
+                }
                 let name = o
                     .path
                     .file_name()
@@ -726,6 +916,11 @@ impl ViewerApp {
                         }),
                 };
                 if let (Some(sop), Some(mark)) = (sop, mark) {
+                    // The fingerprint of the instance it was is no one's
+                    // now: the object carries its new identity.
+                    if sop != was.sop && !was.sop.is_empty() {
+                        s.saved_marks.remove(&(o.kind, was.sop.clone()));
+                    }
                     if !sop.is_empty() {
                         s.saved_marks.insert((o.kind, sop), mark);
                     }
@@ -733,10 +928,20 @@ impl ViewerApp {
             }
         }
         let n = saved.objects.len();
+        let updated = saved
+            .objects
+            .iter()
+            .filter(|o| o.replaced.is_some())
+            .count();
+        let notes = if saved.notes.is_empty() {
+            String::new()
+        } else {
+            format!("; {}", saved.notes.join("; "))
+        };
         let (msg, warn) = if let Some(why) = &saved.failed {
             (
                 format!(
-                    "⚠ {} saved; the rest failed: {why}",
+                    "⚠ {} saved; the rest failed: {why}{notes}",
                     plural(n, "object", "objects")
                 ),
                 true,
@@ -744,11 +949,28 @@ impl ViewerApp {
         } else if saved.summary.too_long > 0 {
             (
                 format!(
-                    "⚠ {} saved; {} left out: the path would pass the limit",
+                    "⚠ {} saved; {} left out: the path would pass the limit{notes}",
                     plural(n, "object", "objects"),
                     saved.summary.too_long
                 ),
                 true,
+            )
+        } else if !notes.is_empty() {
+            (
+                format!(
+                    "⚠ {} saved into the PACS{notes}",
+                    plural(n, "object", "objects")
+                ),
+                true,
+            )
+        } else if updated > 0 {
+            (
+                format!(
+                    "✔ {} saved into the PACS ({updated} into the series {} came from)",
+                    plural(n, "object", "objects"),
+                    if updated == 1 { "it" } else { "they" }
+                ),
+                false,
             )
         } else {
             (
@@ -849,10 +1071,95 @@ mod tests {
             ]
             .into_iter()
             .collect::<BTreeMap<_, _>>(),
+            series: [(
+                "2.2".to_string(),
+                crate::archive::HeldSeries {
+                    series_uid: "2.2.0".into(),
+                    number: "201".into(),
+                    description: String::new(),
+                    title: "RTSTRUCT 201 - Edited".into(),
+                },
+            )]
+            .into(),
         };
         // The fifth set was edited since it was loaded.
         let changed = |k: DerivedKind, i: usize| k == DerivedKind::StructureSet && i == 4;
-        let rows = rows_of(&study, Some(&targets), &changed);
+        let rows = rows_of(&study, Some(&targets), &changed, &Copies::new());
+        // The changed set updates its series by default; what was never in
+        // the PACS goes into a series of its own, named after itself.
+        assert_eq!(rows[4].into.as_deref(), Some("RTSTRUCT 201 - Edited"));
+        assert_eq!(
+            rows[4].save_as(),
+            SaveAs::Update {
+                replaces: "2.2".into()
+            }
+        );
+        let mut as_new = rows[4].clone();
+        as_new.mode = SaveMode::NewSeries;
+        as_new.description = " Edited v2 ".into();
+        assert_eq!(
+            as_new.save_as(),
+            SaveAs::NewSeries {
+                description: "Edited v2".into()
+            }
+        );
+        assert_eq!(rows[1].into, None);
+        assert_eq!(
+            rows[1].save_as(),
+            SaveAs::NewSeries {
+                description: "Drawn".into()
+            }
+        );
+        // A plan of the workspace names the edited set: it is not updated
+        // away from under the plan.
+        study.plans.push(crate::rtplan::PlanInfo {
+            label: "Lung".into(),
+            referenced_structset_uid: "2.2".into(),
+            ..Default::default()
+        });
+        let held = rows_of(&study, Some(&targets), &changed, &Copies::new());
+        assert!(
+            held[4]
+                .held_back
+                .as_deref()
+                .is_some_and(|w| w.starts_with("plan Lung refers")),
+            "{:?}",
+            held[4].held_back
+        );
+        assert!(matches!(held[4].save_as(), SaveAs::NewSeries { .. }));
+        assert!(held[4].kept_for_plan());
+        // Once its copy was saved, the copy is what it updates: no further
+        // series.
+        let mut with_copy = targets.clone();
+        with_copy.held.insert("7.7".into());
+        with_copy.series.insert(
+            "7.7".into(),
+            crate::archive::HeldSeries {
+                series_uid: "7.7.0".into(),
+                number: "202".into(),
+                description: "Edited copy".into(),
+                title: "RTSTRUCT 202 - Edited copy".into(),
+            },
+        );
+        let copies: Copies =
+            [((DerivedKind::StructureSet, "2.2".to_string()), "7.7".into())].into();
+        let copied = rows_of(&study, Some(&with_copy), &changed, &copies);
+        assert_eq!(copied[4].held_back, None);
+        assert_eq!(
+            copied[4].into.as_deref(),
+            Some("RTSTRUCT 202 - Edited copy")
+        );
+        assert_eq!(
+            copied[4].save_as(),
+            SaveAs::Update {
+                replaces: "7.7".into()
+            }
+        );
+        assert!(
+            copied[4].kept_for_plan(),
+            "the plan's set keeps its identity"
+        );
+        study.plans.clear();
         let got: Vec<(&str, RowState, bool)> = rows
             .iter()
             .map(|r| (r.label.as_str(), r.state, r.tick))
@@ -874,16 +1181,21 @@ mod tests {
 
         // Changed only counts for what the PACS holds.
         let all = |_: DerivedKind, _: usize| true;
-        let rows = rows_of(&study, Some(&targets), &all);
+        let rows = rows_of(&study, Some(&targets), &all, &Copies::new());
         assert_eq!(rows[0].state, RowState::Changed);
         assert_eq!(rows[2].state, RowState::Outside);
 
         // While the PACS is read, and before it ever was: nothing to tick.
-        let reading = rows_of(&study, None, &changed);
+        let reading = rows_of(&study, None, &changed, &Copies::new());
         assert!(reading
             .iter()
             .all(|r| !r.tick && matches!(r.state, RowState::Reading | RowState::Empty)));
-        let unread = rows_of(&study, Some(&SaveTargets::default()), &changed);
+        let unread = rows_of(
+            &study,
+            Some(&SaveTargets::default()),
+            &changed,
+            &Copies::new(),
+        );
         assert!(unread
             .iter()
             .all(|r| !r.tick && matches!(r.state, RowState::NotRead | RowState::Empty)));

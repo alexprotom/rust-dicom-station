@@ -202,3 +202,59 @@ fn an_empty_selection_is_still_an_error() {
     };
     assert!(err.to_string().contains("No DICOM files"), "{err}");
 }
+
+mod common;
+
+/// The sources a session keeps for a workspace overlap - a study folder of
+/// the PACS and the folder of one of its series inside it, and radiographs
+/// listed one by one that lie in the study folder too - and loaded as one
+/// ([`loader::load_sources`], what *Restore last session* does) each file
+/// is read once: one series, every image once, nothing "already present".
+/// Merged source by source, as the restore used to, the overlap is found
+/// twice; that warning stays for a real second add.
+#[test]
+fn overlapping_sources_load_each_file_once() {
+    let dir = common::target_dir("test_open_sources");
+    let (study, ct, kv) = common::study_with_radiographs(&dir, 4);
+    let mut sources = vec![study.clone(), ct.clone()];
+    sources.extend(kv.iter().cloned());
+
+    let files = loader::source_files(&sources);
+    assert_eq!(
+        files.len(),
+        loader::source_files(std::slice::from_ref(&study)).len(),
+        "the study folder holds everything the other sources name"
+    );
+
+    let st = loader::load_sources(&sources, "the session", &Progress::default())
+        .expect("the sources load");
+    let alone = loader::load_directory(&ct, &Progress::default()).expect("the series loads");
+    assert_eq!(st.series.len(), 1, "one CT");
+    assert_eq!(
+        st.series[0].files.len(),
+        alone.series[0].files.len(),
+        "each slice once"
+    );
+    assert_eq!(
+        st.planar_images.len(),
+        alone.planar_images.len() + kv.len(),
+        "each radiograph once"
+    );
+    assert_eq!(st.structure_sets.len(), alone.structure_sets.len());
+    assert!(st.has_volume());
+    assert!(
+        !st.warnings.iter().any(|w| w.contains("already present")),
+        "{:?}",
+        st.warnings
+    );
+
+    // Source by source, merged: the series folder's CT is the study
+    // folder's, met again.
+    let mut merged = loader::load_directory(&study, &Progress::default()).expect("loads");
+    let again = loader::load_directory_to_merge(&ct, &Progress::default()).expect("loads");
+    let notes = loader::merge_study(&mut merged, again);
+    assert!(
+        notes.iter().any(|n| n.contains("already present")),
+        "a second add of the same series is still reported: {notes:?}"
+    );
+}

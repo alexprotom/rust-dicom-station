@@ -131,6 +131,9 @@ pub struct RemoteSeries {
     pub series_uid: String,
     pub modality: String,
     pub number: String,
+    /// The Series Description, or for an RT object without one its own name
+    /// (a structure set's label, ...: [`crate::archive::SeriesEntry`]); a
+    /// server of an earlier version sends the Series Description alone.
     pub description: String,
     /// The name given on the server; empty: none.
     pub label: String,

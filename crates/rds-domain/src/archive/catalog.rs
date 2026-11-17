@@ -35,6 +35,14 @@
 //! image file its slice position, so that the sets are found again after
 //! every write without a header read, and a structure set the series it
 //! was drawn on.
+//!
+//! An RT object whose files give no Series Description (most structure
+//! sets a planning system or a model writes) keeps its own name instead
+//! ([`SeriesRec::object_label`]: the structure set's label, the plan's, the
+//! dose's comment, a segmentation's content label), so the PACS window
+//! reads `RTSTRUCT 201 - TotalSeg_v3_1.5mm` rather than `RTSTRUCT 201`.
+//! It is an optional field, not a new version: a catalog written before it
+//! has those few series read again once by the next scan.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -50,7 +58,7 @@ use serde::{Deserialize, Serialize};
 use super::fourd::{CustomGroup, Orphan, SeriesFourD, StudyFourD, HEAD_MODALITIES};
 use crate::fourd::scan::SeriesHead;
 use crate::loader::str_of;
-use crate::progress::{Progress, CANCELLED};
+use crate::progress::{Progress, ProgressSink, CANCELLED};
 
 /// The catalog's file name, in the main storage folder.
 pub const CATALOG_FILE: &str = "rds-pacs-catalog.json";
@@ -182,7 +190,33 @@ pub struct SeriesRec {
     /// The 4D set the series is in, and as what.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fourd: Option<SeriesFourD>,
+    /// An RT object's own name, for a series of [`LABEL_MODALITIES`] whose
+    /// files give no Series Description ([`object_label`]): a structure
+    /// set's label, a plan's, a dose's comment, a segmentation's content
+    /// label. What the PACS window shows in place of the description.
+    /// `None`: not read yet (a catalog written before it was kept; the next
+    /// scan reads such a series' files again, once), `Some("")`: nothing to
+    /// show, or a description that says it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_label: Option<String>,
 }
+
+impl SeriesRec {
+    /// What names the series after its modality and number: its Series
+    /// Description, else the object's own label ([`SeriesRec::object_label`]).
+    pub fn shown_description(&self) -> &str {
+        let d = self.description.trim();
+        if d.is_empty() {
+            self.object_label.as_deref().unwrap_or("").trim()
+        } else {
+            d
+        }
+    }
+}
+
+/// The modalities whose objects carry a name of their own beside the Series
+/// Description, which many writers leave empty ([`object_label`]).
+pub const LABEL_MODALITIES: [&str; 5] = ["RTSTRUCT", "RTPLAN", "RTDOSE", "SEG", "REG"];
 
 /// Where a cohort's folder is: the storage folder, and the name of the
 /// folder directly in it.
@@ -296,6 +330,9 @@ pub struct Head {
     pub z: Option<i64>,
     /// A CT or structure-set file: what the 4D rules read ([`SeriesRec::head`]).
     pub fourd_head: Option<SeriesHead>,
+    /// A file of [`LABEL_MODALITIES`]: its own name when it has no Series
+    /// Description ([`SeriesRec::object_label`]); `None` for any other file.
+    pub object_label: Option<String>,
 }
 
 impl Head {
@@ -335,17 +372,31 @@ pub fn read_head(path: &Path) -> Option<Head> {
         // kind together; it never travels as a UID.
         series = format!("{study}~{modality}");
     }
+    // A structure set as far as its ROIs: the series it was drawn on, and
+    // its label.
+    let refs = (modality == "RTSTRUCT")
+        .then(|| crate::dicomfile::open_references(path).ok())
+        .flatten();
     let fourd_head = match modality.as_str() {
         "CT" => Some(SeriesHead::read(&obj)),
         // Of a structure set only the series it was drawn on.
         m if HEAD_MODALITIES.contains(&m) => Some(SeriesHead {
-            refs: crate::dicomfile::open_references(path)
-                .map(|o| SeriesHead::read(&o).refs)
+            refs: refs
+                .as_ref()
+                .map(|o| SeriesHead::read(o).refs)
                 .unwrap_or_default(),
             ..Default::default()
         }),
         _ => None,
     };
+    let series_description = s(tags::SERIES_DESCRIPTION);
+    let object_label = LABEL_MODALITIES.contains(&modality.as_str()).then(|| {
+        if series_description.trim().is_empty() {
+            object_label(path, &modality, &obj, refs.as_ref())
+        } else {
+            String::new()
+        }
+    });
     let z = if modality == "CT" {
         crate::fourd::scan::z_of(&obj)
     } else {
@@ -354,6 +405,7 @@ pub fn read_head(path: &Path) -> Option<Head> {
     Some(Head {
         z,
         fourd_head,
+        object_label,
         sop,
         study,
         series,
@@ -364,7 +416,7 @@ pub fn read_head(path: &Path) -> Option<Head> {
         study_time: s(tags::STUDY_TIME),
         study_description: s(tags::STUDY_DESCRIPTION),
         series_number: s(tags::SERIES_NUMBER),
-        series_description: s(tags::SERIES_DESCRIPTION),
+        series_description,
         series_datetime: crate::loader::first_datetime(
             &obj,
             &[
@@ -374,6 +426,44 @@ pub fn read_head(path: &Path) -> Option<Head> {
             ],
         ),
     })
+}
+
+/// The name an RT object gives itself, for a file with no Series
+/// Description: a structure set's Structure Set Label, else its Name; a
+/// plan's RT Plan Label, else its Name; a dose's Dose Comment; else (a
+/// segmentation, a registration) the Content Label. `obj` is the file as
+/// far as group 3000 ([`crate::dicomfile::open_scan`]), `refs` a structure
+/// set as far as its ROIs; a plan or a dose is read on as far as its label
+/// (the first elements of its own group), never into its beams or its grid.
+/// Text from a file, like a Series Description: whatever shows it treats it
+/// as such (the MCP server's listing passes its redactor).
+fn object_label(
+    path: &Path,
+    modality: &str,
+    obj: &dicom_object::InMemDicomObject,
+    refs: Option<&dicom_object::DefaultDicomObject>,
+) -> String {
+    use dicom_core::Tag;
+    let first = |o: &dicom_object::InMemDicomObject, tags: &[Tag]| {
+        tags.iter()
+            .filter_map(|t| str_of(o, *t))
+            .map(|v| v.trim().to_string())
+            .find(|v| !v.is_empty())
+    };
+    let own = match modality {
+        "RTSTRUCT" => {
+            refs.and_then(|o| first(o, &[tags::STRUCTURE_SET_LABEL, tags::STRUCTURE_SET_NAME]))
+        }
+        "RTPLAN" => crate::dicomfile::open_until(path, Tag(0x300A, 0x0004))
+            .ok()
+            .and_then(|o| first(&o, &[tags::RT_PLAN_LABEL, tags::RT_PLAN_NAME])),
+        "RTDOSE" => crate::dicomfile::open_until(path, Tag(0x3004, 0x0007))
+            .ok()
+            .and_then(|o| first(&o, &[tags::DOSE_COMMENT])),
+        _ => None,
+    };
+    own.or_else(|| first(obj, &[tags::CONTENT_LABEL]))
+        .unwrap_or_default()
 }
 
 /// A path below a storage folder, `/`-separated.
@@ -760,6 +850,14 @@ pub fn add_file(c: &mut Catalog, h: &Head, file: FileRec) {
             ..Default::default()
         });
     s.study = h.study.clone();
+    // The object's own name: the file filed last says it (a structure set
+    // saved again into its series under a new label), and a name wins over
+    // none.
+    if let Some(l) = &h.object_label {
+        if s.object_label.is_none() || !l.trim().is_empty() {
+            s.object_label = Some(l.clone());
+        }
+    }
     if !h.series_datetime.is_empty() && (s.datetime.is_empty() || h.series_datetime < s.datetime) {
         s.datetime = h.series_datetime.clone();
     }
@@ -811,10 +909,20 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
     // series' date): every file is read again, once. One of version 2 lacks
     // what the 4D rules read: the files of its CT and structure-set series
     // are read again, once (a series with a head has had them read). The
-    // person's names and cohorts are carried over all the same.
+    // person's names and cohorts are carried over all the same. An RT
+    // object's series without a Series Description whose own name was never
+    // looked for (a catalog written before it was kept) has its files read
+    // again, once, the same way: a few files per study, and no version
+    // change - an older program reading this catalog just ignores the name.
     let current = old.version >= 2;
     for (suid, s) in old.series.iter().filter(|_| current) {
         if s.head.is_none() && HEAD_MODALITIES.contains(&s.modality.as_str()) {
+            continue;
+        }
+        if s.object_label.is_none()
+            && s.description.trim().is_empty()
+            && LABEL_MODALITIES.contains(&s.modality.as_str())
+        {
             continue;
         }
         for f in &s.files {
@@ -900,7 +1008,14 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
     if unchanged {
         return Ok(load(main));
     }
+    // The bar: the walk is the first few percent (how many files there are
+    // is known only at its end), reading the new files all but the last
+    // few, writing the catalog the rest. Without the fraction the bar sat
+    // at 0 % for the whole of a first scan while only its text moved.
+    const WALKED: f32 = 0.02;
+    const READ: f32 = 0.97;
     let total = fresh.len();
+    progress.report(WALKED, &format!("Reading new files 0/{total}"));
     let done = AtomicUsize::new(0);
     let heads: Vec<Option<Head>> = fresh
         .par_iter()
@@ -910,7 +1025,8 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
             }
             let n = done.fetch_add(1, Ordering::Relaxed);
             if n.is_multiple_of(64) {
-                progress.set(format!("Reading new files {n}/{total}"));
+                let f = WALKED + (READ - WALKED) * n as f32 / total.max(1) as f32;
+                progress.report(f, &format!("Reading new files {n}/{total}"));
             }
             read_head(&s.path)
         })
@@ -934,7 +1050,7 @@ pub fn refresh(roots: &[PathBuf], progress: &Progress) -> Result<Arc<Catalog>> {
         }
     }
 
-    progress.set("Updating the catalog");
+    progress.report(READ, "Updating the catalog");
     let mut storage: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
     let roots = roots.to_vec();
     let main_dir = main.clone();

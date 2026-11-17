@@ -566,18 +566,92 @@ pub fn load_directory_to_merge(dir: &Path, progress: &Progress) -> Result<Loaded
 fn load_directory_with(dir: &Path, progress: &Progress, with_volume: bool) -> Result<LoadedStudy> {
     progress.set("Scanning directory");
 
-    let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+    let files = walk_files(dir);
+    if files.is_empty() {
+        bail!("No files found in {}", dir.display());
+    }
+    load_files_with(&files, &dir.display().to_string(), progress, with_volume)
+}
+
+/// Every file under `dir`, links followed, in the order the walk meets them
+/// (the load sorts them).
+fn walk_files(dir: &Path) -> Vec<PathBuf> {
+    walkdir::WalkDir::new(dir)
         .follow_links(true)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .map(|e| e.into_path())
-        .collect();
+        .collect()
+}
 
-    if files.is_empty() {
-        bail!("No files found in {}", dir.display());
+/// The files a list of sources stands for, each once: a folder is every
+/// file under it (walked as [`load_directory`] walks it), a file is itself.
+///
+/// The sources are what a workspace was loaded from, as the session keeps
+/// them, and they overlap: a folder opened and then a folder inside it
+/// added, a study folder of the PACS beside the folder of one of its series
+/// (the station files what it saves *beside* a study's series, so a study
+/// folder holds files of its own and a series folder too), a file and the
+/// folder it lies in. Each is made absolute first (a source that no longer
+/// resolves is taken as written), so the same file reached two ways is the
+/// same path, and kept the first time it is met.
+pub fn source_files(sources: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for src in sources {
+        let src = src.canonicalize().unwrap_or_else(|_| src.clone());
+        let files = if src.is_dir() {
+            walk_files(&src)
+        } else {
+            vec![src]
+        };
+        for f in files {
+            if seen.insert(f.clone()) {
+                out.push(f);
+            }
+        }
     }
-    load_files_with(&files, &dir.display().to_string(), progress, with_volume)
+    out
+}
+
+/// Load what a list of sources holds (folders and files, overlapping or
+/// not) as one study: [`source_files`], read once, in one pass. What
+/// *Restore last session* reloads a workspace with.
+///
+/// One load rather than one per source and a merge of each into the last:
+/// a merge of sources that overlap finds the series of the overlap twice
+/// and says so (*N series were already present*), though nobody added
+/// anything twice; and a workspace whose session lists every radiograph as
+/// a file of its own (a selection of the PACS that took part of a folder)
+/// would otherwise be that many loads in a row, each waiting for the next
+/// frame to land and start the next.
+pub fn load_sources(sources: &[PathBuf], origin: &str, progress: &Progress) -> Result<LoadedStudy> {
+    load_sources_with(sources, origin, progress, true)
+}
+
+/// [`load_sources`] for merging into a workspace that is open: everything
+/// but the volume, as [`load_files_to_merge`].
+pub fn load_sources_to_merge(
+    sources: &[PathBuf],
+    origin: &str,
+    progress: &Progress,
+) -> Result<LoadedStudy> {
+    load_sources_with(sources, origin, progress, false)
+}
+
+fn load_sources_with(
+    sources: &[PathBuf],
+    origin: &str,
+    progress: &Progress,
+    with_volume: bool,
+) -> Result<LoadedStudy> {
+    progress.set("Scanning the sources");
+    let files = source_files(sources);
+    if files.is_empty() {
+        bail!("No files found in {origin}");
+    }
+    load_files_with(&files, origin, progress, with_volume)
 }
 
 /// Load an explicit list of DICOM files (*File ▶ Add DICOM file(s)*).

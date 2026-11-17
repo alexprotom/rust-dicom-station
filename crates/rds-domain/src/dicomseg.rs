@@ -547,6 +547,11 @@ pub struct SegWriteCtx<'a> {
     pub image_sop_uids: &'a [String],
     /// Patient / study / equipment attributes, as reviewed in the dialog.
     pub params: &'a ExportParams,
+    /// The Series Instance UID to write into (a segmentation saved again
+    /// into its series of the PACS); empty: a new one.
+    pub series_uid: &'a str,
+    /// The Series Description; empty: the series' label.
+    pub series_description: &'a str,
 }
 
 fn put_uss(o: &mut InMemDicomObject, tag: dicom_core::Tag, vals: &[u16]) {
@@ -598,10 +603,28 @@ pub fn build(ser: &SegSeries, ctx: &SegWriteCtx) -> InMemDicomObject {
     put_str(&mut o, tags::MODALITY, VR::CS, "SEG");
     put_str(&mut o, tags::SOP_CLASS_UID, VR::UI, SOP_SEG);
     put_str(&mut o, tags::SOP_INSTANCE_UID, VR::UI, new_uid());
-    put_str(&mut o, tags::SERIES_INSTANCE_UID, VR::UI, new_uid());
+    put_str(
+        &mut o,
+        tags::SERIES_INSTANCE_UID,
+        VR::UI,
+        if ctx.series_uid.is_empty() {
+            new_uid()
+        } else {
+            ctx.series_uid.to_string()
+        },
+    );
     put_is(&mut o, tags::SERIES_NUMBER, ctx.series_number);
     put_is(&mut o, tags::INSTANCE_NUMBER, 1);
-    put_str(&mut o, tags::SERIES_DESCRIPTION, VR::LO, ser.label.clone());
+    put_str(
+        &mut o,
+        tags::SERIES_DESCRIPTION,
+        VR::LO,
+        if ctx.series_description.trim().is_empty() {
+            ser.label.clone()
+        } else {
+            ctx.series_description.trim().chars().take(64).collect()
+        },
+    );
     put_str(&mut o, tags::CONTENT_DATE, VR::DA, ctx.date);
     put_str(&mut o, tags::CONTENT_TIME, VR::TM, ctx.time);
     put_strs(

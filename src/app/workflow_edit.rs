@@ -2754,6 +2754,81 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
                 |ui| text(ui, &mut p.folder, "sct/{input}", 150.0),
             );
         }
+        Op::Posture(p) => {
+            f.row_tip(
+                "Anchor",
+                "What is held still: a structure on every state, image (a rigid registration)                  or scanner (nothing)",
+                |ui| text(ui, &mut p.anchor, "image", 150.0),
+            );
+            f.row("Mode", |ui| {
+                egui::ComboBox::from_id_salt(("posture_mode", id))
+                    .selected_text(
+                        crate::posture::Mode::from_key(&p.mode).map_or("?", |m| m.label()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for m in crate::posture::Mode::ALL {
+                            if ui
+                                .selectable_label(p.mode == m.key(), m.label())
+                                .on_hover_text(m.hint())
+                                .clicked()
+                            {
+                                p.mode = m.key().to_string();
+                            }
+                        }
+                    });
+            });
+            f.row_tip(
+                "Rigid",
+                "The rigid bodies, separated by commas; empty: the bones every state has; none:                  no bodies",
+                |ui| text(ui, &mut p.bodies, "the bones", 150.0),
+            );
+            f.row("", |ui| {
+                ui.checkbox(&mut p.wepl, "WEPL along a beam").on_hover_text(
+                    "The water-equivalent path length to each structure's centroid, at \
+                         these IEC 61217 angles read in the first state's patient position",
+                );
+            });
+            if p.wepl {
+                f.row("Gantry / couch", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.gantry_deg)
+                            .range(-360.0..=360.0)
+                            .suffix(" deg"),
+                    )
+                    .tip("Gantry angle of the WEPL beam");
+                    ui.add(
+                        egui::DragValue::new(&mut p.couch_deg)
+                            .range(-360.0..=360.0)
+                            .suffix(" deg"),
+                    )
+                    .tip("Patient support angle of the WEPL beam");
+                });
+            }
+            f.row("", |ui| {
+                ui.checkbox(&mut p.smooth_chain, "Smooth through the middle state")
+                    .on_hover_text(
+                        "With three states: every rigid body on a curve through the middle one, \
+                         its velocity continuous there, rather than a constant turn per pair",
+                    );
+            });
+            f.row("", |ui| {
+                ui.checkbox(&mut p.residual, "A B-spline residual on top");
+            });
+            f.row("Lattice", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.lattice_mm)
+                        .range(2.0..=30.0)
+                        .suffix(" mm"),
+                );
+            });
+            f.row("Reach", |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut p.reach_mm)
+                        .range(5.0..=200.0)
+                        .suffix(" mm"),
+                );
+            });
+        }
         Op::EvaluateSct(p) => {
             f.row("", |ui| {
                 ui.checkbox(&mut p.wet, "Water-equivalent thickness (protons)");

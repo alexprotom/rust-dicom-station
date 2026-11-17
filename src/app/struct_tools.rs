@@ -10,14 +10,33 @@
 //! * **Edit structure** - everything that acts on the structure selected in
 //!   the list rather than on the stroke under the pointer: interpolation,
 //!   the slice clipboard, tidying, moving, the type and the derived recipe.
-//!   Every button is one undo step (Ctrl+Z with a contour tool in hand).
+//!   Every button is one undo step (Ctrl+Z).
 //! * **Combine structures** - the structure algebra (`combine.rs`).
 //!
-//! The nine tools that take over the left mouse button are not in the
+//! The eight tools that take over the left mouse button are not in the
 //! panel: they are the [`ViewerApp::draw_strip`] the toolbar shows while
 //! *Draw structure* is on, so a hand that is drawing never leaves the top
 //! of the window. The tools that keep a window of their own are the ones
 //! that need the room: the engines, Body contour, the details table.
+//!
+//! **One row of tools for both kinds of structure.** Paint, Erase, Grow,
+//! Polygon, Spline, Free, Live wire and Nudge each act on the *subject* the
+//! strip's target line names - the RT structure or the segment selected,
+//! under the editor's own rule ([`ViewerApp::edit_subject`]: whichever
+//! exists, the user's switch when both do; a click on either in the data
+//! tree, the target line's picker or a Ctrl-click in a view makes it the
+//! subject). The program picks the representation, not the user:
+//!
+//! | tool | on an RT structure (contours) | on a segment (voxel mask) |
+//! |---|---|---|
+//! | Paint / Erase | the contour brush pushes the outline out / cuts it back, on the slice | the voxel brush, 2D or 3D |
+//! | Grow | the grown region merged into the contours of every slice it reached | the grown voxels added |
+//! | Polygon, Spline, Free, Live wire | the closed curve added or cut by the Auto / Extend / Subtract rule | the curve filled into (or cut out of) the slice by the same rule |
+//! | Nudge | the outline's vertices pushed | the slice's outline pushed, filled back |
+//!
+//! Alt reverses Paint and Erase on both; the edge band (*bone*, *air*,
+//! *bright*, *dark*) limits both; Ctrl+Z takes back the last stroke of the
+//! subject, whichever tool made it.
 
 use crate::contours::{axis_name, plane_axes, Rigid, Stack};
 use crate::generate::{self, Shape};
@@ -531,6 +550,7 @@ impl ViewerApp {
     pub(super) fn edit_roi_in_editor(&mut self, slot: usize, roi: usize) {
         self.slots[slot].active_roi = roi;
         self.drop_edit();
+        self.tools.subject = seg_edit::EditSubject::Structure;
         self.reveal_editor(slot, Section::Edit);
     }
 
@@ -609,17 +629,36 @@ impl ViewerApp {
 
     // -- the toolbar strip --------------------------------------------------
 
-    /// The nine tools as one row of glyphs, then the options of the tool in
-    /// hand, all on the toolbar: what *✏ Draw structure* unfolds.
+    /// What the strip's tools act on right now: the planar structure while
+    /// a planar pane took the last stroke, else the RT structure or the
+    /// segment of the workspace being drawn on ([`Self::edit_subject`]).
+    pub(super) fn tool_subject(&self) -> seg_edit::EditSubject {
+        if self.planar_tool_target().is_some() {
+            return seg_edit::EditSubject::Structure;
+        }
+        self.edit_subject(self.preferred_volume_slot())
+    }
+
+    /// The eight tools as one row of glyphs, the options of the tool in
+    /// hand, and the line that says what they act on, all on the toolbar:
+    /// what *✏ Draw structure* unfolds.
+    ///
+    /// The row is the same whatever is selected. Each tool does its one
+    /// thing to the subject the target line names - Paint pushes a
+    /// structure's outline out or paints a segment's voxels in - and the
+    /// tooltips say which of the two it is doing now.
     pub(super) fn draw_strip(&mut self, ui: &mut egui::Ui) {
         let slot = self.preferred_volume_slot();
+        let planar = self.planar_tool_target().is_some();
+        let subject = self.tool_subject();
         let mut pick: Option<SegTool> = None;
-        for (tool, glyph, name, tip, _) in TOOLS {
-            if *tool == SegTool::Polygon {
+        for t in TOOLS {
+            if t.tool == SegTool::Polygon {
                 ui.separator();
             }
-            if glyph_button(ui, self.seg_tool == *tool, glyph, &format!("{name}\n{tip}")) {
-                pick = Some(*tool);
+            let tip = format!("{}\n{}", t.name, t.tip(subject));
+            if glyph_button(ui, self.seg_tool == t.tool, t.glyph, &tip) {
+                pick = Some(t.tool);
             }
         }
         if let Some(tool) = pick {
@@ -629,15 +668,30 @@ impl ViewerApp {
                 tool
             });
         }
-        let Some((_, _, name, ..)) = TOOLS.iter().find(|t| t.0 == self.seg_tool) else {
-            return;
-        };
+        if let Some(t) = TOOLS.iter().find(|t| t.tool == self.seg_tool) {
+            ui.separator();
+            ui.label(egui::RichText::new(t.name).strong())
+                .on_hover_text(t.tip(subject));
+            self.tool_options(ui, slot, subject, planar);
+        }
         ui.separator();
-        ui.label(egui::RichText::new(*name).strong());
-        if matches!(
-            self.seg_tool,
-            SegTool::Brush | SegTool::Erase | SegTool::Nudge | SegTool::ContourBrush
-        ) {
+        self.draw_target(ui, slot);
+    }
+
+    /// The options of the tool in hand, for the subject it acts on: the
+    /// same tool shows the same options on either. The brush's *3D* is kept
+    /// per kind (on for a segment, off for a structure until asked for:
+    /// a structure is drawn slice by slice), and a planar pane, a single
+    /// image, has none.
+    fn tool_options(
+        &mut self,
+        ui: &mut egui::Ui,
+        slot: usize,
+        subject: seg_edit::EditSubject,
+        planar: bool,
+    ) {
+        let brush = matches!(self.seg_tool, SegTool::Brush | SegTool::Erase);
+        if brush || self.seg_tool == SegTool::Nudge {
             ui.add(
                 egui::DragValue::new(&mut self.brush_radius_mm)
                     .speed(0.5)
@@ -646,24 +700,42 @@ impl ViewerApp {
             )
             .on_hover_text("Brush radius (Shift+wheel, [ ])");
         }
-        if matches!(self.seg_tool, SegTool::Brush | SegTool::Erase)
-            && ui
-                .selectable_label(self.brush_3d, "3D")
-                .on_hover_text("Paint through neighbouring slices")
-                .clicked()
-        {
-            self.brush_3d = !self.brush_3d;
+        if brush && !planar {
+            let (on, tip) = match subject {
+                seg_edit::EditSubject::Structure => (
+                    &mut self.contour_brush_3d,
+                    "A ball, not a disc: the brush cuts every slice it reaches, \
+                     adding the circle where the sphere meets the slice to its \
+                     contours or cutting it out",
+                ),
+                seg_edit::EditSubject::Segmentation => (
+                    &mut self.brush_3d,
+                    "A ball, not a disc: paint the voxels of the neighbouring \
+                     slices the sphere reaches too",
+                ),
+            };
+            if ui.selectable_label(*on, "3D").on_hover_text(tip).clicked() {
+                *on = !*on;
+            }
+        }
+        if brush {
+            self.smart_brush_options(ui);
         }
         match self.seg_tool {
             SegTool::Grow => self.grow_options(ui, slot),
-            SegTool::ContourBrush => self.smart_brush_options(ui),
             SegTool::LiveWire => self.livewire_options(ui),
             _ => {}
         }
-        if self.seg_tool.draws_contours() {
-            self.contour_target(ui, slot);
-        } else {
-            self.segment_target(ui, slot);
+        if self.seg_tool.draws_curves() {
+            for m in DrawMode::ALL {
+                if ui
+                    .add(egui::Button::selectable(self.draw_mode == m, m.label()).small())
+                    .on_hover_text(m.hint())
+                    .clicked()
+                {
+                    self.draw_mode = m;
+                }
+            }
         }
     }
 
@@ -673,9 +745,10 @@ impl ViewerApp {
         if tool != SegTool::Grow {
             self.cancel_grow();
         }
-        if !tool.draws_contours() {
+        if !tool.draws_curves() {
             self.draw = None;
         }
+        self.end_seg_nudge();
     }
 
     /// The limiting structure of ✨ Grow: where the front may not go,
@@ -696,7 +769,9 @@ impl ViewerApp {
     }
 
     /// The smart brush: which tissue the stamp may cover, and how far past
-    /// that threshold it may still reach.
+    /// that threshold it may still reach. Paint and Erase both, on a
+    /// structure, a segment and a planar pane (where only *bright* and
+    /// *dark* mean anything).
     fn smart_brush_options(&mut self, ui: &mut egui::Ui) {
         ui.label("edge:");
         for b in EdgeBand::ALL {
@@ -735,11 +810,14 @@ impl ViewerApp {
         }
     }
 
-    /// Which structure the contour strokes land in, and what they do to
-    /// what is already there.
-    fn contour_target(&mut self, ui: &mut egui::Ui, slot: usize) {
-        // A planar pane took the last stroke: its structure, not the
-        // volume's.
+    /// The one target line of the strip: what the tools act on, and the
+    /// means to change it - the *Edit:* switch where the workspace holds
+    /// both kinds ([`Self::edit_subject_row`], the editor's own), a picker
+    /// over the structures of the active set and the segments of the
+    /// active segmentation series, and `+` for a new one of the kind being
+    /// edited. A planar pane that took the last stroke has its own line:
+    /// its structures are the only kind it has.
+    fn draw_target(&mut self, ui: &mut egui::Ui, slot: usize) {
         if let Some(ps) = self.planar_tool_target() {
             match self.planar_target_name(ps) {
                 Some((set, name, c)) => {
@@ -756,59 +834,112 @@ impl ViewerApp {
             if small_tip_button(ui, "+", "New planar structure") {
                 self.new_planar_structure(ps);
             }
-            for m in DrawMode::ALL {
-                if ui
-                    .add(egui::Button::selectable(self.draw_mode == m, m.label()).small())
-                    .on_hover_text(m.hint())
-                    .clicked()
-                {
-                    self.draw_mode = m;
-                }
-            }
             return;
         }
-        match self.edit_roi_name(slot) {
-            Some((name, c)) => {
-                ui.label(egui::RichText::new(format!("▸ {name}")).color(theme::rgb(c)))
-                    .on_hover_text("Structure being edited");
-            }
-            None => {
-                ui.label(egui::RichText::new("▸ new structure").weak())
-                    .on_hover_text("The first stroke creates one");
-            }
+        use seg_edit::EditSubject;
+        self.edit_subject_row(ui, slot);
+        let subject = self.edit_subject(slot);
+        let s = &self.slots[slot];
+        let rois: Vec<(String, [u8; 3])> = s
+            .active_structures()
+            .map(|ss| ss.rois.iter().map(|r| (r.name.clone(), r.color)).collect())
+            .unwrap_or_default();
+        let segs: Vec<(String, [u8; 3])> =
+            s.segs().iter().map(|g| (g.name.clone(), g.color)).collect();
+        let roi_now = self.edit_target(slot).map(|(_, r)| r);
+        let seg_now = self.has_editable_seg(slot).then_some(s.active_seg);
+        let shown = match subject {
+            EditSubject::Structure => roi_now.and_then(|i| rois.get(i)),
+            EditSubject::Segmentation => seg_now.and_then(|i| segs.get(i)),
+        };
+        let selected = match (shown, subject) {
+            (Some((name, c)), _) => egui::RichText::new(format!("▸ {name}")).color(theme::rgb(*c)),
+            (None, EditSubject::Structure) => egui::RichText::new("▸ new structure").weak(),
+            (None, EditSubject::Segmentation) => egui::RichText::new("▸ new segmentation").weak(),
+        };
+        let mut choose: Option<TargetPick> = None;
+        egui::ComboBox::from_id_salt("draw_target")
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                if !rois.is_empty() {
+                    ui.label(egui::RichText::new("RT structures").weak());
+                }
+                for (i, (name, c)) in rois.iter().enumerate() {
+                    let on = subject == EditSubject::Structure && roi_now == Some(i);
+                    if ui
+                        .selectable_label(on, egui::RichText::new(name).color(theme::rgb(*c)))
+                        .clicked()
+                    {
+                        choose = Some(TargetPick::Roi(i));
+                    }
+                }
+                if !segs.is_empty() {
+                    ui.label(egui::RichText::new("Segmentations").weak());
+                }
+                for (i, (name, c)) in segs.iter().enumerate() {
+                    let on = subject == EditSubject::Segmentation && seg_now == Some(i);
+                    if ui
+                        .selectable_label(on, egui::RichText::new(name).color(theme::rgb(*c)))
+                        .clicked()
+                    {
+                        choose = Some(TargetPick::Seg(i));
+                    }
+                }
+                ui.separator();
+                if ui.selectable_label(false, "New RT structure").clicked() {
+                    choose = Some(TargetPick::NewRoi);
+                }
+                if ui.selectable_label(false, "New segmentation").clicked() {
+                    choose = Some(TargetPick::NewSeg);
+                }
+            })
+            .response
+            .tip(match subject {
+                EditSubject::Structure => "The RT structure the tools draw on",
+                EditSubject::Segmentation => "The segment the tools paint into",
+            });
+        let (plus, plus_tip) = match subject {
+            EditSubject::Structure => (TargetPick::NewRoi, "New RT structure"),
+            EditSubject::Segmentation => (TargetPick::NewSeg, "New segmentation"),
+        };
+        if small_tip_button(ui, "+", plus_tip) {
+            choose = Some(plus);
         }
-        if small_tip_button(ui, "+", "New RT structure") {
-            self.new_roi(slot, None, "ORGAN");
-        }
-        for m in DrawMode::ALL {
-            if ui
-                .add(egui::Button::selectable(self.draw_mode == m, m.label()).small())
-                .on_hover_text(m.hint())
-                .clicked()
-            {
-                self.draw_mode = m;
-            }
+        if let Some(c) = choose {
+            self.pick_draw_target(slot, c);
         }
     }
 
-    /// Which segmentation the voxel tools paint into.
-    fn segment_target(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let s = &self.slots[slot];
-        match s.segs().get(s.active_seg) {
-            Some(seg) => {
-                ui.label(
-                    egui::RichText::new(format!("▸ {}", seg.name)).color(theme::rgb(seg.color)),
-                )
-                .on_hover_text("Segmentation being painted");
+    /// Apply a choice of the target line: the chosen item, of either kind,
+    /// becomes what the tools act on.
+    fn pick_draw_target(&mut self, slot: usize, pick: TargetPick) {
+        use seg_edit::EditSubject;
+        match pick {
+            TargetPick::Roi(i) => {
+                self.slots[slot].active_roi = i;
+                self.drop_edit();
+                self.tools.subject = EditSubject::Structure;
             }
-            None => {
-                ui.label(egui::RichText::new("▸ new segmentation").weak())
-                    .on_hover_text("The first stroke creates one");
+            TargetPick::Seg(i) => {
+                self.slots[slot].active_seg = i;
+                self.tools.subject = EditSubject::Segmentation;
+            }
+            TargetPick::NewRoi => {
+                if self.new_roi(slot, None, "ORGAN").is_some() {
+                    self.tools.subject = EditSubject::Structure;
+                }
+            }
+            TargetPick::NewSeg => {
+                self.create_seg(slot);
+                if self.has_editable_seg(slot) {
+                    self.tools.subject = EditSubject::Segmentation;
+                    self.slots[slot].segs_shown = true;
+                }
             }
         }
-        if small_tip_button(ui, "+", "New segmentation") {
-            self.create_seg(slot);
-        }
+        // A stroke half drawn belongs to what was the target.
+        self.draw = None;
+        self.end_seg_nudge();
     }
 
     // -- Edit ---------------------------------------------------------------
@@ -1244,11 +1375,9 @@ impl ViewerApp {
             });
         });
         ui.label(
-            egui::RichText::new(
-                "Every button is one undo step: Ctrl+Z with a contour tool in hand.",
-            )
-            .weak()
-            .small(),
+            egui::RichText::new("Every button is one undo step: Ctrl+Z.")
+                .weak()
+                .small(),
         );
         if let Some(a) = act {
             self.apply_contour_act(slot, a);
@@ -2086,81 +2215,157 @@ impl ViewerApp {
     }
 }
 
-/// The nine tools of the *Draw* row: the tool, its glyph, its name, the
-/// tooltip that explains it, and the one-line mouse summary the status bar
-/// shows.
-const TOOLS: &[(SegTool, &str, &str, &str, &str)] = &[
-    (
-        SegTool::Brush,
-        "🎨",
-        "Paint",
-        "Paint the segmentation (Alt erases)",
-        "LMB paint · Alt erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
-    ),
-    (
-        SegTool::Erase,
-        "⊖",
-        "Erase",
-        "Erase from the segmentation",
-        "LMB erase · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice"
-    ),
-    (
-        SegTool::Grow,
-        "✨",
-        "Grow",
-        "Grow a region from a seed (drag up/down)",
-        "LMB press seed · drag up/down = grow/shrink · release commit · Esc cancel · Ctrl+Z undo"
-    ),
-    (
-        SegTool::Polygon,
-        "📐",
-        "Polygon",
-        "Draw a contour point by point",
-        "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
-    ),
-    (
-        SegTool::Spline,
-        "✒",
-        "Spline",
-        "Draw a smooth contour through points",
-        "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
-    ),
-    (
-        SegTool::Freehand,
-        "✏",
-        "Free",
-        "Draw a contour freehand",
-        "LMB drag draws · release closes · Ctrl-click pick structure · Ctrl+Z undo"
-    ),
-    (
-        SegTool::LiveWire,
-        "🔗",
-        "Live wire",
-        "Draw a contour that follows image edges",
-        "LMB anchors the path along the edge · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick structure · Ctrl+Z undo"
-    ),
-    (
-        SegTool::ContourBrush,
-        "🖊",
-        "Brush",
-        "Paint the RT structure (Alt erases)",
-        "LMB paints the structure · Alt erases · Shift+wheel / [ ] radius · Ctrl+Z undo"
-    ),
-    (
-        SegTool::Nudge,
-        "⌖",
-        "Nudge",
-        "Push the outline around",
-        "LMB drag pushes the outline · Shift+wheel / [ ] radius · Ctrl+Z undo"
-    ),
+/// One choice of the target line's picker.
+#[derive(Clone, Copy)]
+enum TargetPick {
+    Roi(usize),
+    Seg(usize),
+    NewRoi,
+    NewSeg,
+}
+
+/// One tool of the *Draw* row: the tool, its glyph, its name, and for each
+/// of the two subjects the tooltip that says what it does there and the
+/// one-line mouse summary the status bar shows.
+struct ToolDef {
+    tool: SegTool,
+    glyph: &'static str,
+    name: &'static str,
+    /// Tooltip and mouse summary on an RT structure (and a planar one).
+    on_structure: (&'static str, &'static str),
+    /// The same on a segment.
+    on_segment: (&'static str, &'static str),
+}
+
+impl ToolDef {
+    fn of(&self, subject: seg_edit::EditSubject) -> (&'static str, &'static str) {
+        match subject {
+            seg_edit::EditSubject::Structure => self.on_structure,
+            seg_edit::EditSubject::Segmentation => self.on_segment,
+        }
+    }
+
+    /// What the tool does to `subject`, for its tooltip.
+    fn tip(&self, subject: seg_edit::EditSubject) -> &'static str {
+        self.of(subject).0
+    }
+}
+
+/// The eight tools of the *Draw* row, in the row's order.
+const TOOLS: &[ToolDef] = &[
+    ToolDef {
+        tool: SegTool::Brush,
+        glyph: "🎨",
+        name: "Paint",
+        on_structure: (
+            "Paint the structure: the brush pushes its outline out on this slice, or with 3D on every slice its ball reaches (Alt erases)",
+            "LMB paints the structure (with 3D on, a ball through the slices) · Alt erases · Shift+wheel / [ ] radius · Ctrl+Z undo · wheel slice",
+        ),
+        on_segment: (
+            "Paint the segment's voxels, with 3D through the slices the ball reaches (Alt erases)",
+            "LMB paints the segment (with 3D on, a ball through the slices) · Alt erases · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice",
+        ),
+    },
+    ToolDef {
+        tool: SegTool::Erase,
+        glyph: "⊖",
+        name: "Erase",
+        on_structure: (
+            "Erase from the structure: the brush cuts its outline back on this slice, or with 3D on every slice its ball reaches (Alt paints)",
+            "LMB erases from the structure (with 3D on, a ball through the slices) · Alt paints · Shift+wheel / [ ] radius · Ctrl+Z undo · wheel slice",
+        ),
+        on_segment: (
+            "Erase the segment's voxels, with 3D through the slices the ball reaches (Alt paints)",
+            "LMB erases from the segment (with 3D on, a ball through the slices) · Alt paints · Shift+wheel / [ ] brush size · Ctrl+Z undo · wheel slice",
+        ),
+    },
+    ToolDef {
+        tool: SegTool::Grow,
+        glyph: "✨",
+        name: "Grow",
+        on_structure: (
+            "Grow a region from a seed and add it to the structure (drag up/down)",
+            "LMB press seed · drag up/down = grow/shrink · release adds it to the structure · Esc cancel · Ctrl+Z undo",
+        ),
+        on_segment: (
+            "Grow a region from a seed into the segment (drag up/down)",
+            "LMB press seed · drag up/down = grow/shrink · release adds it to the segment · Esc cancel · Ctrl+Z undo",
+        ),
+    },
+    ToolDef {
+        tool: SegTool::Polygon,
+        glyph: "📐",
+        name: "Polygon",
+        on_structure: (
+            "Draw a contour point by point",
+            "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick · Ctrl+Z undo",
+        ),
+        on_segment: (
+            "Fill a polygon into the segment, point by point",
+            "LMB add point · RMB / double-click / Enter close and fill · Esc cancel · Ctrl-click pick · Ctrl+Z undo",
+        ),
+    },
+    ToolDef {
+        tool: SegTool::Spline,
+        glyph: "✒",
+        name: "Spline",
+        on_structure: (
+            "Draw a smooth contour through points",
+            "LMB add point · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick · Ctrl+Z undo",
+        ),
+        on_segment: (
+            "Fill a smooth curve through points into the segment",
+            "LMB add point · RMB / double-click / Enter close and fill · Esc cancel · Ctrl-click pick · Ctrl+Z undo",
+        ),
+    },
+    ToolDef {
+        tool: SegTool::Freehand,
+        glyph: "✏",
+        name: "Free",
+        on_structure: (
+            "Draw a contour freehand",
+            "LMB drag draws · release closes · Ctrl-click pick · Ctrl+Z undo",
+        ),
+        on_segment: (
+            "Fill a freehand outline into the segment",
+            "LMB drag draws · release closes and fills · Ctrl-click pick · Ctrl+Z undo",
+        ),
+    },
+    ToolDef {
+        tool: SegTool::LiveWire,
+        glyph: "🔗",
+        name: "Live wire",
+        on_structure: (
+            "Draw a contour that follows image edges",
+            "LMB anchors the path along the edge · RMB / double-click / Enter close · Esc cancel · Ctrl-click pick · Ctrl+Z undo",
+        ),
+        on_segment: (
+            "Fill an outline that follows image edges into the segment",
+            "LMB anchors the path along the edge · RMB / double-click / Enter close and fill · Esc cancel · Ctrl-click pick · Ctrl+Z undo",
+        ),
+    },
+    ToolDef {
+        tool: SegTool::Nudge,
+        glyph: "⌖",
+        name: "Nudge",
+        on_structure: (
+            "Push the structure's outline around",
+            "LMB drag pushes the outline · Shift+wheel / [ ] radius · Ctrl+Z undo",
+        ),
+        on_segment: (
+            "Push the segment's edge around",
+            "LMB drag pushes the segment's edge · Shift+wheel / [ ] radius · Ctrl+Z undo",
+        ),
+    },
 ];
 
-/// What the mouse does with `tool` in hand - the status bar's one line.
-pub(super) fn mouse_hint(tool: SegTool) -> &'static str {
+/// What the mouse does with `tool` in hand on `subject` - the status bar's
+/// one line.
+pub(super) fn mouse_hint(tool: SegTool, subject: seg_edit::EditSubject) -> &'static str {
     TOOLS
         .iter()
-        .find(|t| t.0 == tool)
-        .map(|t| t.4)
+        .find(|t| t.tool == tool)
+        .map(|t| t.of(subject).1)
         .unwrap_or("LMB crosshair · RMB W/L · MMB pan · wheel slice · Ctrl+wheel zoom")
 }
 
@@ -2205,14 +2410,26 @@ mod tests {
 
     #[test]
     fn every_tool_is_in_the_row_once_with_its_own_glyph() {
-        let mut glyphs: Vec<&str> = TOOLS.iter().map(|t| t.1).collect();
+        use seg_edit::EditSubject::{Segmentation, Structure};
+        let mut glyphs: Vec<&str> = TOOLS.iter().map(|t| t.glyph).collect();
         glyphs.sort();
         glyphs.dedup();
         assert_eq!(glyphs.len(), TOOLS.len());
-        assert_eq!(TOOLS.len(), 9);
-        assert!(TOOLS.iter().all(|t| t.0 != SegTool::None));
-        assert!(mouse_hint(SegTool::ContourBrush).starts_with("LMB paints"));
-        assert!(mouse_hint(SegTool::None).starts_with("LMB crosshair"));
+        assert_eq!(TOOLS.len(), 8);
+        assert!(TOOLS.iter().all(|t| t.tool != SegTool::None));
+        // One row for both subjects, each tool saying what it does to the
+        // one it acts on - and saying it differently.
+        for t in TOOLS {
+            assert_ne!(t.tip(Structure), t.tip(Segmentation), "{}", t.name);
+            assert!(t.tip(Segmentation).contains("segment"), "{}", t.name);
+            assert_ne!(
+                mouse_hint(t.tool, Structure),
+                mouse_hint(t.tool, Segmentation)
+            );
+        }
+        assert!(mouse_hint(SegTool::Brush, Structure).contains("paints the structure"));
+        assert!(mouse_hint(SegTool::Brush, Segmentation).contains("paints the segment"));
+        assert!(mouse_hint(SegTool::None, Structure).starts_with("LMB crosshair"));
     }
 
     #[test]

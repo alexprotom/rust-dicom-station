@@ -170,6 +170,11 @@ pub struct ShapeRequest {
     /// An alignment to refine instead of a rigid stage: the deformable
     /// stage then starts from it. Needs `refine`.
     pub start: Option<Arc<Transform3>>,
+    /// Where the rigid stage starts, in place of `init`: a rotation found
+    /// some other way (the principal axes of a bone that turned through
+    /// sixty degrees, which a local search from the centroids would not
+    /// reach). Ignored when `start` is given.
+    pub seed: Option<RigidTransform>,
     /// The deformable stage: a B-spline method with its effort; `region`,
     /// `start`, `init`, `metric` and the threshold are set here. `None`
     /// keeps the result rigid.
@@ -190,6 +195,7 @@ impl Default for ShapeRequest {
             robust_mm: None,
             init: Init::Auto,
             start: None,
+            seed: None,
             refine: None,
             margin_mm: 10.0,
             points_per_structure: POINTS_PER_STRUCTURE,
@@ -1025,9 +1031,12 @@ pub fn register(
             }
         }
     };
-    let initial = match &req.start {
-        Some(s) => (**s).clone(),
-        None => Transform3::rigid_only(RigidTransform::new(
+    let initial = match (&req.start, &req.seed) {
+        (Some(s), _) => (**s).clone(),
+        // About the centre the search turns about, so its parameters are
+        // the ones the search moves.
+        (None, Some(seed)) => Transform3::rigid_only(seed.recentered(center)),
+        (None, None) => Transform3::rigid_only(RigidTransform::new(
             [0.0, 0.0, 0.0, shift.x, shift.y, shift.z],
             center,
         )),

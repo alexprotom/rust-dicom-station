@@ -44,6 +44,8 @@ const PANE_BUTTONS_KEY: &str = "pane_buttons";
 const OVERLAY_CUBE_KEY: &str = "orientation_cube";
 const OVERLAY_RULER_KEY: &str = "ruler";
 const OVERLAY_BEAMS_KEY: &str = "beam_fields";
+/// The spacing of a deformation field's arrows over the views, mm.
+const OVERLAY_ARROWS_KEY: &str = "field_arrow_spacing_mm";
 /// The *Dose and plan display* module's colour scale: the map, its range,
 /// its steps, and the isodose ladder ([`DoseColors`]).
 const DOSE_COLORMAP_KEY: &str = "dose_colormap";
@@ -409,7 +411,16 @@ pub struct ViewerOverlays {
     /// The active plan's beams: their fields cut by every view's plane,
     /// and drawn in the 3D scene.
     pub beam_fields: bool,
+    /// A registration's deformation field over the views: one arrow (or
+    /// one line of the deformed grid) every so many millimetres, set in
+    /// *Settings ▶ Viewer* and in the registration's *Vector field* fold.
+    /// Whole millimetres within [`ARROW_SPACING_MM`]; 12 for a fresh
+    /// installation (`registration::dvf::DEFAULT_ARROW_SPACING_MM`).
+    pub arrow_spacing_mm: u32,
 }
+
+/// The arrow spacings the settings hold, mm.
+pub const ARROW_SPACING_MM: std::ops::RangeInclusive<u32> = 2..=60;
 
 impl Default for ViewerOverlays {
     fn default() -> Self {
@@ -417,6 +428,7 @@ impl Default for ViewerOverlays {
             orientation_cube: [true; 4],
             ruler: [true; 3],
             beam_fields: true,
+            arrow_spacing_mm: crate::registration::dvf::DEFAULT_ARROW_SPACING_MM as u32,
         }
     }
 }
@@ -1545,6 +1557,11 @@ fn parse_into(mut s: Settings, text: &str) -> Settings {
             if let Some(b) = bool_from_str(value) {
                 s.overlays.beam_fields = b;
             }
+        } else if key.eq_ignore_ascii_case(OVERLAY_ARROWS_KEY) {
+            if let Some(v) = num_from_str(value) {
+                s.overlays.arrow_spacing_mm = (v.round().max(0.0) as u32)
+                    .clamp(*ARROW_SPACING_MM.start(), *ARROW_SPACING_MM.end());
+            }
         } else if key.eq_ignore_ascii_case(PANE_BUTTONS_KEY) {
             // The file says what is *shown*, which reads better by hand than
             // a double negative; the field holds the other way round.
@@ -1647,10 +1664,13 @@ fn render(s: &Settings) -> String {
          {OVERLAY_CUBE_KEY} = {}\n\
          {OVERLAY_RULER_KEY} = {}\n\
          # the shown plan's beams on the views (Dose and plan display) = on | off\n\
-         {OVERLAY_BEAMS_KEY} = {}\n",
+         {OVERLAY_BEAMS_KEY} = {}\n\
+         # a registration's field arrows over the views: one every so many mm (2 to 60)\n\
+         {OVERLAY_ARROWS_KEY} = {}\n",
         views_to_str(&s.overlays.orientation_cube),
         views_to_str(&s.overlays.ruler),
-        bool_to_str(s.overlays.beam_fields)
+        bool_to_str(s.overlays.beam_fields),
+        s.overlays.arrow_spacing_mm
     ));
     let dc = &s.dose_colors;
     out.push_str(&format!(
@@ -2014,10 +2034,30 @@ mod tests {
                 orientation_cube: [true, false, false, true],
                 ruler: [false; 3],
                 beam_fields: false,
+                arrow_spacing_mm: 5,
             },
             ..Settings::default()
         };
         assert_eq!(parse(&render(&s)), s);
+        assert_eq!(
+            parse("").overlays.arrow_spacing_mm,
+            12,
+            "the spacing the arrows always had"
+        );
+        assert_eq!(
+            parse("field_arrow_spacing_mm = 500")
+                .overlays
+                .arrow_spacing_mm,
+            60,
+            "held to the range"
+        );
+        assert_eq!(
+            parse("field_arrow_spacing_mm = dense")
+                .overlays
+                .arrow_spacing_mm,
+            12,
+            "a word it does not read leaves the default"
+        );
         assert_eq!(
             parse("").overlays.ruler,
             [true; 3],

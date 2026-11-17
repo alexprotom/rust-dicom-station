@@ -175,6 +175,12 @@ pub(super) struct StudySlot {
     /// removing or reordering sets needs nothing renumbered.
     pub(super) saved_marks:
         std::collections::HashMap<(crate::dicom_export::DerivedKind, String), u64>,
+    /// An object that keeps its identity for a plan naming it (by kind and
+    /// that SOP Instance UID), saved into a series of its own: the SOP
+    /// Instance UID of that copy in the PACS, which its next save updates
+    /// rather than making yet another series ([`super::pacs_save`]).
+    pub(super) saved_copies:
+        std::collections::HashMap<(crate::dicom_export::DerivedKind, String), String>,
     /// The row's two planar panes, and the additional pane after them
     /// (`planar::ADDITIONAL_PANE`), which works the same way over the
     /// workspace's additional objects.
@@ -440,6 +446,7 @@ impl StudySlot {
             roi_prep: RoiPreps::default(),
             roi_edits: std::collections::HashMap::new(),
             saved_marks: std::collections::HashMap::new(),
+            saved_copies: std::collections::HashMap::new(),
             planar: Default::default(),
             planar_last: 1,
             planar_hidden: Default::default(),

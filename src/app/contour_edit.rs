@@ -1,14 +1,20 @@
 //! The contour tools: drawing and editing RT structures as contours.
 //!
-//! The brush and the region grower edit voxels; everything here edits the
-//! polygons an RTSTRUCT actually stores, through [`crate::contours`]. The
-//! difference is what a planner sees on a 3 mm CT: a drawn curve that stays
-//! the curve it was drawn as, instead of the outline of the voxels it
-//! happened to cover.
+//! The drawing strip's tools act on an RT structure or on a segment,
+//! whichever is the subject (`struct_tools.rs`); when it is a structure,
+//! they land here and edit the polygons an RTSTRUCT actually stores,
+//! through [`crate::contours`]. The difference from a mask is what a
+//! planner sees on a 3 mm CT: a drawn curve that stays the curve it was
+//! drawn as, instead of the outline of the voxels it happened to cover.
+//! Paint and Erase are the contour brush ([`ViewerApp::contour_brush`]: the
+//! stroke's capsule added to or cut from the slice's contours, or with *3D*
+//! a ball cut into every slice it reaches, [`BallStroke`]), and Grow
+//! merges the grown voxels' outline into the contours
+//! ([`ViewerApp::grow_into_structure`]).
 //!
 //! One ROI at a time is "the ROI the tools edit" (`StudySlot::active_roi`),
-//! picked in the structure list, by clicking a contour with a drawing tool
-//! held, or created on the spot by drawing when there is none.
+//! picked in the structure list, by Ctrl-clicking a contour with a drawing
+//! tool held, or created on the spot by drawing when there is none.
 
 use super::*;
 use crate::contours::{self, Poly, Stack};
@@ -144,7 +150,8 @@ pub(super) fn keep_one_piece(mask: &mut [u8], w: usize, h: usize, seed: Option<(
 /// geometry there and back on every stroke, and each round trip through the
 /// lattice would cost a little more of the shape. With the working stack
 /// cached, the conversion happens once on the way in, and every commit
-/// converts the same source afresh.
+/// converts the same source afresh - the axial slices the edit reached, that
+/// is, the others keeping the contours they had.
 pub(super) struct EditStack {
     pub slot: usize,
     pub set: usize,
@@ -163,14 +170,129 @@ pub(super) struct EditStack {
     /// `gen` moved, as long as nothing else has changed this structure.
     pub name: String,
     pub synced: u64,
+    /// A 3-D brush stroke in progress on this stack, if any.
+    pub ball: Option<BallStroke>,
+    /// Sagittal and coronal stacks: the stack as it was last read or
+    /// written, so a write re-cuts only the axial slices what changed since
+    /// reaches ([`recut_levels`], [`Stack::apply_levels_to_roi`]).
+    pub written: Stack,
 }
+
+/// The copy of a working stack [`EditStack::written`] keeps: the stack for
+/// a sagittal or coronal one, nothing for an axial one, which is written
+/// whole (it costs nothing to).
+fn off_axis_copy(st: &Stack) -> Stack {
+    if st.axis == 2 {
+        Stack::empty(2)
+    } else {
+        st.clone()
+    }
+}
+
+/// How far along the axial axis (the in-plane `v` of a sagittal or coronal
+/// slice) what differs between two states of a stack reaches: the vertices
+/// one has and the other has not, with their neighbours along the ring (an
+/// edge that changed runs between them). The edits keep every vertex they
+/// do not reach (the windowed booleans splice, a nudge moves the ones in its
+/// radius), so this is where they went. `None` when nothing differs.
+fn changed_span(old: &Stack, new: &Stack) -> Option<[f64; 2]> {
+    use std::collections::{BTreeMap, HashSet};
+    let mut span = [f64::MAX, f64::MIN];
+    let mut widen = |p: &contours::Pt| span = [span[0].min(p[1]), span[1].max(p[1])];
+    let key = |p: &contours::Pt| (p[0].to_bits(), p[1].to_bits());
+    // The vertices of `a` that `b` does not have, and their neighbours.
+    let mut gone = |a: &contours::Region, b: &contours::Region| {
+        let have: HashSet<(u64, u64)> =
+            b.rings.iter().flat_map(|r| r.pts.iter().map(key)).collect();
+        for r in &a.rings {
+            let n = r.pts.len();
+            for i in 0..n {
+                if !have.contains(&key(&r.pts[i])) {
+                    widen(&r.pts[(i + n - 1) % n]);
+                    widen(&r.pts[i]);
+                    widen(&r.pts[(i + 1) % n]);
+                }
+            }
+        }
+    };
+    let empty = contours::Region::new();
+    let mut levels: BTreeMap<usize, (&contours::Region, &contours::Region)> = BTreeMap::new();
+    for s in &old.slices {
+        levels.insert(s.level, (&s.region, &empty));
+    }
+    for s in &new.slices {
+        levels.entry(s.level).or_insert((&empty, &empty)).1 = &s.region;
+    }
+    for (a, b) in levels.values() {
+        if a != b {
+            gone(a, b);
+            gone(b, a);
+        }
+    }
+    (span[0] <= span[1]).then_some(span)
+}
+
+/// Which axial slices a write of an off-axis stack has to re-cut, from the
+/// stack as last written (`old`) and as it is (`new`): `Some(None)` for
+/// none, `Some(Some(range))` for a slab, `None` for all of them (more than
+/// half the stack moved).
+fn recut_levels(old: &Stack, new: &Stack, nz: usize) -> Option<Option<[usize; 2]>> {
+    if nz == 0 || old.axis != new.axis {
+        return None;
+    }
+    let Some(span) = changed_span(old, new) else {
+        return Some(None);
+    };
+    // A slice holds the voxels whose centre its contours enclose: one more
+    // either way covers the rounding.
+    let k0 = (span[0].floor() - 1.0).max(0.0) as usize;
+    let k1 = ((span[1].ceil() + 1.0).max(0.0) as usize).min(nz - 1);
+    if k0 > k1 {
+        return Some(None);
+    }
+    (2 * (k1 - k0 + 1) <= nz).then_some(Some([k0, k1]))
+}
+
+/// One stroke of the 3-D contour brush: what the ball has covered so far
+/// ([`contours::BallFootprint`], a raster of the slab it reached) and the
+/// slices it reached as they were before the stroke.
+///
+/// Every sample only marks cells; the drawing slice is merged into the
+/// contours at once, so the stroke under the pointer shows as it goes, and
+/// the other slices the ball reaches every [`BALL_SPREAD`] samples and on
+/// release.
+///
+/// A merge covers only the cells marked since the last one on that slice,
+/// in a window around them: inside it the answer is made from the slice as
+/// the stroke found it (`base`) and the stroke's cells, so however often it
+/// runs nothing compounds; outside it the outline is what the earlier merges
+/// left, vertex for vertex ([`contours::BallFootprint::merge`]). A stack of
+/// contour booleans per reached slice per mouse sample was too slow to
+/// follow the hand, and so was one merge of the whole slice from `base` per
+/// sample: on a lung that was 80 to 580 ms every 100 ms of stroke.
+pub(super) struct BallStroke {
+    foot: contours::BallFootprint,
+    /// Erase rather than paint, fixed when the stroke starts.
+    erase: bool,
+    base: std::collections::BTreeMap<usize, contours::Region>,
+    /// Samples of the stroke so far.
+    samples: usize,
+}
+
+/// Every how many samples a 3-D stroke merges each slice off the one being
+/// drawn on: a slice whose level is `n` modulo this on the `n`-th sample, so
+/// a share of them goes with every sample (at 60 Hz each slice ten times a
+/// second).
+const BALL_SPREAD: usize = 6;
 
 /// How often a stroke on a sagittal or coronal working stack writes back
 /// into the structure while it goes on. Writing back means re-slicing the
 /// stack onto axial contours through the lattice; on every mouse sample
 /// that was a full-volume rasterisation and trace each time for a body
-/// outline. Axial strokes write back on every sample, which costs nothing
-/// of the kind.
+/// outline. A write re-cuts only the axial slices the edits since the last
+/// one reach ([`recut_levels`]): a 20 mm ball's 15 slices of a body outline
+/// are 21 ms, the whole of it 130 ms (dev build). Axial strokes write back on
+/// every sample, which costs nothing of the kind.
 const OFF_AXIS_FLUSH: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// The in-plane coordinates of a voxel point, for a stack sliced on `axis`.
@@ -411,6 +533,7 @@ impl ViewerApp {
         }
         // A stroke still waiting to be written goes into its own structure
         // before another stack takes its place.
+        self.finish_ball();
         if self.pending_edit_applies() {
             self.flush_edit();
         }
@@ -427,6 +550,7 @@ impl ViewerApp {
             st.to_axis(grid.dims, axis)
         };
         let synced = if axis == 2 { 0 } else { super::d3::roi_hash(r) };
+        let written = off_axis_copy(&stack);
         if converted {
             self.notice = Some(format!(
                 "'{name}' was drawn on {} slices. Editing it here re-cuts the geometry \
@@ -446,6 +570,8 @@ impl ViewerApp {
             pending: false,
             name,
             synced,
+            ball: None,
+            written,
         });
         Some(())
     }
@@ -479,8 +605,16 @@ impl ViewerApp {
         };
         let mut synced = e.synced;
         if let Some(roi) = self.slots[e.slot].roi_mut(e.set, e.roi) {
-            e.stack.apply_to_roi(roi, &grid);
-            if e.stack.axis != 2 {
+            if e.stack.axis == 2 {
+                e.stack.apply_to_roi(roi, &grid);
+            } else {
+                // Only the axial slices the edits since the last write reach
+                // are re-cut.
+                match recut_levels(&e.written, &e.stack, grid.dims[2]) {
+                    Some(None) => {}
+                    Some(Some(levels)) => e.stack.apply_levels_to_roi(roi, &grid, levels),
+                    None => e.stack.apply_to_roi(roi, &grid),
+                }
                 synced = super::d3::roi_hash(roi);
             }
         }
@@ -495,6 +629,7 @@ impl ViewerApp {
             gen: self.structures_gen(e.slot),
             pending: false,
             synced,
+            written: off_axis_copy(&e.stack),
             ..e
         });
         self.edit_flushed = Some(std::time::Instant::now());
@@ -505,7 +640,8 @@ impl ViewerApp {
     /// write is [`OFF_AXIS_FLUSH`] old, so a sagittal or coronal stroke
     /// still shows as it goes without re-slicing the structure per sample.
     /// What is written in the end is the same either way: every write
-    /// converts the whole working stack, which the writes leave alone.
+    /// re-cuts, from the working stack (which the writes leave alone), the
+    /// axial slices that what changed since the last one reaches.
     fn flush_edit_sample(&mut self, last: bool) {
         let axial = self.edit.as_ref().is_some_and(|e| e.stack.axis == 2);
         let due = self
@@ -521,6 +657,7 @@ impl ViewerApp {
     /// The pointer let go of a contour stroke (brush, nudge or hand drag):
     /// write back what the last samples left waiting.
     pub(super) fn end_contour_stroke(&mut self) {
+        self.finish_ball();
         if self.pending_edit_applies() {
             self.flush_edit();
         }
@@ -551,6 +688,7 @@ impl ViewerApp {
     /// is being edited), writing first what a stroke left waiting if it
     /// still applies.
     pub(super) fn drop_edit(&mut self) {
+        self.finish_ball();
         if self.pending_edit_applies() {
             self.flush_edit();
         }
@@ -609,7 +747,15 @@ impl ViewerApp {
             SegTool::LiveWire => Poly::new(uvs).simplify(0.1),
             _ => Poly::new(uvs),
         };
-        self.apply_ring(d.slot, d.plane, d.slice, ring);
+        // The same curve, onto whichever kind the tools act on.
+        match self.edit_subject(d.slot) {
+            super::seg_edit::EditSubject::Structure => {
+                self.apply_ring(d.slot, d.plane, d.slice, ring)
+            }
+            super::seg_edit::EditSubject::Segmentation => {
+                self.seg_apply_ring(d.slot, d.plane, d.slice, ring)
+            }
+        }
     }
 
     /// Apply one closed ring to the ROI being edited, in the current mode.
@@ -750,8 +896,12 @@ impl ViewerApp {
         Some(rings)
     }
 
-    /// One sample of a contour brush stroke: the capsule swept from `from`
-    /// to `to` is added to (or cut out of) the edited structure.
+    /// One sample of a contour brush stroke - Paint, or Erase (`erase`) -
+    /// on a structure: the capsule swept from `from` to `to` is added to (or
+    /// cut out of) the edited structure. Paint adds and Erase cuts whatever
+    /// the curves' drawing mode, as the voxel brush does on a segment: the
+    /// brush says what it does by which of the two is in hand, and Alt
+    /// reverses it.
     ///
     /// `first` opens one undo step for the whole stroke rather than one per
     /// sample. `last` matters only on a stack that is not axial: writing the
@@ -784,26 +934,14 @@ impl ViewerApp {
         if first {
             self.push_roi_undo(slot, set, roi);
         }
+        if self.contour_brush_3d {
+            self.contour_ball(slot, level, from, to, radius_mm, erase, first, last);
+            return;
+        }
         let [ua, va] = contours::plane_axes(axis);
         let mm = [spacing[ua], spacing[va]];
         let (a, b) = (uv(axis, from), uv(axis, to));
-        // Auto: a stroke that starts *inside* the structure adds to it, one
-        // that starts outside cuts into it - the same rule the drawn
-        // contour follows, decided once at the start of the stroke so the
-        // brush does not change its mind halfway through.
-        if first && self.draw_mode == DrawMode::Auto {
-            self.brush_auto_cut = !self
-                .edit
-                .as_ref()
-                .and_then(|e| e.stack.region_at(level))
-                .is_some_and(|r| r.contains(a));
-        }
-        let cut = erase
-            || match self.draw_mode {
-                DrawMode::Subtract => true,
-                DrawMode::Extend => false,
-                DrawMode::Auto => self.brush_auto_cut,
-            };
+        let cut = erase;
         let ring = Poly::capsule_mm(a, b, radius_mm, mm, 32);
         // The smart brush cuts the stamp back to the tissue it is allowed to
         // paint; with the setting off, or nothing left after the cut, the
@@ -822,6 +960,169 @@ impl ViewerApp {
         }
         e.stack.prune();
         self.flush_edit_sample(last);
+    }
+
+    /// One sample of a 3-D contour brush stroke: the ball swept from `from`
+    /// to `to` (voxel coordinates) is marked on every slice of the working
+    /// stack it reaches ([`BallStroke`]), the edge band asked of each voxel
+    /// under it as the segment brush does (there is no one piece to keep in
+    /// a sphere). The drawing slice `level` is merged at once, the others
+    /// every [`BALL_SPREAD`] samples and on the last; the stack is then written
+    /// back as every contour brush sample is. The undo step was taken by
+    /// the caller on the first sample.
+    #[allow(clippy::too_many_arguments)]
+    fn contour_ball(
+        &mut self,
+        slot: usize,
+        level: usize,
+        from: [f64; 3],
+        to: [f64; 3],
+        radius_mm: f64,
+        erase: bool,
+        first: bool,
+        last: bool,
+    ) {
+        if first {
+            // A stroke whose release was never seen still lands whole.
+            self.finish_ball();
+        }
+        let band = (self.brush_band != EdgeBand::None).then(|| {
+            let (wc, ww) = self.window_of(slot);
+            self.brush_band.limits(wc, ww, self.brush_sensitivity)
+        });
+        let Some(vol) = self.slots[slot].study.as_ref().map(|s| &s.volume) else {
+            return;
+        };
+        let Some(e) = self.edit.as_mut().filter(|e| e.slot == slot) else {
+            return;
+        };
+        let axis = e.stack.axis;
+        let ball = e.ball.get_or_insert_with(|| BallStroke {
+            foot: contours::BallFootprint::new(&vol.grid(), axis, radius_mm),
+            erase,
+            base: Default::default(),
+            samples: 0,
+        });
+        let changed = ball
+            .foot
+            .sweep(from, to, radius_mm, |[i, j, k]| match band {
+                None => true,
+                Some((lo, hi)) => {
+                    let g = vol.index(i, j, k) as f32;
+                    g >= lo && g <= hi
+                }
+            });
+        // The drawing slice now; every other one every BALL_SPREAD samples,
+        // a share of them on each sample so that no sample carries them all;
+        // everything on the last. Counted in samples, not in time, so the
+        // same stroke lands the same however fast the frames came.
+        ball.samples += 1;
+        let turn = ball.samples % BALL_SPREAD;
+        let levels: Vec<(usize, [usize; 4])> = if last {
+            ball.foot.take_dirty_boxes()
+        } else {
+            let mut due: Vec<usize> = ball
+                .foot
+                .levels()
+                .into_iter()
+                .filter(|&l| l != level && l % BALL_SPREAD == turn)
+                .collect();
+            if changed {
+                due.push(level);
+            }
+            due.into_iter()
+                .filter_map(|l| ball.foot.take_dirty_box_at(l).map(|b| (l, b)))
+                .collect()
+        };
+        if Self::merge_ball(e, &levels) {
+            self.flush_edit_sample(last);
+        }
+    }
+
+    /// Merge what the stack's 3-D stroke marked on the given levels since
+    /// they were last merged (each with the box of those cells) into its
+    /// contours: over a window around the box only, from the slice as the
+    /// stroke found it and the stroke's cells, into what the earlier merges
+    /// left ([`contours::BallFootprint::merge`]). The levels are
+    /// independent, so they are merged side by side. Returns whether
+    /// anything was merged.
+    fn merge_ball(e: &mut EditStack, levels: &[(usize, [usize; 4])]) -> bool {
+        let EditStack { ball, stack, .. } = e;
+        let Some(ball) = ball.as_mut() else {
+            return false;
+        };
+        if levels.is_empty() {
+            return false;
+        }
+        for &(level, _) in levels {
+            ball.base
+                .entry(level)
+                .or_insert_with(|| stack.region_at(level).cloned().unwrap_or_default());
+        }
+        let empty = contours::Region::new();
+        let (foot, base, erase) = (&ball.foot, &ball.base, ball.erase);
+        let stack_ref = &*stack;
+        let merged: Vec<(usize, contours::Region)> = levels
+            .par_iter()
+            .map(|&(level, b)| {
+                let current = stack_ref.region_at(level).unwrap_or(&empty);
+                (level, foot.merge(level, b, &base[&level], current, erase))
+            })
+            .collect();
+        for (level, region) in merged {
+            *stack.region_mut(level) = region;
+        }
+        stack.prune();
+        true
+    }
+
+    /// Land a 3-D stroke whole: every slice it reached and has not merged
+    /// yet goes into the contours, and the stack is left waiting to be
+    /// written (by [`Self::end_contour_stroke`], or the next flush).
+    fn finish_ball(&mut self) {
+        let Some(e) = self.edit.as_mut() else { return };
+        let Some(levels) = e.ball.as_mut().map(|b| b.foot.take_dirty_boxes()) else {
+            return;
+        };
+        if Self::merge_ball(e, &levels) {
+            e.pending = true;
+        }
+        e.ball = None;
+    }
+
+    /// Merge a grown region (linear voxel indices) into the structure the
+    /// tools edit: its outline on every axial slice it reached, traced the
+    /// way the generators trace a mask ([`Stack::from_voxels`]), united with
+    /// the contours already on that slice. The limiting structure was
+    /// honoured by the grow itself. One undo step; a workspace with no
+    /// structure to edit gets a new one, as a first stroke does.
+    pub(super) fn grow_into_structure(&mut self, slot: usize, voxels: &[u32]) {
+        let Some(dims) = self.slots[slot].study.as_ref().map(|s| s.volume.dims) else {
+            return;
+        };
+        let grown = Stack::from_voxels(voxels, dims, 2);
+        if grown.is_empty() {
+            return;
+        }
+        let Some((set, roi)) = self.ensure_edit_roi(slot) else {
+            return;
+        };
+        if self.working_stack(slot, set, roi, 2).is_none() {
+            return;
+        }
+        self.push_roi_undo(slot, set, roi);
+        let Some(e) = self.edit.as_mut() else { return };
+        for s in grown.slices {
+            let region = e.stack.region_mut(s.level);
+            *region = if region.is_empty() {
+                s.region
+            } else {
+                region.boolean(&s.region, crate::structops::BoolOp::Union)
+            };
+        }
+        e.stack.prune();
+        self.flush_edit();
+        self.interp = None;
     }
 
     /// Delete the one contour the crosshair sits inside, on the current
@@ -1490,5 +1791,46 @@ mod tests {
         let mut empty = vec![0u8; w * h];
         keep_one_piece(&mut empty, w, h, Some((3, 1)));
         assert!(empty.iter().all(|&v| v == 0));
+    }
+
+    /// A write of a sagittal stack re-cuts the axial slices the vertices it
+    /// changed reach (with their neighbours, a voxel more either way);
+    /// nothing when nothing changed; everything when most of the stack did.
+    #[test]
+    fn an_off_axis_write_re_cuts_the_slab_the_edit_reached() {
+        let ring = |k0: f64, k1: f64| Poly::new(vec![[2.0, k0], [9.0, k0], [9.0, k1], [2.0, k1]]);
+        let mut st = Stack::empty(0);
+        st.region_mut(4).rings.push(ring(10.0, 20.0));
+        st.region_mut(5).rings.push(ring(30.0, 40.0));
+        // A tall ring with a vertex every voxel along one side.
+        let mut tall = vec![[2.0, 10.0]];
+        tall.extend((10..=90).map(|k| [9.0, k as f64]));
+        tall.push([2.0, 90.0]);
+        st.region_mut(6).rings.push(Poly::new(tall));
+        assert_eq!(recut_levels(&st, &st, 100), Some(None));
+        // Slice 5's top moves from 40 to 44: the moved vertices and their
+        // neighbours, down to 30.
+        let mut grown = st.clone();
+        grown.region_mut(5).rings[0] = ring(30.0, 44.0);
+        assert_eq!(recut_levels(&st, &grown, 100), Some(Some([29, 45])));
+        // One vertex of the tall ring pushed out: only where it was.
+        let mut pushed = st.clone();
+        let p = pushed.region_mut(6).rings[0]
+            .pts
+            .iter_mut()
+            .find(|p| p[1] == 50.0)
+            .unwrap();
+        p[0] = 9.5;
+        assert_eq!(recut_levels(&st, &pushed, 100), Some(Some([48, 52])));
+        // A slice emptied counts with what it had.
+        let mut gone = st.clone();
+        gone.remove_level(4);
+        assert_eq!(recut_levels(&st, &gone, 100), Some(Some([9, 21])));
+        // More than half of the axial slices: all of them; and another
+        // stacking axis compares with nothing.
+        let mut moved = st.clone();
+        moved.region_mut(6).rings[0].translate([0.5, 0.0]);
+        assert_eq!(recut_levels(&st, &moved, 100), None);
+        assert_eq!(recut_levels(&st, &Stack::empty(2), 100), None);
     }
 }

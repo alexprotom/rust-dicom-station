@@ -2,8 +2,30 @@
 //! with its live preview, per-stroke undo, and the conversion out to
 //! RTSTRUCT. The voxel algorithms themselves live in `crate::segmentation`;
 //! this is the UI-side state machine around them.
+//!
+//! The drawing strip's tools are one set for structures and segments
+//! (`struct_tools.rs`), so the contour tools land here too when a segment
+//! is their subject: a closed curve is filled into (or cut out of) the
+//! slice by the drawing mode's rule ([`ViewerApp::seg_apply_ring`]), and a
+//! nudge pushes the slice's outline and fills it back
+//! ([`ViewerApp::seg_nudge`]). Every one of them goes through the
+//! segment's own stroke journal, so Ctrl+Z takes a curve or a drag back in
+//! one step, like a brush stroke. Grow, the other way round, lands in a
+//! structure's contours when a structure is the subject
+//! ([`ViewerApp::grow_into_structure`]).
 
 use super::*;
+use crate::contours::{self, Poly};
+
+/// A Nudge stroke on a segment: which slice of which segment, and the
+/// outline the stroke pushes (kept for the whole drag).
+pub(super) struct SegNudge {
+    slot: usize,
+    seg: usize,
+    axis: usize,
+    level: usize,
+    outline: segmentation::OutlineNudge,
+}
 
 impl ViewerApp {
     // -- Interactive segmentation ------------------------------------------
@@ -154,6 +176,12 @@ impl ViewerApp {
         let Some(vol) = self.slots[slot].study.as_ref().map(|s| s.volume.clone()) else {
             return;
         };
+        // The edge band, as the contour brush has it: the values it lets
+        // the stroke cover, from the display window.
+        let values = (self.brush_band != super::contour_edit::EdgeBand::None).then(|| {
+            let (wc, ww) = self.window_of(slot);
+            self.brush_band.limits(wc, ww, self.brush_sensitivity)
+        });
         let s = &mut self.slots[slot];
         let active = s.active_seg;
         let Some(segs) = s.segs_mut() else { return };
@@ -161,7 +189,7 @@ impl ViewerApp {
             return;
         }
         let idx = active.min(segs.len() - 1);
-        segs[idx].paint_capsule(&vol, from, vxl, radius, erase, plane2d);
+        segs[idx].paint_capsule_within(&vol, from, vxl, radius, erase, plane2d, values);
         self.paint_last = Some((slot, vxl));
     }
 
@@ -274,12 +302,22 @@ impl ViewerApp {
         self.grow_gen += 1;
     }
 
-    /// Commit the previewed region into the slot's active segmentation,
-    /// filling slice-enclosed holes (vessels etc.) so the organ is solid.
+    /// Commit the previewed region into what the tools act on, filling
+    /// slice-enclosed holes (vessels etc.) so the organ is solid: the
+    /// active segment's voxels, or - a structure being the subject - the
+    /// structure's contours on every slice the region reached.
     pub(super) fn commit_grow(&mut self) {
         let Some(g) = self.grow.take() else { return };
         let slot = g.slot;
-        if !self.grow_state.voxels.is_empty() {
+        let into_structure = self.edit_subject(slot) == super::seg_edit::EditSubject::Structure;
+        if !self.grow_state.voxels.is_empty() && into_structure {
+            let dims = self.slots[slot].study.as_ref().map(|s| s.volume.dims);
+            if let Some(dims) = dims {
+                let mut voxels = self.grow_state.voxels.clone();
+                segmentation::fill_holes_slicewise(&mut voxels, dims);
+                self.grow_into_structure(slot, &voxels);
+            }
+        } else if !self.grow_state.voxels.is_empty() {
             if self.slots[slot].segs().is_empty() {
                 self.create_seg(slot);
             }
@@ -318,6 +356,151 @@ impl ViewerApp {
         }
         self.grow_marked.clear();
         self.grow_gen += 1;
+    }
+
+    /// One closed curve of the drawing tools onto the active segment: the
+    /// voxels of slice `level` along `plane` whose centre it encloses are
+    /// added or cut by the drawing mode's rule, decided on the slice's own
+    /// outline as it is on a structure's contours. One undo step. A curve
+    /// that adds on a workspace with no segment makes one first.
+    pub(super) fn seg_apply_ring(
+        &mut self,
+        slot: usize,
+        plane: ViewPlane,
+        level: usize,
+        ring: Poly,
+    ) {
+        if ring.is_empty() {
+            return;
+        }
+        if !self.has_editable_seg(slot) {
+            if self.draw_mode == DrawMode::Subtract {
+                return;
+            }
+            self.create_seg(slot);
+        }
+        let axis = contours::axis_of_plane(plane);
+        let mode = self.draw_mode;
+        let s = &mut self.slots[slot];
+        let active = s.active_seg;
+        let Some(seg) = s.segs_mut().and_then(|v| v.get_mut(active)) else {
+            return;
+        };
+        let [w, h] = seg.slice_dims(axis);
+        let mut slice = seg.slice(axis, level);
+        if slice.is_empty() {
+            return;
+        }
+        let cut = match mode {
+            DrawMode::Extend => false,
+            DrawMode::Subtract => true,
+            DrawMode::Auto => segmentation::slice_auto_cuts(&slice, w, h, &ring),
+        };
+        if segmentation::ring_into_slice(&mut slice, w, h, &ring, cut) {
+            // Whatever stroke was open is its own step; this curve is one.
+            seg.end_stroke();
+            seg.write_slice(axis, level, &slice);
+            seg.end_stroke();
+        }
+    }
+
+    /// One sample of a Nudge drag on the active segment: the outline of
+    /// slice `level` along `plane`, read when the stroke starts, is pushed
+    /// from `from` to `to` (voxel coordinates) and filled back. A stroke
+    /// that moves to another slice or segment starts again there.
+    pub(super) fn seg_nudge(
+        &mut self,
+        slot: usize,
+        plane: ViewPlane,
+        level: usize,
+        from: [f64; 3],
+        to: [f64; 3],
+        radius_mm: f64,
+    ) {
+        let axis = contours::axis_of_plane(plane);
+        let active = self.slots[slot].active_seg;
+        let same = self.seg_nudge.as_ref().is_some_and(|n| {
+            n.slot == slot && n.seg == active && n.axis == axis && n.level == level
+        });
+        if !same {
+            self.end_seg_nudge();
+            let Some(seg) = self.slots[slot].segs().get(active) else {
+                return;
+            };
+            let [w, h] = seg.slice_dims(axis);
+            let Some(outline) = segmentation::OutlineNudge::new(&seg.slice(axis, level), w, h)
+            else {
+                return;
+            };
+            self.seg_nudge = Some(SegNudge {
+                slot,
+                seg: active,
+                axis,
+                level,
+                outline,
+            });
+        }
+        let Some(spacing) = self.slots[slot].study.as_ref().map(|s| s.volume.spacing) else {
+            return;
+        };
+        let [ua, va] = contours::plane_axes(axis);
+        let mm = [spacing[ua], spacing[va]];
+        let (a, b) = ([from[ua], from[va]], [to[ua], to[va]]);
+        let Some(n) = self.seg_nudge.as_mut() else {
+            return;
+        };
+        let Some(next) = n.outline.push(a, b, radius_mm, mm) else {
+            return;
+        };
+        if let Some(seg) = self.slots[slot].segs_mut().and_then(|v| v.get_mut(active)) {
+            seg.write_slice(axis, level, &next);
+        }
+    }
+
+    /// The Nudge drag on a segment let go: its samples are one undo step.
+    pub(super) fn end_seg_nudge(&mut self) {
+        let Some(n) = self.seg_nudge.take() else {
+            return;
+        };
+        if let Some(seg) = self
+            .slots
+            .get_mut(n.slot)
+            .and_then(|s| s.segs_mut())
+            .and_then(|v| v.get_mut(n.seg))
+        {
+            seg.end_stroke();
+        }
+    }
+
+    /// Make the visible segment holding the voxel at `v` the active one:
+    /// the smallest, when several overlap there, as with structures.
+    pub(super) fn pick_seg_at(&mut self, slot: usize, v: [f64; 3]) -> bool {
+        let s = &self.slots[slot];
+        let Some(dims) = s.study.as_ref().map(|st| st.volume.dims) else {
+            return false;
+        };
+        let mut idx = 0usize;
+        for a in (0..3).rev() {
+            let c = v[a].round();
+            if c < 0.0 || c >= dims[a] as f64 {
+                return false;
+            }
+            idx = idx * dims[a] + c as usize;
+        }
+        let hit = s
+            .segs()
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.visible && g.mask.get(idx).is_some_and(|&m| m != 0))
+            .min_by_key(|(_, g)| g.count)
+            .map(|(i, _)| i);
+        match hit {
+            Some(i) => {
+                self.slots[slot].active_seg = i;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Undo the last stroke of a slot's active segmentation.

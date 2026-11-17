@@ -227,12 +227,13 @@ impl ViewerApp {
     }
 
     /// The structures of the active set of `slot` the views draw thicker:
-    /// the one the contour tools edit, and whatever the unfolded sections
-    /// are about.
+    /// the one the drawing tools edit (while one is in hand and a structure,
+    /// not a segment, is what it acts on), and whatever the unfolded
+    /// sections are about.
     pub(super) fn focused_rois(&self, slot: usize) -> Vec<usize> {
-        let mut out: Vec<usize> = self
-            .seg_tool
-            .draws_contours()
+        let drawing = self.seg_tool != SegTool::None
+            && self.edit_subject(slot) == super::seg_edit::EditSubject::Structure;
+        let mut out: Vec<usize> = drawing
             .then(|| self.edit_target(slot).map(|(_, r)| r))
             .flatten()
             .into_iter()
@@ -246,6 +247,8 @@ impl ViewerApp {
                     .map(|(_, i)| i.idx),
             );
         }
+        // The row of the posture window's table under focus.
+        out.extend(self.posture_focus(slot));
         out
     }
 

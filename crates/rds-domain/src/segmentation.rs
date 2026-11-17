@@ -204,6 +204,27 @@ impl Segmentation {
         erase: bool,
         plane2d: Option<(ViewPlane, usize)>,
     ) {
+        self.paint_capsule_within(vol, a, b, radius_mm, erase, plane2d, None);
+    }
+
+    /// [`Self::paint_capsule`] with an edge band: with `values` set, only
+    /// the voxels of the capsule whose image value lies in `lo..=hi` are
+    /// painted (or erased) - the smart brush of the contour tools, as the
+    /// threshold-limited paintbrush of a mask editor has it: voxel by voxel,
+    /// through the slice or the sphere alike. (On a structure the stamp is
+    /// also cut back to the piece the pointer stands on; a sphere has no
+    /// such piece to speak of, and a voxel brush has never needed one.)
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_capsule_within(
+        &mut self,
+        vol: &Volume,
+        a: [f64; 3],
+        b: [f64; 3],
+        radius_mm: f64,
+        erase: bool,
+        plane2d: Option<(ViewPlane, usize)>,
+        values: Option<(f32, f32)>,
+    ) {
         let [nx, ny, nz] = self.dims;
         let sp = vol.spacing;
         let r = radius_mm.max(0.01);
@@ -262,6 +283,13 @@ impl Segmentation {
                         continue;
                     }
                     let idx = row + i;
+                    if let Some((lo, hi)) = values {
+                        let g = vol.data.get(idx).map_or(f32::NAN, |&g| g as f32);
+                        // NaN (no image under the mask) fails both tests.
+                        if !(g >= lo && g <= hi) {
+                            continue;
+                        }
+                    }
                     let cur = self.mask[idx];
                     if cur != want {
                         self.pending.push((idx as u32, cur));
@@ -393,6 +421,81 @@ impl Segmentation {
         }
         self.gen = next_gen();
         true
+    }
+
+    /// The linear index of cell `(u, v)` of slice `level` along lattice
+    /// axis `axis`, `(u, v)` running along [`crate::contours::plane_axes`].
+    fn slice_index(&self, axis: usize, level: usize, u: usize, v: usize) -> usize {
+        let [ua, va] = crate::contours::plane_axes(axis);
+        let mut idx = [0usize; 3];
+        idx[ua] = u;
+        idx[va] = v;
+        idx[axis] = level;
+        idx[2] * self.dims[0] * self.dims[1] + idx[1] * self.dims[0] + idx[0]
+    }
+
+    /// The width and height of a slice along `axis`: the lattice sizes of
+    /// its two in-plane axes, in [`crate::contours::plane_axes`] order.
+    pub fn slice_dims(&self, axis: usize) -> [usize; 2] {
+        let [ua, va] = crate::contours::plane_axes(axis);
+        [self.dims[ua], self.dims[va]]
+    }
+
+    /// One slice of the mask, row-major in the slice's own `(u, v)` - the
+    /// raster the contour tools draw on (a drawn ring's coordinates are
+    /// fractional `(u, v)`). Empty when `level` is off the lattice.
+    pub fn slice(&self, axis: usize, level: usize) -> Vec<u8> {
+        let axis = axis.min(2);
+        if level >= self.dims[axis] {
+            return Vec::new();
+        }
+        let [w, h] = self.slice_dims(axis);
+        let mut out = vec![0u8; w * h];
+        for v in 0..h {
+            for u in 0..w {
+                out[v * w + u] = self.mask[self.slice_index(axis, level, u, v)];
+            }
+        }
+        out
+    }
+
+    /// Write one slice back (the raster [`Self::slice`] reads), as part of
+    /// the stroke in progress: every voxel that changes is recorded for the
+    /// undo of the stroke, as a brush sample's are, and the count, the box
+    /// and the generation follow. Returns whether anything changed; a
+    /// slice of the wrong size, or off the lattice, changes nothing.
+    pub fn write_slice(&mut self, axis: usize, level: usize, slice: &[u8]) -> bool {
+        let axis = axis.min(2);
+        let [w, h] = self.slice_dims(axis);
+        if level >= self.dims[axis] || slice.len() != w * h {
+            return false;
+        }
+        let [nx, ny, _] = self.dims;
+        let mut any = false;
+        for v in 0..h {
+            for u in 0..w {
+                let want = u8::from(slice[v * w + u] != 0);
+                let idx = self.slice_index(axis, level, u, v);
+                let cur = self.mask[idx];
+                if cur == want {
+                    continue;
+                }
+                self.pending.push((idx as u32, cur));
+                self.mask[idx] = want;
+                if want == 1 {
+                    self.count += 1;
+                    let (k, r) = (idx / (nx * ny), idx % (nx * ny));
+                    self.touch(r % nx, r / nx, k);
+                } else {
+                    self.count -= 1;
+                }
+                any = true;
+            }
+        }
+        if any {
+            self.gen = next_gen();
+        }
+        any
     }
 
     /// Snapshot the mask's bounding box (plus a one-cell empty margin so the
@@ -899,6 +1002,104 @@ pub fn fill_holes_slicewise(voxels: &mut Vec<u32>, dims: [usize; 3]) {
 }
 
 // ---------------------------------------------------------------------------
+// The contour tools on a mask slice
+// ---------------------------------------------------------------------------
+//
+// The drawing strip's tools act on whatever is selected: an RT structure's
+// contours or a segment's mask. A closed curve (polygon, spline, freehand,
+// live wire) and a nudge are contour operations, so on a mask they go
+// through the slice's outline - the marching-squares trace a generator
+// makes ([`crate::contours::region_of_mask`]) - and land back as the voxels
+// whose centre the curve encloses ([`crate::contours::Region::rasterize`]).
+// Everything here works on one slice raster, `w` x `h`, in the slice's own
+// `(u, v)` ([`Segmentation::slice`]).
+
+/// The *auto* rule of the drawing tools on a mask slice: a ring that
+/// crosses the slice's outline and starts outside it cuts, anything else
+/// adds - [`crate::contours::auto_cuts`] asked of the outline the slice has.
+pub fn slice_auto_cuts(slice: &[u8], w: usize, h: usize, ring: &crate::contours::Poly) -> bool {
+    let region = crate::contours::region_of_mask(slice, w, h);
+    crate::contours::auto_cuts(&region, ring)
+}
+
+/// Fill a closed ring into a mask slice, or cut it out (`cut`): the cells
+/// whose centre the ring encloses are set, or cleared. Returns whether any
+/// cell changed.
+pub fn ring_into_slice(
+    slice: &mut [u8],
+    w: usize,
+    h: usize,
+    ring: &crate::contours::Poly,
+    cut: bool,
+) -> bool {
+    if ring.is_empty() || slice.len() != w * h {
+        return false;
+    }
+    let inside = crate::contours::Region::from_ring(ring.clone()).rasterize(w, h);
+    let want = u8::from(!cut);
+    let mut any = false;
+    for (m, &r) in slice.iter_mut().zip(&inside) {
+        if r != 0 && *m != want {
+            *m = want;
+            any = true;
+        }
+    }
+    any
+}
+
+/// A nudge stroke on one slice of a mask: the slice's outline, read once
+/// when the stroke starts, pushed by every sample of the drag and filled
+/// back into the slice each time.
+///
+/// The outline is kept for the whole stroke, not read again per sample,
+/// because a sample moves the pointer by a fraction of a voxel: read back
+/// from the voxels each time, every such push would be rounded away and the
+/// drag would move nothing. Kept, the pushes add up the way they do on a
+/// structure's contour, and the voxels follow. The outline is resampled to
+/// half a voxel, since the trace keeps only the corners of a straight run
+/// and the push moves vertices.
+pub struct OutlineNudge {
+    region: crate::contours::Region,
+    w: usize,
+    h: usize,
+}
+
+impl OutlineNudge {
+    /// The stroke's outline, of the slice as it is when it starts; `None`
+    /// when the slice is empty (there is nothing to push).
+    pub fn new(slice: &[u8], w: usize, h: usize) -> Option<OutlineNudge> {
+        if slice.len() != w * h {
+            return None;
+        }
+        let mut region = crate::contours::region_of_mask(slice, w, h);
+        if region.is_empty() {
+            return None;
+        }
+        for r in &mut region.rings {
+            *r = r.resample(0.5);
+        }
+        Some(OutlineNudge { region, w, h })
+    }
+
+    /// One sample of the drag, `from` to `to` in the slice's `(u, v)`: every
+    /// outline vertex within `radius_mm` moves with it by the cosine falloff
+    /// of [`crate::contours::Region::nudge`] (`mm` the millimetres per unit
+    /// of `u` and `v`). The slice the outline now fills, when anything moved.
+    pub fn push(
+        &mut self,
+        from: crate::contours::Pt,
+        to: crate::contours::Pt,
+        radius_mm: f64,
+        mm: crate::contours::Pt,
+    ) -> Option<Vec<u8>> {
+        if !self.region.nudge(from, to, radius_mm, mm) {
+            return None;
+        }
+        Some(self.region.rasterize(self.w, self.h))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RTSTRUCT contours → mask
 // ---------------------------------------------------------------------------
 
@@ -1363,5 +1564,160 @@ mod overlay_tests {
         assert!(seg.undo_last());
         assert_eq!(seg.mask, whole);
         assert_eq!((seg.bbox, seg.count), before);
+    }
+}
+
+#[cfg(test)]
+mod slice_tool_tests {
+    use super::*;
+    use crate::contours::Poly;
+    use crate::geometry::Vec3;
+
+    fn square(x: f64, y: f64, s: f64) -> Poly {
+        Poly::new(vec![[x, y], [x + s, y], [x + s, y + s], [x, y + s]])
+    }
+
+    fn set_count(m: &[u8]) -> usize {
+        m.iter().filter(|&&v| v != 0).count()
+    }
+
+    /// A slice read and written along each axis is the same voxels, and a
+    /// write is one undo step like a brush stroke, with the count and the
+    /// box kept.
+    #[test]
+    fn a_slice_reads_and_writes_back_on_every_axis_with_undo() {
+        let dims = [7, 5, 4];
+        let mut seg = Segmentation::new("s".into(), [1, 2, 3], dims);
+        for (axis, &n) in dims.iter().enumerate() {
+            let [w, h] = seg.slice_dims(axis);
+            let level = 2.min(n - 1);
+            let mut s = seg.slice(axis, level);
+            assert_eq!(s.len(), w * h);
+            s[w + 1] = 1;
+            s[(h - 1) * w + w - 1] = 1;
+            let before = seg.count;
+            assert!(seg.write_slice(axis, level, &s));
+            assert_eq!(seg.count, before + 2);
+            assert_eq!(seg.slice(axis, level), s);
+            assert!(
+                !seg.write_slice(axis, level, &s),
+                "the same slice changes nothing"
+            );
+            seg.end_stroke();
+        }
+        assert_eq!(seg.count, crate::morphology::count_set(&seg.mask));
+        // The written cell of the axial slice is where the axial index says.
+        assert_eq!(seg.mask[2 * 7 * 5 + 7 + 1], 1);
+        assert!(seg.bbox.is_some());
+        for _ in 0..3 {
+            assert!(seg.undo_last());
+        }
+        assert_eq!(seg.count, 0);
+        assert!(seg.mask.iter().all(|&v| v == 0));
+        // A slice of the wrong size or off the lattice is refused.
+        assert!(!seg.write_slice(2, 0, &[1, 1]));
+        assert!(!seg.write_slice(2, 9, &[1; 35]));
+        assert!(seg.slice(2, 9).is_empty());
+    }
+
+    /// A polygon fills the voxels whose centre it encloses and a cut takes
+    /// them out again; the auto rule cuts only a ring that crosses the
+    /// outline from outside.
+    #[test]
+    fn a_drawn_ring_lands_in_a_slice_by_the_drawing_rule() {
+        let (w, h) = (16usize, 12usize);
+        let mut s = vec![0u8; w * h];
+        let ring = square(1.5, 1.5, 5.0); // centres 2..=6: 25 cells
+        assert!(!slice_auto_cuts(&s, w, h, &ring), "nothing to cross: add");
+        assert!(ring_into_slice(&mut s, w, h, &ring, false));
+        assert_eq!(set_count(&s), 25);
+        assert!(
+            !ring_into_slice(&mut s, w, h, &ring, false),
+            "already there"
+        );
+
+        // Starting outside and crossing in: a cut.
+        let bite = Poly::new(vec![[4.5, -1.0], [9.0, -1.0], [9.0, 9.0], [4.5, 9.0]]);
+        assert!(slice_auto_cuts(&s, w, h, &bite));
+        // Starting inside and crossing out: an extension.
+        let grow = Poly::new(vec![[4.0, 4.0], [10.0, 3.0], [10.0, 5.0]]);
+        assert!(!slice_auto_cuts(&s, w, h, &grow));
+        assert!(ring_into_slice(&mut s, w, h, &bite, true));
+        // Columns 5 and 6 of the square are gone.
+        assert_eq!(set_count(&s), 15);
+        assert_eq!(s[3 * w + 6], 0);
+        assert_eq!(s[3 * w + 4], 1);
+    }
+
+    /// The edge band paints only the voxels whose value is in it.
+    #[test]
+    fn the_edge_band_limits_the_voxel_brush_to_its_values() {
+        let dims = [12, 12, 3];
+        // Left half bone, right half soft tissue.
+        let data: Vec<i16> = (0..dims[0] * dims[1] * dims[2])
+            .map(|n| if n % dims[0] < 6 { 700 } else { 40 })
+            .collect();
+        let vol = Volume {
+            data,
+            dims,
+            spacing: [1.0, 1.0, 1.0],
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            frame_of_reference_uid: String::new(),
+            min_value: 0,
+            max_value: 1000,
+        };
+        let c = [5.5, 5.5, 1.0];
+        let mut all = Segmentation::new("a".into(), [0; 3], dims);
+        all.paint_capsule(&vol, c, c, 3.0, false, Some((ViewPlane::Axial, 1)));
+        let mut bone = Segmentation::new("b".into(), [0; 3], dims);
+        bone.paint_capsule_within(
+            &vol,
+            c,
+            c,
+            3.0,
+            false,
+            Some((ViewPlane::Axial, 1)),
+            Some((200.0, f32::MAX)),
+        );
+        assert!(bone.count > 0 && bone.count < all.count);
+        for (i, &m) in bone.mask.iter().enumerate() {
+            if m != 0 {
+                assert!(i % dims[0] < 6, "voxel {i} is not bone");
+                assert_eq!(all.mask[i], 1, "and it is inside the brush");
+            }
+        }
+    }
+
+    /// A nudge pushes the edge of a mask the way it pushes a contour, and
+    /// many small pushes add up: the outline is kept across the stroke, so
+    /// a sub-voxel step is not rounded away.
+    #[test]
+    fn a_nudge_pushes_the_mask_edge_in_small_steps() {
+        let (w, h) = (30usize, 20usize);
+        let mut s = vec![0u8; w * h];
+        ring_into_slice(&mut s, w, h, &square(4.5, 4.5, 10.0), false); // 5..=14
+        let n0 = set_count(&s);
+        let mut nudge = OutlineNudge::new(&s, w, h).expect("an outline");
+        // Twenty pushes of a fifth of a voxel at the right edge (x = 14.5).
+        let mut now = s.clone();
+        for k in 0..20 {
+            let from = [14.5 + 0.2 * k as f64, 9.5];
+            let to = [from[0] + 0.2, 9.5];
+            if let Some(next) = nudge.push(from, to, 4.0, [1.0, 1.0]) {
+                now = next;
+            }
+        }
+        assert!(set_count(&now) > n0 + 6, "{} against {n0}", set_count(&now));
+        assert_eq!(now[9 * w + 17], 1, "the edge moved right");
+        // Far from the pointer nothing changed.
+        for j in 0..h {
+            for i in 0..12 {
+                assert_eq!(now[j * w + i], s[j * w + i], "cell ({i}, {j})");
+            }
+        }
+        assert!(OutlineNudge::new(&vec![0u8; w * h], w, h).is_none());
     }
 }

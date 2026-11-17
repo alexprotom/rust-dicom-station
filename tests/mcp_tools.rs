@@ -156,6 +156,30 @@ fn the_heart_sequence_runs_on_the_phantom() {
     let d2 = call(c, "open_dataset", json!({"path": folder}));
     assert_eq!(d2["dataset"], "ds2");
 
+    // The posture model between the two (the same scan twice: the path is
+    // the identity, every structure lands on itself), its files written.
+    let pm = call(
+        c,
+        "build_posture_model",
+        json!({"datasets": ["ds1", "ds2"], "anchor": "BODY", "lattice_mm": 12.0,
+               "analysis_mm": 4.0, "write": true}),
+    );
+    let target = pm["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["structure"] == "TARGET")
+        .unwrap_or_else(|| panic!("{pm}"));
+    assert!(
+        target["model_check"]["dice"].as_f64().unwrap() > 0.9,
+        "{pm}"
+    );
+    assert_eq!(pm["model"]["mode"], "diffeomorphic");
+    assert_eq!(pm["bodies"][0]["body"], "BODY");
+    assert_eq!(pm["files"].as_array().unwrap().len(), 3, "{pm}");
+    let e = fail(c, "build_posture_model", json!({"datasets": ["ds1"]}));
+    assert!(e.contains("at least two"), "{e}");
+
     // 2. The "heart" stands in for by the body outline here.
     let body = call(
         c,

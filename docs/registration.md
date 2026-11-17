@@ -399,8 +399,11 @@ MPR views of the fixed workspace and, optionally, in the 3D pane:
   magnitude; out-of-plane displacement becomes a disc sized by that component.
 * **Deformed grid** - the sampling lattice pushed through the deformation:
   warped graph paper, showing compression and expansion.
-* Lattice spacing, arrow scale and colouring are adjustable; changing the
-  spacing re-samples on a worker thread.
+* *Arrow spacing* (the lattice too), arrow scale and colouring are
+  adjustable; changing the spacing re-samples on a worker thread. The
+  spacing is kept in the settings and is also under *Settings ▸ Viewer*;
+  closer arrows are drawn shorter in proportion (the arrow scale holds at
+  12 mm), see [viewer.md](viewer.md#what-is-drawn-over-the-views).
 * **Deformation only** draws what the B-spline adds on top of the rigid
   alignment instead of the whole displacement. Between two frames of
   reference - a cardiac CT onto a 4DCT phase - the rigid part moves every

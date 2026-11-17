@@ -30,6 +30,8 @@ pub(super) enum ChartSource {
     /// The charts of one finished motion run, by its index in
     /// `motion_reports`.
     Motion(usize),
+    /// The curves of the posture window's table row (`posture_table.rs`).
+    Posture,
 }
 
 impl ChartSource {
@@ -37,6 +39,7 @@ impl ChartSource {
         match self {
             ChartSource::Dvh => "Dose-volume histograms",
             ChartSource::Motion(_) => "Structure motion",
+            ChartSource::Posture => "Posture model",
         }
     }
 
@@ -44,6 +47,7 @@ impl ChartSource {
         match self {
             ChartSource::Dvh => "dvh.png",
             ChartSource::Motion(_) => "motion.png",
+            ChartSource::Posture => "posture.png",
         }
     }
 }
@@ -56,6 +60,7 @@ impl ViewerApp {
         let live = match src {
             ChartSource::Dvh => self.dvh.is_some(),
             ChartSource::Motion(i) => i < self.motion_reports.len(),
+            ChartSource::Posture => self.posture.built.is_some() && self.posture.chart.is_some(),
         };
         live.then_some(src)
     }
@@ -103,6 +108,7 @@ impl ViewerApp {
                 .get(i)
                 .map(|r| r.run_name.clone())
                 .unwrap_or_default(),
+            ChartSource::Posture => self.posture_chart_subtitle(),
         };
 
         // ---- the bar: as every pane has, plus *Save image* ----
@@ -184,6 +190,7 @@ impl ViewerApp {
         match src {
             ChartSource::Dvh => self.dvh_chart(&mut child, body),
             ChartSource::Motion(i) => self.motion_chart(&mut child, slot, i, body),
+            ChartSource::Posture => self.posture_chart(&mut child, body),
         }
 
         // ---- apply ----
@@ -206,6 +213,9 @@ impl ViewerApp {
             self.save_rect_image(rect, ppp, src.file_name());
         }
         if close_resp.clicked() {
+            if src == ChartSource::Posture {
+                self.posture.chart = None;
+            }
             self.chart[slot] = None;
             self.remove_from_row(slot, kind);
         }

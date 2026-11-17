@@ -39,6 +39,8 @@ pub(super) enum PlayTarget {
     /// structure walks back through the moves it was given, and the table
     /// follows it.
     DoseLog { slot: usize },
+    /// The key frames of the posture model, in its window's workspace.
+    Model { slot: usize },
 }
 
 impl PlayTarget {
@@ -46,7 +48,8 @@ impl PlayTarget {
         match self {
             PlayTarget::Slices { slot, .. }
             | PlayTarget::Phases { slot }
-            | PlayTarget::DoseLog { slot } => slot,
+            | PlayTarget::DoseLog { slot }
+            | PlayTarget::Model { slot } => slot,
         }
     }
 }
@@ -408,6 +411,7 @@ impl ViewerApp {
             PlayTarget::DoseLog { slot } => {
                 self.dose_est.slot == slot && self.dose_est.dynamic && self.dose_est.log.len() > 1
             }
+            PlayTarget::Model { slot } => self.posture_owns(slot) && self.posture_times().len() > 1,
         };
         if !alive {
             self.stop_play();
@@ -442,14 +446,23 @@ impl ViewerApp {
         // a run that advanced in between would be a frame the recording
         // never saw: the file would skip. Playing is a little slower while
         // recording, and the recording is complete.
-        if self.rec.as_ref().is_some_and(|r| r.pending) {
+        if self.rec.as_ref().is_some_and(|r| r.pending)
+            || self.posture.rec.as_ref().is_some_and(|r| r.pending)
+        {
             ctx.request_repaint();
+            return;
+        }
+        // A model run on live slices waits for each step to land, so every
+        // step is seen (and filmed) rather than skipped.
+        if matches!(run.target, PlayTarget::Model { .. }) && self.posture_step_pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(15));
             return;
         }
         let fps = match run.target {
             PlayTarget::Slices { .. } => self.play.slice_fps,
             PlayTarget::Phases { .. } => self.play.phase_fps,
             PlayTarget::DoseLog { .. } => self.play.log_fps,
+            PlayTarget::Model { .. } => self.posture.fps,
         };
         let period = 1.0 / f64::from(fps.clamp(0.25, 60.0));
         let now = ctx.input(|i| i.time);
@@ -507,6 +520,8 @@ impl ViewerApp {
                     None => None,
                 }
             }
+            // One key frame at a time, on the module's end mode.
+            PlayTarget::Model { .. } => self.posture_play_step(run.dir, mode, now),
         };
         match next {
             Some(dir) => {
@@ -1294,6 +1309,7 @@ mod tests {
         assert_eq!(PlayTarget::Slices { slot: 1, view: 2 }.slot(), 1);
         assert_eq!(PlayTarget::Phases { slot: 1 }.slot(), 1);
         assert_eq!(PlayTarget::DoseLog { slot: 1 }.slot(), 1);
+        assert_eq!(PlayTarget::Model { slot: 2 }.slot(), 2);
         // And two runs on different workspaces are different runs.
         assert_ne!(
             PlayTarget::DoseLog { slot: 0 },

@@ -874,6 +874,306 @@ fn ap_radiograph(p: &GenParams) -> Vec<u16> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// The articulated phantom (posture model)
+// ---------------------------------------------------------------------------
+
+/// The articulated phantom of the posture model's tests: two rigid "bones"
+/// joined at a hinge inside soft tissue, an organ that changes volume, and
+/// a second state made by a known hinge angle - everything analytic, so
+/// the joint angle, the bones' screws and the organ's volume change are
+/// known exactly.
+///
+/// In its own canonical frame the phantom is a limb along SI: an upper and
+/// a lower segment of soft tissue (40 HU, capsules of radius
+/// [`ART_BODY_R`] mm) around an upper and a lower bone (800 HU, boxes of
+/// 24 x 14 mm in cross-section from 12 to 90 mm from the hinge, each with
+/// a knob and a side process so neither has a symmetry a surface fit could
+/// confuse), a hinge at the origin turning about the RL axis, and an organ
+/// (10 HU, a sphere) beside the upper bone. State B has the lower segment
+/// turned by `angle_deg` about the hinge, the organ grown to its second
+/// radius, and the whole of it placed in its scanner by the placement, so
+/// the two scans do not share a frame and the anchor (the upper bone) has
+/// something to do.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArticulatedParams {
+    /// Flexion of the lower segment about RL, degrees.
+    pub angle_deg: f64,
+    /// Organ radius on each state, mm.
+    pub organ_r: [f64; 2],
+    /// Where state B's scanner sees the phantom: rotation (deg, `Rz Ry Rx`
+    /// about the origin) and translation (mm).
+    pub placement_deg: [f64; 3],
+    pub placement_mm: [f64; 3],
+    /// Voxel size, mm.
+    pub spacing: f64,
+}
+
+impl Default for ArticulatedParams {
+    fn default() -> Self {
+        ArticulatedParams {
+            angle_deg: 40.0,
+            organ_r: [12.0, 14.0],
+            placement_deg: [0.0, 0.0, 6.0],
+            placement_mm: [6.0, -4.0, 9.0],
+            spacing: 2.0,
+        }
+    }
+}
+
+/// Body capsule radius of the articulated phantom, mm.
+pub const ART_BODY_R: f64 = 40.0;
+/// Organ centre of the articulated phantom (canonical frame), mm.
+pub const ART_ORGAN: [f64; 3] = [-27.0, 0.0, 55.0];
+
+impl ArticulatedParams {
+    /// The hinge: lower segment, canonical frame, state A to state B.
+    pub fn hinge(&self) -> crate::registration::RigidTransform {
+        crate::registration::RigidTransform::new(
+            [self.angle_deg.to_radians(), 0.0, 0.0, 0.0, 0.0, 0.0],
+            crate::geometry::Vec3::ZERO,
+        )
+    }
+
+    /// State B's placement in its scanner: canonical frame to B's patient
+    /// coordinates. State A's is the identity.
+    pub fn placement(&self) -> crate::registration::RigidTransform {
+        let r = self.placement_deg;
+        let t = self.placement_mm;
+        crate::registration::RigidTransform::new(
+            [
+                r[0].to_radians(),
+                r[1].to_radians(),
+                r[2].to_radians(),
+                t[0],
+                t[1],
+                t[2],
+            ],
+            crate::geometry::Vec3::ZERO,
+        )
+    }
+
+    /// The organ's volume on each state, cm3.
+    pub fn organ_cm3(&self) -> [f64; 2] {
+        self.organ_r
+            .map(|r| 4.0 / 3.0 * std::f64::consts::PI * r * r * r / 1000.0)
+    }
+}
+
+/// What a canonical-frame point of one segment is: 0 air, 1 tissue, 2 bone,
+/// 3 organ (the organ only beside the upper bone). `lower` says which
+/// segment; the segment's axis is +z for the upper, -z for the lower.
+fn art_material(p: crate::geometry::Vec3, lower: bool, organ_r: f64) -> u8 {
+    let s = if lower { -p.z } else { p.z };
+    let (x, y) = (p.x, p.y);
+    if s < -2.0 {
+        // The other side of the hinge plane.
+        return 0;
+    }
+    if !lower {
+        let o = crate::geometry::Vec3::new(ART_ORGAN[0], ART_ORGAN[1], ART_ORGAN[2]);
+        if (p - o).length() <= organ_r {
+            return 3;
+        }
+    }
+    // The bone: a box, and a knob on its +x side near the far end.
+    let in_box = (12.0..=90.0).contains(&s) && x.abs() <= 12.0 && y.abs() <= 7.0;
+    let knob = (x - 15.0).powi(2) + y * y + (s - 72.0).powi(2) <= 49.0;
+    // A side process, as a vertebra's transverse process: what pins the
+    // bone's roll about its own long axis, which the box alone leaves to a
+    // fraction of a voxel at its corners.
+    let fin = (12.0..=32.0).contains(&x) && y.abs() <= 3.0 && (35.0..=55.0).contains(&s);
+    if in_box || knob || fin {
+        return 2;
+    }
+    // The soft tissue: a capsule from the hinge to 110 mm along the axis.
+    let along = s.clamp(0.0, 110.0);
+    let r2 = x * x + y * y + (s - along) * (s - along);
+    if r2 <= ART_BODY_R * ART_BODY_R {
+        return 1;
+    }
+    0
+}
+
+/// What a canonical-frame point of state `b` (0 for A, 1 for B) is: the
+/// material codes of [`art_material`], the lower bone as 5.
+fn art_point(p: crate::geometry::Vec3, params: &ArticulatedParams, b: usize) -> u8 {
+    let up = art_material(p, false, params.organ_r[b]);
+    let lp = if b == 0 { p } else { params.hinge().unmap(p) };
+    let low = match art_material(lp, true, params.organ_r[b]) {
+        2 => 5,
+        m => m,
+    };
+    // Bone and organ over tissue over air; the two bones never meet.
+    let rank = |m: u8| match m {
+        0 => 0,
+        1 => 1,
+        _ => 2,
+    };
+    if rank(low) > rank(up) {
+        low
+    } else {
+        up
+    }
+}
+
+/// The two states of the articulated phantom, in memory.
+pub fn articulated_pair(params: &ArticulatedParams) -> [crate::loader::LoadedStudy; 2] {
+    use crate::geometry::Vec3;
+    use crate::loader::{LoadedStudy, PatientMeta, SeriesInfo};
+    use crate::rtstruct::StructureSet;
+    use crate::segmentation::{mask_to_roi, Segmentation};
+    use crate::volume::Volume;
+    use rayon::prelude::*;
+    use std::sync::Arc;
+
+    let sp = params.spacing.max(1.0);
+    let dims = [
+        (240.0 / sp).round() as usize,
+        (240.0 / sp).round() as usize,
+        (290.0 / sp).round() as usize,
+    ];
+    // Off the round numbers by a fraction of a voxel, so no face of the
+    // phantom lies exactly on a row of voxel centres: on state A it would,
+    // on the turned state B it would not, and the two would count a voxel
+    // row more or less of the same bone.
+    let origin = Vec3::new(
+        -(dims[0] as f64 - 1.0) * sp * 0.5 + 0.37,
+        -(dims[1] as f64 - 1.0) * sp * 0.5 + 0.41,
+        -(dims[2] as f64 - 1.0) * sp * 0.5 + 0.29,
+    );
+    let n = dims[0] * dims[1] * dims[2];
+    let study_uid = new_uid();
+    let (date, _) = today();
+    let names = ["BODY", "BONE_UPPER", "BONE_LOWER", "ORGAN"];
+    let colors = [[0, 200, 0], [230, 230, 200], [200, 180, 140], [220, 60, 60]];
+    std::array::from_fn(|b| {
+        let place = if b == 0 {
+            crate::registration::RigidTransform::identity(Vec3::ZERO)
+        } else {
+            params.placement()
+        };
+        let for_uid = new_uid();
+        // Material per voxel, read in the canonical frame.
+        let labels: Vec<u8> = (0..n)
+            .into_par_iter()
+            .map(|v| {
+                let (i, j, k) = (
+                    v % dims[0],
+                    (v / dims[0]) % dims[1],
+                    v / (dims[0] * dims[1]),
+                );
+                let q = origin + Vec3::new(i as f64 * sp, j as f64 * sp, k as f64 * sp);
+                art_point(place.unmap(q), params, b)
+            })
+            .collect();
+        let hu = |m: u8| -> i16 {
+            match m {
+                0 => -1000,
+                1 => 40,
+                2 | 5 => 800,
+                3 => 10,
+                _ => 0,
+            }
+        };
+        let volume = Volume {
+            data: labels.iter().map(|&m| hu(m)).collect(),
+            dims,
+            spacing: [sp; 3],
+            origin,
+            row_dir: Vec3::new(1.0, 0.0, 0.0),
+            col_dir: Vec3::new(0.0, 1.0, 0.0),
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            frame_of_reference_uid: for_uid.clone(),
+            min_value: -1000,
+            max_value: 800,
+        };
+        let grid = volume.grid();
+        let masks: [Vec<u8>; 4] = [
+            labels.iter().map(|&m| (m != 0) as u8).collect(),
+            labels.iter().map(|&m| (m == 2) as u8).collect(),
+            labels.iter().map(|&m| (m == 5) as u8).collect(),
+            labels.iter().map(|&m| (m == 3) as u8).collect(),
+        ];
+        let series_uid = new_uid();
+        let rois = masks
+            .into_iter()
+            .enumerate()
+            .map(|(r, m)| {
+                let seg = Segmentation::from_mask(names[r].into(), colors[r], dims, m);
+                let mut roi = mask_to_roi(&seg, &grid, r as i32 + 1);
+                roi.roi_type = if r == 0 { "EXTERNAL" } else { "ORGAN" }.into();
+                roi
+            })
+            .collect();
+        let label = if b == 0 { "lying (A)" } else { "flexed (B)" };
+        LoadedStudy {
+            meta: PatientMeta {
+                patient_name: "PHANTOM^POSTURE".into(),
+                patient_id: "POSTURE001".into(),
+                study_date: date.clone(),
+                study_description: "Articulated posture phantom".into(),
+                study_id: "1".into(),
+            },
+            series: vec![SeriesInfo {
+                uid: series_uid.clone(),
+                modality: "CT".into(),
+                description: format!("Articulated phantom, {label}"),
+                patient_id: "POSTURE001".into(),
+                patient_name: "PHANTOM^POSTURE".into(),
+                study_uid: study_uid.clone(),
+                study_date: date.clone(),
+                study_description: "Articulated posture phantom".into(),
+                study_id: "1".into(),
+                series_number: Some(b as i64 + 1),
+                temporal_id: None,
+                suv_bw: None,
+                frame_of_reference_uid: for_uid.clone(),
+                series_datetime: String::new(),
+                files: Vec::new(),
+                fourd_head: None,
+                z_range: None,
+            }],
+            active_series: 0,
+            volume: Arc::new(volume),
+            structure_sets: vec![StructureSet {
+                label: format!("Phantom {label}"),
+                frame_of_reference_uid: for_uid,
+                sop_instance_uid: new_uid(),
+                series_instance_uid: new_uid(),
+                study_uid: study_uid.clone(),
+                referenced_series_uid: series_uid,
+                file_name: String::new(),
+                locked: false,
+                rois,
+            }],
+            default_window: (40.0, 400.0),
+            ..LoadedStudy::default()
+        }
+    })
+}
+
+/// Write the articulated phantom's two states as DICOM (CT series and
+/// structure set each) into `dir/state_a` and `dir/state_b`; returns the
+/// two folders.
+pub fn generate_articulated(
+    dir: &Path,
+    params: &ArticulatedParams,
+    progress: &Progress,
+) -> Result<[PathBuf; 2]> {
+    let pair = articulated_pair(params);
+    let out = [dir.join("state_a"), dir.join("state_b")];
+    for (study, folder) in pair.iter().zip(&out) {
+        if folder.exists() {
+            std::fs::remove_dir_all(folder)
+                .with_context(|| format!("empty {}", folder.display()))?;
+        }
+        let ep = crate::dicom_export::ExportParams::for_study(study);
+        crate::dicom_export::export_study(study, folder, &ep, progress)?;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

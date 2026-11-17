@@ -2389,6 +2389,8 @@ fn write_seg(
         image_series_uid: &image.series_uid,
         image_sop_uids: &sop_uids,
         params: ctx.params,
+        series_uid: "",
+        series_description: "",
     };
     let mut o = dicomseg::build(ser, &seg_ctx);
     dicom_export::apply(&mut o, ident);
