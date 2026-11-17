@@ -855,6 +855,7 @@ fn the_path_is_written_as_a_gif_that_decodes_back() {
                 &imgs,
                 None,
                 pair[0].structure_sets.first(),
+                None,
                 &fp,
                 &Progress::default(),
             )
@@ -863,7 +864,8 @@ fn the_path_is_written_as_a_gif_that_decodes_back() {
         let s = write();
         let times = film::film_times(o.model.span(), frames, bounce).len();
         assert_eq!(s.frames, times);
-        assert_eq!([s.width, s.height], film::film_size(grid, &fp));
+        assert_eq!([s.width, s.height], film::film_size(grid, &fp, false));
+        assert!(!s.scene, "no scene was given");
         assert_eq!(s.width, width, "the width asked for");
         assert!(!s.gpu, "no slicer was given");
 
@@ -896,4 +898,187 @@ fn the_path_is_written_as_a_gif_that_decodes_back() {
         write();
         assert_eq!(bytes, std::fs::read(&path).unwrap(), "made twice, the same");
     }
+}
+
+/// *Save GIF* with the rest of the window (`posture::film`): all views with
+/// the 3D scene under the planes and the displacement arrows over them;
+/// the sagittal plane alone with the deformed grid; the 3D scene alone.
+/// Each has one frame per time and the size its layout gives; the arrows
+/// are drawn in colour where the tissue has moved and nowhere at the first
+/// state, where nothing has; the scene shows the surfaces and moves with
+/// the hinge; the same film twice is the same file.
+#[test]
+fn the_gif_carries_the_scene_the_field_and_any_one_view() {
+    use image::codecs::gif::GifDecoder;
+    use image::{AnimationDecoder, RgbaImage};
+    use rust_dicom_station::posture::film::{self, FieldOverlay, FilmParams, FilmScene, FilmViews};
+    use rust_dicom_station::registration::dvf::FieldStyle;
+    use rust_dicom_station::volume::ViewPlane;
+
+    let pair = gen_test_data::articulated_pair(&ArticulatedParams::default());
+    let o = run(&pair, Mode::Diffeomorphic);
+    let imgs: Vec<Arc<_>> = pair.iter().map(|s| s.volume.clone()).collect();
+    let dir = common::target_dir("test-posture-gif-more");
+    let grid = &o.model.grid;
+    let set = pair[0]
+        .structure_sets
+        .first()
+        .expect("the phantom's structures");
+    let meshes = rust_dicom_station::mesh3d::build_meshes(set, &Progress::default());
+    assert!(!meshes.is_empty(), "the phantom's structures have surfaces");
+    let scene = FilmScene::new(Arc::new(meshes));
+    let decode = |path: &std::path::Path| -> Vec<RgbaImage> {
+        let file = std::io::BufReader::new(std::fs::File::open(path).unwrap());
+        GifDecoder::new(file)
+            .expect("a GIF")
+            .into_frames()
+            .collect_frames()
+            .expect("its frames")
+            .into_iter()
+            .map(|f| f.into_buffer())
+            .collect()
+    };
+    let write = |name: &str, fp: &FilmParams, with_scene: bool| {
+        let path = dir.join(name);
+        let s = film::write_gif(
+            &path,
+            &o.model,
+            &imgs,
+            None,
+            Some(set),
+            with_scene.then_some(&scene),
+            fp,
+            &Progress::default(),
+        )
+        .expect("the GIF is written");
+        (path, s)
+    };
+    let colored = |p: &image::Rgba<u8>| p[0] != p[1] || p[1] != p[2];
+
+    // All views, the scene under the planes, the arrows over them.
+    let mut fp = FilmParams::centred(grid, apply::Show::StartForward, pair[0].default_window);
+    fp.frames = 4;
+    fp.width = 300;
+    fp.cell_aspect = Some(1.2);
+    fp.scene_aspect = Some(3.0);
+    fp.field = Some(FieldOverlay {
+        spacing_mm: 6.0,
+        ..FieldOverlay::default()
+    });
+    let (path, s) = write("all_arrows.gif", &fp, true);
+    assert!(s.scene, "the scene is in the film");
+    assert_eq!(s.frames, 4);
+    assert_eq!([s.width, s.height], film::film_size(grid, &fp, true));
+    let planes_h = film::film_size(grid, &fp, false)[1];
+    assert_eq!(
+        s.height,
+        planes_h + 2 + 100,
+        "the scene's row: 300 / 3.0 under a gap"
+    );
+    let with = decode(&path);
+    assert_eq!(with.len(), 4);
+    assert!(with
+        .iter()
+        .all(|f| f.dimensions() == (s.width as u32, s.height as u32)));
+    // The scene's row has the surfaces, in colour, and they move.
+    let scene_px = |f: &RgbaImage| -> Vec<[u8; 4]> {
+        (planes_h as u32 + 2..f.height())
+            .flat_map(|y| (0..f.width()).map(move |x| (x, y)))
+            .map(|(x, y)| f.get_pixel(x, y).0)
+            .collect()
+    };
+    let lit = scene_px(&with[0])
+        .iter()
+        .filter(|p| p[..3] != [0, 0, 0])
+        .count();
+    assert!(lit > 200, "{lit} pixels of surface in the scene");
+    assert_ne!(
+        scene_px(&with[0]),
+        scene_px(&with[3]),
+        "the hinge turns in 3D"
+    );
+    // The arrows: the coloured pixels over the planes that the same film
+    // without them does not have (the two palettes hold different greys,
+    // so the greys are not compared).
+    let mut bare = fp.clone();
+    bare.field = None;
+    let (bare_path, _) = write("all_bare.gif", &bare, true);
+    let without = decode(&bare_path);
+    let colored_on_planes = |f: &RgbaImage| {
+        f.rows()
+            .take(planes_h)
+            .flatten()
+            .filter(|p| colored(p))
+            .count()
+    };
+    assert_eq!(
+        colored_on_planes(&with[0]),
+        colored_on_planes(&without[0]),
+        "no arrow at the first state: nothing has moved"
+    );
+    let arrows = colored_on_planes(&with[3]) as i64 - colored_on_planes(&without[3]) as i64;
+    assert!(arrows > 50, "{arrows} arrow pixels at the end");
+    let bytes = std::fs::read(&path).unwrap();
+    write("all_arrows.gif", &fp, true);
+    assert_eq!(bytes, std::fs::read(&path).unwrap(), "made twice, the same");
+
+    // The sagittal plane alone, the deformed grid over it: the plane's own
+    // shape at the width asked for, and no scene even when one is given.
+    let mut fp = FilmParams::centred(grid, apply::Show::CrossFade, pair[0].default_window);
+    fp.views = FilmViews::One(ViewPlane::Sagittal);
+    fp.frames = 3;
+    fp.width = 160;
+    fp.field = Some(FieldOverlay {
+        style: FieldStyle::Grid,
+        ..FieldOverlay::default()
+    });
+    let (path, s) = write("sagittal_grid.gif", &fp, true);
+    assert!(!s.scene);
+    let tall = (160.0 * grid.dims[2] as f64 * grid.spacing[2]
+        / (grid.dims[1] as f64 * grid.spacing[1]))
+        .round() as usize;
+    assert_eq!([s.width, s.height], [160, tall.clamp(16, 4096)]);
+    assert_eq!([s.width, s.height], film::film_size(grid, &fp, true));
+    let frames = decode(&path);
+    assert_eq!(frames.len(), 3);
+    let mut bare = fp.clone();
+    bare.field = None;
+    let (bare_path, _) = write("sagittal_bare.gif", &bare, true);
+    let count = |f: &RgbaImage| f.pixels().filter(|p| colored(p)).count();
+    assert!(
+        count(&frames[2]) > count(&decode(&bare_path)[2]),
+        "the grid's lines in colour"
+    );
+
+    // The 3D scene alone.
+    let mut fp = FilmParams::centred(grid, apply::Show::StartForward, pair[0].default_window);
+    fp.views = FilmViews::Scene;
+    fp.frames = 3;
+    fp.bounce = true;
+    fp.width = 200;
+    fp.scene_aspect = Some(2.0);
+    let (path, s) = write("scene.gif", &fp, true);
+    assert!(s.scene);
+    assert_eq!([s.width, s.height], [200, 100]);
+    let frames = decode(&path);
+    assert_eq!(frames.len(), 4, "there and back: 0, 1/2, 1, 1/2");
+    assert_ne!(frames[0].as_raw(), frames[2].as_raw(), "the hinge turns");
+    assert_eq!(
+        frames[1].as_raw(),
+        frames[3].as_raw(),
+        "half way, both ways"
+    );
+    // Without a scene there is nothing to film.
+    let none = film::write_gif(
+        &dir.join("no_scene.gif"),
+        &o.model,
+        &imgs,
+        None,
+        Some(set),
+        None,
+        &fp,
+        &Progress::default(),
+    );
+    assert!(none.is_err(), "a 3D film with no surfaces");
+    assert!(!dir.join("no_scene.gif").exists(), "and no file left");
 }

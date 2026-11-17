@@ -987,15 +987,13 @@ impl ViewerApp {
                 .or_else(|| self.registration.as_ref().map(|r| r.field.max_mag as f32))
                 .unwrap_or(1.0)
                 .max(1e-6);
-            let scale = self.field_scale;
+            // The length follows the spacing (`dvf::arrow_length_factor`):
+            // closer arrows are drawn shorter in proportion.
+            let scale = dvf::arrow_length_factor(self.field_scale, self.field_spacing(slot));
             let colored = self.field_color;
             let color_of = |mag: f32| -> Color32 {
-                if colored {
-                    let c = render::dose_colormap((mag / max).clamp(0.0, 1.0));
-                    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 235)
-                } else {
-                    Color32::from_rgba_unmultiplied(255, 235, 130, 215)
-                }
+                let c = dvf::arrow_rgba(mag, max, colored);
+                Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
             };
             for g in &view.field_arrows {
                 let a = px_to_screen(g.from);
@@ -1006,28 +1004,27 @@ impl ViewerApp {
                 let col = color_of(g.magnitude);
                 let d = tip - a;
                 let len = d.length();
-                if len < 1.5 {
+                if len < dvf::ARROW_MIN_LEN {
                     // Almost all of this displacement leaves the plane, and a
                     // 2-D arrow cannot say so: draw a disc whose size is the
                     // out-of-plane component instead of a stub nobody can read.
-                    let r = 1.5 + (g.out_of_plane.abs() / max * 3.5).min(3.5);
+                    let r = dvf::arrow_disc_radius(g.out_of_plane, max);
                     painter.circle_filled(a, r, col);
                 } else {
                     let stroke = Stroke::new(1.3, col);
                     painter.line_segment([a, tip], stroke);
                     let n = d / len;
                     let perp = Vec2::new(-n.y, n.x);
-                    let head = (len * 0.32).min(7.0);
-                    painter.line_segment([tip, tip - n * head + perp * head * 0.45], stroke);
-                    painter.line_segment([tip, tip - n * head - perp * head * 0.45], stroke);
+                    let head = (len * dvf::ARROW_HEAD).min(dvf::ARROW_HEAD_MAX);
+                    let wide = head * dvf::ARROW_HEAD_WIDTH;
+                    painter.line_segment([tip, tip - n * head + perp * wide], stroke);
+                    painter.line_segment([tip, tip - n * head - perp * wide], stroke);
                 }
             }
             if !view.field_lines.is_empty() {
-                let col = if colored {
-                    let c = render::dose_colormap(0.55);
-                    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 170)
-                } else {
-                    Color32::from_rgba_unmultiplied(255, 235, 130, 160)
+                let col = {
+                    let c = dvf::grid_rgba(colored);
+                    Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
                 };
                 let stroke = Stroke::new(1.0, col);
                 for line in &view.field_lines {
@@ -2672,6 +2669,23 @@ impl ViewerApp {
         self.refresh_fusion_cache(ctx, slot, idx);
     }
 
+    /// The main viewer's arrow spacing, mm: *Settings ▸ Viewer* and the
+    /// registration's *Vector field* fold, kept in the settings file. A
+    /// registration's field is also sampled on a lattice of this step.
+    pub(super) fn arrow_spacing_mm(&self) -> f64 {
+        self.overlays.arrow_spacing_mm as f64
+    }
+
+    /// The arrow spacing over a workspace's views: the posture window's own
+    /// for its model workspace, the main viewer's everywhere else.
+    pub(super) fn field_spacing(&self, slot: usize) -> f64 {
+        if self.posture_owns(slot) {
+            self.posture.arrow_mm
+        } else {
+            self.arrow_spacing_mm()
+        }
+    }
+
     /// Rebuild the vector-field geometry of one view.
     ///
     /// The field is a lattice of displacements; what a view needs is arrows
@@ -2707,7 +2721,7 @@ impl ViewerApp {
         let Some(vol) = self.slots[slot].study.as_ref().map(|s| s.volume.clone()) else {
             return;
         };
-        let step = self.field_step_mm;
+        let step = self.field_spacing(slot);
         let view = &mut self.slots[slot].views[idx];
         let plane = view.plane;
         let slice = view.slice;

@@ -274,10 +274,10 @@ parameter; a click on the chart moves the slider there.
   ordinary ones.
 - **Bottom bar**: ⏮ ▶/⏸ ⏭, the time slider with a tick at each state, the
   time (and the parameter), frames a second, the end mode (loop, bounce,
-  once: the *Image playback* module's), what is shown, the overlay,
-  *Jacobian wash*, *Dose (display only)* when the first state has a dose,
-  *Live slices* or *Key frames* and the number of steps, the recorder
-  (the selected view, ⏺ / ⏹).
+  once: the *Image playback* module's), what is shown, the overlay and its
+  arrow spacing, *Jacobian wash*, *Dose (display only)* when the first
+  state has a dose, *Live slices* or *Key frames* and the number of steps,
+  the recorder (the selected view, ⏺ / ⏹).
 - **Right**: the exports, *Save GIF* and the table.
 
 **What is shown**: *A moving forward* (the segment's first state carried to
@@ -285,7 +285,12 @@ parameter; a click on the chart moves the slider there.
 its end), *Difference* (A minus B, carried), *Jacobian* (of the path from
 the first state, times 1000, in a window of its own). *Overlay* draws the
 displacement from the first state as arrows or a deformed grid
-(`registration::dvf`). *Jacobian wash* colours the local volume change
+(`registration::dvf`), in the colours and at the arrow scale of the main
+viewer's vector field; the millimetres beside it (*Arrow spacing*, 12 by
+default, 2 to 60) are how far apart the arrows (the grid's lines) are,
+this window's own. Arrows closer together are drawn shorter in
+proportion (`dvf::arrow_length_factor`: the arrow scale holds at 12 mm),
+so a dense field does not pile up and the lengths still compare. *Jacobian wash* colours the local volume change
 since the first state over whatever is shown, read where the tissue now is
 (`apply::jacobian_now`, `apply::wash_plane`): clear within about one per
 cent of no change, blue compressed, red expanded (full colour at half or
@@ -342,21 +347,26 @@ freed.
 | 📤 REG | the whole path, first state to last, as a DICOM Deformable Spatial Registration from the first state's frame into the last state's own coordinates |
 | 📤 Image at t | the image at the slider's time as a derived CT series of the first state's study (on its grid, Image Type DERIVED, the time and the caveat in the series description and derivation) and the first state's structures carried to that time as an RT Structure Set on it, each ROI's description saying it was interpolated |
 | ⏺ | the film of a pane as GIF or PNG frames, one cycle of the run, taken from the screen |
-| Save GIF | the path as an animated GIF rendered from the model: all three planes in one, or the selected view only (below) |
+| Save GIF | the path as an animated GIF rendered from the model: all views (the three planes and the 3D scene) or any one of them, with the vector field if asked (below) |
 
-**Save GIF** (`posture::film`). A menu with two choices: **All views** -
-axial, sagittal and coronal side by side in cells of the panes' shape, as
-the window lays them out - or **Selected view only**: the pane last
-clicked in the window (any button; the selected-view list beside ⏺ shows
-it and can pick it too). The 3D scene is not rendered into a GIF: with it
-selected, only *All views* is offered, and ⏺ films it from the screen.
-Then *Width* (800 px by default; the height follows the panes' shape) and
-*There and back* (the way back added without repeating an end, for a
-smooth loop). *Save...* asks for the file and writes it on a background
-job, with a progress bar and *Cancel* in place of the button (a cancelled
-GIF leaves no file).
+**Save GIF** (`posture::film`). A menu. **View**: *All views* (the
+default) - axial, sagittal and coronal side by side in cells of the panes'
+shape and the 3D scene under them across the whole width, as the window
+lays them out - or *Axial*, *Sagittal*, *Coronal* or *3D* alone. A click
+in a pane (any button), or the selected-view list beside ⏺, picks that
+pane here too; any view can be picked in the menu without one. *3D* is
+greyed out when no structure of the first state has a surface. **Vector
+field**: the displacement over the planes as the views draw it - arrows,
+or the deformed grid while the overlay list says so (arrows when the
+overlay is off) - at the bar's arrow spacing, in the views' colours and
+proportions. Then *Width* (800 px by default; the height follows the
+panes' shape) and *There and back* (the way back added without repeating
+an end, for a smooth loop). *Save...* asks for the file and writes it on a
+background job, with a progress bar and *Cancel* in place of the button (a
+cancelled GIF leaves no file).
 
-Nothing is taken off the screen. The run's times - the bar's number of
+Nothing is taken off the screen: every frame is one exact time of the
+model, rendered for the film. The run's times - the bar's number of
 steps, evenly over the whole path, at the bar's frames a second - are each
 rendered exactly as a live step is (`render_planes_with`: on the inference
 GPU when there is one, else the CPU), on the full grid, at the slices the
@@ -367,17 +377,50 @@ the whole slice, its millimetres square, resampled bilinearly. Over the
 grey: the first state's structures ticked visible as one-pixel outlines in
 their colours, where their tissue is at the time (a pixel is inside when
 the point it came from on the first state, `to_first(y)`, is inside the
-structure's mask there: the same pull the image goes through); and with
-*Jacobian wash* on, the wash. The dose and the displacement overlay are
-not drawn.
+structure's mask there: the same pull the image goes through); with
+*Jacobian wash* on, the wash; with *Vector field*, the field of that time
+(`dvf::glyphs_on_plane` / `deformed_grid_on_plane` on the frame's forward
+displacement, the colour by magnitude over that frame's largest, the
+arrow's length, head and the disc for an arrow leaving the plane as the
+views have them), one pixel wide and opaque, clipped to its cell. The dose
+is not drawn.
 
-One palette for the whole film (the GIF's global table), so no frame is
-quantized and nothing flickers: 192 greys, 32 structure colours (the
-structures' own; past the 32nd distinct colour the nearest), the wash as
-two hues at two strengths over 7 greys each, and magenta for folded
-tissue. `posture_cli --phantom --gif out.gif` writes one without a window
-(`--gif-view`, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`,
-`--wash`).
+**The 3D scene in the film** is drawn by the film, not filmed off the
+screen. The 3D pane is a software renderer already: it turns, shades and
+depth-sorts the meshes on the CPU and hands egui's painter the triangles.
+The film does the same with the same functions (`mesh3d::turn`,
+`headlight`, `scene_scale`, `depth_key`, `EXTERNAL_ALPHA`): the first
+state's meshes carried to the frame's time (`apply::carry_meshes`, as the
+window carries them), the 3D pane's camera (turn, zoom, pan, the sphere it
+fits), its opacity and each structure's tick, colour and opacity, far
+triangles first, each blended over what is behind it with its colours
+interpolated, filled one pixel centre at a time. So a frame is exactly
+its time - no waiting for a repaint, no screenshot - the CLI can film the
+scene, and a film made twice is the same file. What the pane draws over
+the surfaces (the orientation cube, the text, the beams) and egui's
+anti-aliased edges are not in it. The other way - stepping the window
+through the times and cutting each frame out of a screenshot of it - was
+not taken: it would film exactly the screen, but only while the window is
+on screen and drawn, a frame per repaint, and not in the CLI or the
+headless tests; ⏺ remains for filming the screen as it is.
+
+One palette for the whole film (the GIF's global table), no dithering, so
+no frame is quantized on its own and nothing flickers: greys (192; 177
+with the field, 131 with the scene, 113 with both), 32 structure colours
+(the structures' own; past the 32nd distinct colour the nearest), the
+wash as two hues at two strengths over 7 greys each, magenta for folded
+tissue; with the field, the arrows' 16-step ramp of the views' colour map,
+their pale yellow and the grid's colour; with the scene, 64 colours for
+the shaded surfaces, a median cut of the colours the scene shows at up to
+five times of the run (both ends among them), each pixel of the scene
+then the nearest of those and the greys. A palette per frame would fit
+each frame better and change the greys from one frame to the next, which
+reads as flicker on a CT; the surfaces are what needs the colours, and
+they change little along a path. `posture_cli --phantom --gif out.gif`
+writes one without a window, the scene included (`--gif-view
+all|axial|sagittal|coronal|3d`, `--gif-width`, `--gif-frames`, `--fps`,
+`--bounce`, `--wash`, `--gif-field arrows|grid` with `--arrow-spacing`
+and `--arrow-scale`; the scene's camera is a fresh pane's).
 
 ## Code
 
@@ -393,13 +436,13 @@ tissue. `posture_cli --phantom --gif out.gif` writes one without a window
 | `posture/gpu.rs` | the three planes on the inference GPU (WGSL), and the CPU fallback |
 | `posture/measure.rs` | the four tables, the checks, the WEPL along a beam, CSV |
 | `posture/file.rs` | the `.rdsposture` file |
-| `posture/film.rs` | *Save GIF*: the run's times, the layout, the palette, the outlines and the wash, written as an animated GIF |
+| `posture/film.rs` | *Save GIF*: the run's times, the layout, the palette, the outlines, the wash and the field over the planes, the 3D scene drawn as the pane draws it, written as an animated GIF |
 | `crates/rds-domain/src/workflow/posture.rs` | `build`, `reopen`, `export_frame`, `export_registration`, preset joints, `lacking` and `model_for_missing` |
 | `crates/rds-domain/src/gen_test_data.rs` | `articulated_pair` / `generate_articulated`: the articulated phantom |
 | `src/app/posture_win.rs`, `posture_table.rs` | the window, its workspace, playback and recording; the table and chart |
 | `crates/rds-domain/src/mcp/tools/posture.rs` | `build_posture_model` |
 | `crates/rds-domain/src/workflow/graph/nodes/posture.rs` | the *Posture model* step |
-| `examples/posture_cli.rs` | headless: folders (or `--phantom`, or `--simulate` on one CT) in, tables, model file, REG, key frames and the image at a time out; `--wepl GANTRY[,COUCH]`, `--no-smooth`, `--bench-slices N` (live steps timed on the CPU and the GPU, and how far apart they are), `--gif FILE` (the film; `--gif-view`, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`, `--wash`) |
+| `examples/posture_cli.rs` | headless: folders (or `--phantom`, or `--simulate` on one CT) in, tables, model file, REG, key frames and the image at a time out; `--wepl GANTRY[,COUCH]`, `--no-smooth`, `--bench-slices N` (live steps timed on the CPU and the GPU, and how far apart they are), `--gif FILE` (the film; `--gif-view` all, axial, sagittal, coronal or 3d, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`, `--wash`, `--gif-field` arrows or grid, `--arrow-spacing`, `--arrow-scale`) |
 
 ## Verification
 
@@ -435,7 +478,21 @@ tissue. `posture_cli --phantom --gif out.gif` writes one without a window
   model builds, the tables name the bodies and carry the WEPL columns, live
   slices are the default, the wash ticks on, the end reads the hinge's
   angle, playing moves the time, every widget has a name; a state lacking
-  a structure (*liver*) is named and offered the model that makes it.
+  a structure (*liver*) is named and offered the model that makes it;
+  *Save GIF* lists the five views (all views the default, a click in a
+  pane choosing it, any picked from the list) and *Vector field*, and the
+  arrow spacing is on the window's bar and in *Settings ▸ Viewer*.
+- **The film** (`tests/posture.rs`, unit tests in `posture/film.rs`): the
+  GIF decodes back to one frame per time at the size its layout gives -
+  the three planes, the planes with the scene under them, a plane alone,
+  the scene alone; outlines in colour; the arrows only where tissue has
+  moved (none at the first state); the scene's surfaces moving with the
+  hinge; the same file when written again. The scene's renderer draws a
+  surface facing the light in its own colour, an edge-on one at the
+  headlight's floor, the near surface over the far whatever their order,
+  a body translucent over what is inside; the palette makes room for the
+  arrows and the scene from the greys, the arrow ramp is the views' colour
+  map, the median cut keeps the colours it can.
 - **The step and the tool**: `tests/workflow_steps.rs`, `tests/mcp_tools.rs`,
   `tests/mcp_phi.rs` (the tool returns tables and handles only).
 - **Known transforms on real anatomy** (`#[ignore]`d, needs `data-test/` or

@@ -34,6 +34,13 @@
 //! operation does not touch are passed through *untouched*, with their
 //! original vertices. It cannot fail, has no degenerate cases, and handles
 //! holes, multiple components and self-intersecting freehand strokes alike.
+//!
+//! An edit next to a large outline - a brush stamp on a body's edge - goes
+//! through [`Region::boolean_local`] instead, which rasterizes only a window
+//! around what changes, on the same lattice of fine cells, and splices its
+//! trace into the outline outside, which keeps its vertices; where the
+//! splice cannot be made it is the boolean above. The 3-D brush merges its
+//! footprint the same way ([`BallFootprint::merge`]).
 
 use crate::geometry::Vec3;
 use crate::render;
@@ -794,6 +801,19 @@ impl Region {
         raster_boolean(self, other, op, BOOL_SS)
     }
 
+    /// [`Self::boolean`] for an edit: a union, difference or symmetric
+    /// difference with something small next to `self`, which changes
+    /// nothing outside `other`'s box. Only a window around that box is
+    /// rasterized and traced, on the same cells, and spliced into the
+    /// outline outside it, whose vertices are kept as they are (see *Booleans
+    /// within a window* in the source); a stroke of the brush along a body
+    /// outline costs the brush's size, not the body's. Falls back on
+    /// [`Self::boolean`] when the window would not be much smaller, or the
+    /// splice cannot be made.
+    pub fn boolean_local(&self, other: &Region, op: BoolOp) -> Region {
+        window_boolean(self, other, op, BOOL_SS).unwrap_or_else(|| self.boolean(other, op))
+    }
+
     /// Add a ring to the region.
     ///
     /// A ring that crosses nothing and encloses no existing ring is handled
@@ -816,7 +836,7 @@ impl Region {
             }
             return;
         }
-        *self = self.boolean(&Region::from_ring(ring.clone()), BoolOp::Union);
+        *self = self.boolean_local(&Region::from_ring(ring.clone()), BoolOp::Union);
     }
 
     /// Cut a ring out of the region, with the same exact fast paths: a ring
@@ -835,7 +855,7 @@ impl Region {
             }
             return;
         }
-        *self = self.boolean(&Region::from_ring(ring.clone()), BoolOp::Subtract);
+        *self = self.boolean_local(&Region::from_ring(ring.clone()), BoolOp::Subtract);
     }
 
     /// `Some(filled)` when `ring` can be applied by even-odd toggling alone:
@@ -1175,6 +1195,572 @@ fn raster_boolean(a: &Region, b: &Region, op: BoolOp, ss: usize) -> Region {
     }
     out.normalize();
     out
+}
+
+// ---------------------------------------------------------------------------
+// Booleans within a window
+// ---------------------------------------------------------------------------
+//
+// A brush stroke changes a slice only where the brush went, but the raster
+// boolean above re-rasterizes the bounding box of both operands: for a stroke
+// along a body outline that is a few million fine cells per mouse sample,
+// and the whole outline re-traced. The windowed boolean rasterizes only a
+// box around what changes - the same lattice of fine cells, so the cells it
+// fills are the ones the whole raster has there - and splices the trace of
+// that box into the outline outside it, which it keeps vertex for vertex.
+//
+// The splice: the box's cells, traced by marching squares between their
+// centres, give closed loops (wholly inside) and chains that start and end on
+// the rectangle through the outermost centres. The outline as it was gives
+// pieces that leave the rectangle and come back. The cells on the
+// rectangle's border are filled from the outline as it was, so every place
+// where a piece meets the rectangle has a chain end beside it, of the same
+// kind (leaving or entering), in the same order around the rectangle; the
+// two are matched in that order and joined. Whatever does not match - an
+// outline that crosses the rectangle twice between two centres, a vertex
+// grazing it - and any result whose area disagrees with the cells' is
+// refused, and the caller falls back on the whole raster.
+
+/// A box of the fine raster of the booleans: cell `(i, j)` is centred on
+/// `(x0 + (i + 0.5) step, y0 + (j + 0.5) step)`, with `x0`, `y0` whole
+/// numbers, so every window of every boolean, and [`raster_boolean`]'s own
+/// box, sit on one lattice of cells.
+#[derive(Clone, Copy, Debug)]
+struct Window {
+    x0: f64,
+    y0: f64,
+    w: usize,
+    h: usize,
+    step: f64,
+}
+
+/// A point of a window's trace, in half cells from its first centre: centre
+/// `(i, j)` is `(2i, 2j)`, the midpoint between two neighbours odd in one.
+type Key = (i64, i64);
+
+impl Window {
+    /// The cells over the box `b` (`[x0, y0, x1, y1]`, in-plane voxel
+    /// coordinates) widened by `margin` voxels, at `ss` cells per voxel.
+    /// `None` for an empty or non-finite box, or one past `max_cells`.
+    fn around(b: [f64; 4], margin: f64, ss: usize, max_cells: usize) -> Option<Window> {
+        if b.iter().any(|v| !v.is_finite()) || b[2] < b[0] || b[3] < b[1] {
+            return None;
+        }
+        let (x0, y0) = ((b[0] - margin).floor(), (b[1] - margin).floor());
+        let (x1, y1) = ((b[2] + margin).ceil(), (b[3] + margin).ceil());
+        let w = ((x1 - x0) as usize) * ss;
+        let h = ((y1 - y0) as usize) * ss;
+        (w >= 4 && h >= 4 && w.saturating_mul(h) <= max_cells).then_some(Window {
+            x0,
+            y0,
+            w,
+            h,
+            step: 1.0 / ss as f64,
+        })
+    }
+
+    /// In-plane coordinates of a trace point.
+    fn at(&self, k: Key) -> Pt {
+        [
+            self.x0 + (k.0 as f64 + 1.0) * 0.5 * self.step,
+            self.y0 + (k.1 as f64 + 1.0) * 0.5 * self.step,
+        ]
+    }
+
+    /// The rectangle through the outermost cell centres.
+    fn rect(&self) -> [f64; 4] {
+        let a = self.at((0, 0));
+        let b = self.at((2 * (self.w as i64 - 1), 2 * (self.h as i64 - 1)));
+        [a[0], a[1], b[0], b[1]]
+    }
+
+    /// The box in voxel coordinates, `[x0, y0, x1, y1]`.
+    fn bounds(&self) -> [f64; 4] {
+        [
+            self.x0,
+            self.y0,
+            self.x0 + self.w as f64 * self.step,
+            self.y0 + self.h as f64 * self.step,
+        ]
+    }
+
+    /// The cells whose centre `region` covers, by the even-odd fill every
+    /// raster here uses. Only the rings that reach the box take part: a ring
+    /// wholly to one side adds its crossings in pairs, which changes no
+    /// cell's parity.
+    fn fill(&self, region: &Region) -> Vec<bool> {
+        let b = self.bounds();
+        let near = Region {
+            rings: region
+                .rings
+                .iter()
+                .filter(|r| {
+                    let rb = r.bbox();
+                    !(rb[2] < b[0] || rb[0] > b[2] || rb[3] < b[1] || rb[1] > b[3])
+                })
+                .cloned()
+                .collect(),
+        };
+        let mut out = vec![false; self.w * self.h];
+        fill_region(&near, self.x0, self.y0, self.w, self.h, self.step, &mut out);
+        out
+    }
+}
+
+/// The directed outline of a window's cells: marching squares between the
+/// centres, filled cells on the left of every segment (as an outer ring
+/// wound counter-clockwise has its inside), saddles split as
+/// [`render::marching_squares`] splits them on a binary field (diagonal
+/// neighbours apart). Chains run from the window's border to its border;
+/// loops close inside it. `None` if the segments do not link up, which a
+/// binary field never does.
+#[allow(clippy::type_complexity)]
+fn trace_window(cells: &[bool], w: usize, h: usize) -> Option<(Vec<Vec<Key>>, Vec<Vec<Key>>)> {
+    use std::collections::HashMap;
+    let c = |i: usize, j: usize| cells[j * w + i];
+    let mut segs: Vec<(Key, Key)> = Vec::new();
+    for j in 0..h - 1 {
+        for i in 0..w - 1 {
+            let (v00, v10, v11, v01) = (c(i, j), c(i + 1, j), c(i + 1, j + 1), c(i, j + 1));
+            let case = v00 as u8 | (v10 as u8) << 1 | (v11 as u8) << 2 | (v01 as u8) << 3;
+            if case == 0 || case == 15 {
+                continue;
+            }
+            let (x, y) = (2 * i as i64, 2 * j as i64);
+            let top = (x + 1, y);
+            let bottom = (x + 1, y + 2);
+            let left = (x, y + 1);
+            let right = (x + 2, y + 1);
+            let (c00, c10, c11, c01) = ((x, y), (x + 2, y), (x + 2, y + 2), (x, y + 2));
+            // Each segment with a corner on one side of it, to orient by.
+            let mut push = |p: Key, q: Key, corner: Key, filled: bool| {
+                let n = (-(q.1 - p.1), q.0 - p.0);
+                let d = (2 * corner.0 - p.0 - q.0, 2 * corner.1 - p.1 - q.1);
+                if (d.0 * n.0 + d.1 * n.1 > 0) == filled {
+                    segs.push((p, q));
+                } else {
+                    segs.push((q, p));
+                }
+            };
+            match case {
+                1 | 14 => push(left, top, c00, v00),
+                2 | 13 => push(top, right, c10, v10),
+                4 | 11 => push(right, bottom, c11, v11),
+                8 | 7 => push(bottom, left, c01, v01),
+                3 | 12 => push(left, right, c00, v00),
+                6 | 9 => push(top, bottom, c00, v00),
+                // The saddle: on a binary field the centre average is the
+                // level, and `marching_squares` cuts off the filled corners.
+                5 => {
+                    push(left, top, c00, v00);
+                    push(right, bottom, c11, v11);
+                }
+                _ => {
+                    push(top, right, c10, v10);
+                    push(bottom, left, c01, v01);
+                }
+            }
+        }
+    }
+    let (bx, by) = (2 * (w as i64 - 1), 2 * (h as i64 - 1));
+    let on_border = |k: Key| k.0 == 0 || k.1 == 0 || k.0 == bx || k.1 == by;
+    let mut from: HashMap<Key, usize> = HashMap::with_capacity(segs.len());
+    for (si, s) in segs.iter().enumerate() {
+        if from.insert(s.0, si).is_some() {
+            return None;
+        }
+    }
+    let mut used = vec![false; segs.len()];
+    let mut chains = Vec::new();
+    for si in 0..segs.len() {
+        if used[si] || !on_border(segs[si].0) {
+            continue;
+        }
+        let mut pts = vec![segs[si].0];
+        let mut cur = si;
+        loop {
+            used[cur] = true;
+            let end = segs[cur].1;
+            pts.push(end);
+            match from.get(&end) {
+                Some(&n) if !used[n] => cur = n,
+                Some(_) => return None,
+                None if on_border(end) => break,
+                None => return None,
+            }
+        }
+        chains.push(pts);
+    }
+    let mut loops = Vec::new();
+    for si in 0..segs.len() {
+        if used[si] {
+            continue;
+        }
+        let start = segs[si].0;
+        let mut pts = Vec::new();
+        let mut cur = si;
+        loop {
+            used[cur] = true;
+            pts.push(segs[cur].0);
+            let end = segs[cur].1;
+            if end == start {
+                break;
+            }
+            match from.get(&end) {
+                Some(&n) if !used[n] => cur = n,
+                _ => return None,
+            }
+        }
+        loops.push(pts);
+    }
+    Some((chains, loops))
+}
+
+/// Where a ring meets a rectangle's border: on edge `edge` of the ring,
+/// `enter` going in, at `pt` on the border.
+#[derive(Clone, Copy, Debug)]
+struct Crossing {
+    edge: usize,
+    enter: bool,
+    pt: Pt,
+}
+
+/// Every place `ring` passes from outside the open rectangle `r` to inside
+/// it or back, in ring order. A vertex on the border counts as outside, and
+/// an edge that only runs along the border or touches a corner crosses
+/// nothing.
+fn rect_crossings(ring: &Poly, r: [f64; 4]) -> Vec<Crossing> {
+    let inside = |p: Pt| p[0] > r[0] && p[0] < r[2] && p[1] > r[1] && p[1] < r[3];
+    let n = ring.pts.len();
+    let mut out = Vec::new();
+    for k in 0..n {
+        let (p, q) = (ring.pts[k], ring.pts[(k + 1) % n]);
+        let d = [q[0] - p[0], q[1] - p[1]];
+        // Liang-Barsky against the closed rectangle.
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        let mut empty = false;
+        for (num, den) in [
+            (p[0] - r[0], -d[0]),
+            (r[2] - p[0], d[0]),
+            (p[1] - r[1], -d[1]),
+            (r[3] - p[1], d[1]),
+        ] {
+            if den == 0.0 {
+                if num < 0.0 {
+                    empty = true;
+                    break;
+                }
+            } else {
+                let t = num / den;
+                if den < 0.0 {
+                    t0 = t0.max(t);
+                } else {
+                    t1 = t1.min(t);
+                }
+            }
+        }
+        if empty || t1 <= t0 {
+            continue;
+        }
+        let mid = (t0 + t1) * 0.5;
+        if !inside([p[0] + d[0] * mid, p[1] + d[1] * mid]) {
+            continue;
+        }
+        // On the border, snapped onto the side it is closest to.
+        let snap = |t: f64| -> Pt {
+            let mut x = [p[0] + d[0] * t, p[1] + d[1] * t];
+            let ds = [
+                (x[0] - r[0]).abs(),
+                (x[0] - r[2]).abs(),
+                (x[1] - r[1]).abs(),
+                (x[1] - r[3]).abs(),
+            ];
+            let side = (0..4)
+                .min_by(|&a, &b| {
+                    ds[a]
+                        .partial_cmp(&ds[b])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap_or(0);
+            match side {
+                0 => x[0] = r[0],
+                1 => x[0] = r[2],
+                2 => x[1] = r[1],
+                _ => x[1] = r[3],
+            }
+            x[0] = x[0].clamp(r[0], r[2]);
+            x[1] = x[1].clamp(r[1], r[3]);
+            x
+        };
+        if !inside(p) {
+            out.push(Crossing {
+                edge: k,
+                enter: true,
+                pt: snap(t0),
+            });
+        }
+        if !inside(q) {
+            out.push(Crossing {
+                edge: k,
+                enter: false,
+                pt: snap(t1),
+            });
+        }
+    }
+    out
+}
+
+/// How far round the border of rectangle `r` the point `p` on it lies:
+/// along the top from its left end, down the right, back along the bottom,
+/// up the left.
+fn perimeter_at(r: [f64; 4], p: Pt) -> f64 {
+    let (w, h) = (r[2] - r[0], r[3] - r[1]);
+    let ds = [
+        (p[1] - r[1]).abs(),
+        (p[0] - r[2]).abs(),
+        (p[1] - r[3]).abs(),
+        (p[0] - r[0]).abs(),
+    ];
+    let side = (0..4)
+        .min_by(|&a, &b| {
+            ds[a]
+                .partial_cmp(&ds[b])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(0);
+    match side {
+        0 => p[0] - r[0],
+        1 => w + (p[1] - r[1]),
+        2 => w + h + (r[2] - p[0]),
+        _ => 2.0 * w + h + (r[3] - p[1]),
+    }
+}
+
+/// Pair two lists of positions round a border of length `len`, each sorted:
+/// the same count, in the same cyclic order, each pair within `tol`. Returns
+/// for every entry of `a` the index into `b`.
+fn match_round(a: &[f64], b: &[f64], len: f64, tol: f64) -> Option<Vec<usize>> {
+    let n = a.len();
+    if n != b.len() {
+        return None;
+    }
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    let dist = |x: f64, y: f64| {
+        let d = (x - y).rem_euclid(len);
+        d.min(len - d)
+    };
+    // The first of either list may sit just past the corner the other's
+    // last one is before: a turn of one either way is allowed.
+    for shift in [0, 1, n - 1] {
+        let ok = (0..n).all(|i| dist(a[i], b[(i + shift) % n]) <= tol);
+        if ok {
+            return Some((0..n).map(|i| (i + shift) % n).collect());
+        }
+    }
+    None
+}
+
+/// `current` with its part inside window `win` replaced by the outline of
+/// `cells` (the window's raster of the answer, `cur` the window's raster of
+/// `current`): the splice described above. `None` when the two cannot be
+/// matched, or the result's area is not the cells' answer.
+fn splice_window(current: &Region, win: &Window, cells: &[bool], cur: &[bool]) -> Option<Region> {
+    let (w, h) = (win.w, win.h);
+    // The border comes from the outline as it was, so the chains end where
+    // its pieces do.
+    let mut cells = cells.to_vec();
+    for i in 0..w {
+        cells[i] = cur[i];
+        cells[(h - 1) * w + i] = cur[(h - 1) * w + i];
+    }
+    for j in 0..h {
+        cells[j * w] = cur[j * w];
+        cells[j * w + w - 1] = cur[j * w + w - 1];
+    }
+    let (chains, loops) = trace_window(&cells, w, h)?;
+    let rect = win.rect();
+    let len = 2.0 * ((rect[2] - rect[0]) + (rect[3] - rect[1]));
+    let tol = 0.75 * win.step;
+
+    // The rings as they were: untouched, dropped (wholly inside), or cut
+    // into the pieces outside.
+    let depths = current.depths();
+    let mut out = Region::new();
+    // (points, where it starts on the border, where it ends)
+    let mut pieces: Vec<(Vec<Pt>, f64, f64)> = Vec::new();
+    for (ring, d) in current.rings.iter().zip(&depths) {
+        if ring.is_empty() {
+            continue;
+        }
+        let rb = ring.bbox();
+        if rb[2] < rect[0] || rb[0] > rect[2] || rb[3] < rect[1] || rb[1] > rect[3] {
+            out.rings.push(ring.clone());
+            continue;
+        }
+        let mut ring = ring.clone();
+        ring.orient(d % 2 == 0);
+        let xs = rect_crossings(&ring, rect);
+        if xs.is_empty() {
+            let p = ring.pts[0];
+            let inside = p[0] > rect[0] && p[0] < rect[2] && p[1] > rect[1] && p[1] < rect[3];
+            if !inside {
+                out.rings.push(ring);
+            }
+            continue;
+        }
+        // Leaving and entering take turns round the ring.
+        if !xs.len().is_multiple_of(2) {
+            return None;
+        }
+        let n = ring.pts.len();
+        for (a, x) in xs.iter().enumerate() {
+            if x.enter {
+                continue;
+            }
+            let y = xs[(a + 1) % xs.len()];
+            if !y.enter {
+                return None;
+            }
+            let mut pts = vec![x.pt];
+            let mut steps = (y.edge + n - x.edge) % n;
+            // On one edge entering comes before leaving, so an entry on the
+            // edge it left by is the whole way round.
+            if steps == 0 {
+                steps = n;
+            }
+            for s in 1..=steps {
+                pts.push(ring.pts[(x.edge + s) % n]);
+            }
+            pts.push(y.pt);
+            pieces.push((pts, perimeter_at(rect, x.pt), perimeter_at(rect, y.pt)));
+        }
+    }
+
+    // A piece ends where a chain starts; a chain ends where a piece starts.
+    let mut enters: Vec<(f64, usize)> = pieces.iter().enumerate().map(|(i, p)| (p.2, i)).collect();
+    let mut leaves: Vec<(f64, usize)> = pieces.iter().enumerate().map(|(i, p)| (p.1, i)).collect();
+    let mut starts: Vec<(f64, usize)> = chains
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (perimeter_at(rect, win.at(c[0])), i))
+        .collect();
+    let mut ends: Vec<(f64, usize)> = chains
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (perimeter_at(rect, win.at(*c.last().unwrap())), i))
+        .collect();
+    let by_t = |a: &(f64, usize), b: &(f64, usize)| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+    };
+    for v in [&mut enters, &mut leaves, &mut starts, &mut ends] {
+        v.sort_by(by_t);
+    }
+    let pos = |v: &[(f64, usize)]| v.iter().map(|x| x.0).collect::<Vec<f64>>();
+    let near = 2.5 * win.step;
+    let m_in = match_round(&pos(&enters), &pos(&starts), len, near)?;
+    let m_out = match_round(&pos(&ends), &pos(&leaves), len, near)?;
+    let mut chain_after = vec![usize::MAX; pieces.len()];
+    for (a, &b) in m_in.iter().enumerate() {
+        chain_after[enters[a].1] = starts[b].1;
+    }
+    let mut piece_after = vec![usize::MAX; chains.len()];
+    for (a, &b) in m_out.iter().enumerate() {
+        piece_after[ends[a].1] = leaves[b].1;
+    }
+
+    // Walk piece, chain, piece, ... back to the first.
+    let mut piece_used = vec![false; pieces.len()];
+    let mut chain_used = vec![false; chains.len()];
+    for first in 0..pieces.len() {
+        if piece_used[first] {
+            continue;
+        }
+        let mut pts: Vec<Pt> = Vec::new();
+        let mut p = first;
+        loop {
+            if piece_used[p] {
+                if p != first {
+                    return None;
+                }
+                break;
+            }
+            piece_used[p] = true;
+            pts.extend_from_slice(&pieces[p].0);
+            let c = *chain_after.get(p)?;
+            if c == usize::MAX || chain_used[c] {
+                return None;
+            }
+            chain_used[c] = true;
+            let cp: Vec<Pt> = chains[c].iter().map(|k| win.at(*k)).collect();
+            pts.extend(dp(&cp, tol));
+            p = piece_after[c];
+            if p == usize::MAX {
+                return None;
+            }
+        }
+        pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-12 && (a[1] - b[1]).abs() < 1e-12);
+        out.rings.push(Poly::new(pts));
+    }
+    // A chain that met no piece: the outline as it was never reached the
+    // border there, so the trace cannot have either.
+    if chain_used.iter().any(|u| !u) {
+        return None;
+    }
+    for l in loops {
+        let ring = Poly::new(l.into_iter().map(|k| win.at(k)).collect()).simplify(tol);
+        if !ring.is_empty() {
+            out.rings.push(ring);
+        }
+    }
+    out.normalize();
+
+    // The area the cells say, against the one the outline has.
+    let count = |v: &[bool]| v.iter().filter(|&&b| b).count() as f64;
+    let cell = win.step * win.step;
+    let want = current.area() + (count(&cells) - count(cur)) * cell;
+    let slack = 1.0 + 0.02 * (w * h) as f64 * cell;
+    ((out.area() - want).abs() <= slack).then_some(out)
+}
+
+/// The windowed boolean for an operation that changes nothing outside
+/// `b`'s box (union, difference, symmetric difference): `None` when the
+/// window would not be much smaller than the whole raster, or no splice
+/// was found.
+fn window_boolean(a: &Region, b: &Region, op: BoolOp, ss: usize) -> Option<Region> {
+    if matches!(op, BoolOp::Intersect) || a.is_empty() || b.is_empty() {
+        return None;
+    }
+    let (ba, bb) = (a.bbox(), b.bbox());
+    let whole =
+        (ba[2].max(bb[2]) - ba[0].min(bb[0]) + 2.0) * (ba[3].max(bb[3]) - ba[1].min(bb[1]) + 2.0);
+    // Two tries, the second with the border elsewhere, before the caller
+    // falls back on the whole raster.
+    for margin in [1.0, 2.5] {
+        let win = Window::around(bb, margin, ss, BOOL_MAX_CELLS)?;
+        let wb = win.bounds();
+        if (wb[2] - wb[0]) * (wb[3] - wb[1]) > 0.5 * whole {
+            return None;
+        }
+        let cur = win.fill(a);
+        let other = win.fill(b);
+        let cells: Vec<bool> = cur
+            .iter()
+            .zip(&other)
+            .map(|(&x, &y)| match op {
+                BoolOp::Union => x || y,
+                BoolOp::Subtract => x && !y,
+                _ => x != y,
+            })
+            .collect();
+        if let Some(r) = splice_window(a, &win, &cells, &cur) {
+            return Some(r);
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,6 +2279,36 @@ impl Stack {
         roi.contours.extend(points);
     }
 
+    /// [`Self::apply_to_roi`] for a sagittal or coronal stack of which only
+    /// the axial slices `levels[0]..=levels[1]` can have changed since the
+    /// ROI was last written: those are re-cut ([`Self::to_axis_levels`]),
+    /// every other axial contour of the ROI stays as it is. Re-cutting the
+    /// whole structure was a rasterization and trace of all of it on every
+    /// write of a stroke (130 ms on a body outline); this costs the slab. An
+    /// ROI that is not stored as axial contours is written whole.
+    pub fn apply_levels_to_roi(&self, roi: &mut Roi, grid: &Grid, levels: [usize; 2]) {
+        if self.axis == 2 {
+            self.apply_to_roi(roi, grid);
+            return;
+        }
+        let mut axial = Stack::from_roi(roi, grid);
+        if axial.axis != 2 {
+            if !axial.is_empty() {
+                self.apply_to_roi(roi, grid);
+                return;
+            }
+            axial = Stack::empty(2);
+        }
+        let recut = self.to_axis_levels(grid.dims, 2, levels);
+        axial
+            .slices
+            .retain(|s| s.level < levels[0] || s.level > levels[1]);
+        axial.slices.extend(recut.slices);
+        axial.slices.sort_by_key(|s| s.level);
+        axial.prune();
+        axial.apply_to_roi(roi, grid);
+    }
+
     /// Fill the stack into a voxel mask in the volume's index order.
     /// The lattice box the geometry lives in, clamped to `dims`; `None`
     /// when the stack is empty. Any per-voxel pass over one structure wants
@@ -1849,6 +2465,32 @@ impl Stack {
         let Some((lo, hi)) = self.bbox(dims) else {
             return Stack::empty(axis);
         };
+        let sub = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
+        let mask = self.rasterize_box(dims, lo, sub);
+        Stack::from_mask_at(&mask, sub, lo, axis)
+    }
+
+    /// [`Self::to_axis`] for the new stack's slices `levels[0]..=levels[1]`
+    /// only: the same slices, to the bit (each is the trace of its own
+    /// slice of the same mask), at the cost of the slab rather than of the
+    /// whole box. What a stroke on a sagittal or coronal stack, which moved
+    /// a few axial slices, writes back.
+    pub fn to_axis_levels(&self, dims: [usize; 3], axis: usize, levels: [usize; 2]) -> Stack {
+        if axis == self.axis {
+            let mut st = self.clone();
+            st.slices
+                .retain(|s| s.level >= levels[0] && s.level <= levels[1]);
+            st.beyond.clear();
+            return st;
+        }
+        let Some((mut lo, mut hi)) = self.bbox(dims) else {
+            return Stack::empty(axis);
+        };
+        lo[axis] = lo[axis].max(levels[0]);
+        hi[axis] = hi[axis].min(levels[1]);
+        if lo[axis] > hi[axis] {
+            return Stack::empty(axis);
+        }
         let sub = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1];
         let mask = self.rasterize_box(dims, lo, sub);
         Stack::from_mask_at(&mask, sub, lo, axis)
@@ -2432,8 +3074,35 @@ struct FootSlice {
     /// The box of the marked cells, inclusive.
     lo: [usize; 2],
     hi: [usize; 2],
-    /// Marked since it was last taken (see [`BallFootprint::take_dirty`]).
+    /// Marked since it was last taken (see [`BallFootprint::take_dirty`]),
+    /// and the box of the cells marked since, inclusive.
     dirty: bool,
+    dlo: [usize; 2],
+    dhi: [usize; 2],
+}
+
+impl FootSlice {
+    fn cell(&self, i: i64, j: i64) -> bool {
+        if i < 0 || j < 0 {
+            return false;
+        }
+        self.rows
+            .get(j as usize)
+            .and_then(|r| r.get(i as usize))
+            .is_some_and(|&c| c != 0)
+    }
+
+    /// The box marked since it was last taken, `[u0, v0, u1, v1]` in cells,
+    /// and the slice counted as taken.
+    fn take(&mut self) -> Option<[usize; 4]> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        let b = [self.dlo[0], self.dlo[1], self.dhi[0], self.dhi[1]];
+        self.dlo = [usize::MAX; 2];
+        self.dhi = [0; 2];
+        Some(b)
+    }
 }
 
 impl BallFootprint {
@@ -2576,6 +3245,8 @@ impl BallFootprint {
                 lo: [usize::MAX; 2],
                 hi: [0; 2],
                 dirty: false,
+                dlo: [usize::MAX; 2],
+                dhi: [0; 2],
             });
             for &(cu, cv) in &hits {
                 let row = &mut s.rows[cv];
@@ -2586,6 +3257,8 @@ impl BallFootprint {
                     row[cu] = 1;
                     s.lo = [s.lo[0].min(cu), s.lo[1].min(cv)];
                     s.hi = [s.hi[0].max(cu), s.hi[1].max(cv)];
+                    s.dlo = [s.dlo[0].min(cu), s.dlo[1].min(cv)];
+                    s.dhi = [s.dhi[0].max(cu), s.dhi[1].max(cv)];
                     s.dirty = true;
                     changed = true;
                 }
@@ -2597,18 +3270,126 @@ impl BallFootprint {
     /// The levels marked since the last call, in order; they count as
     /// taken afterwards.
     pub fn take_dirty(&mut self) -> Vec<usize> {
-        self.slices
-            .iter_mut()
-            .filter_map(|(l, s)| std::mem::take(&mut s.dirty).then_some(*l))
+        self.take_dirty_boxes()
+            .into_iter()
+            .map(|(l, _)| l)
             .collect()
     }
 
     /// Whether `level` was marked since it was last taken; it counts as
     /// taken afterwards.
     pub fn take_dirty_at(&mut self, level: usize) -> bool {
+        self.take_dirty_box_at(level).is_some()
+    }
+
+    /// [`Self::take_dirty`] with the box of the cells each level had marked
+    /// since (`[u0, v0, u1, v1]`, inclusive), for [`Self::merge`].
+    pub fn take_dirty_boxes(&mut self) -> Vec<(usize, [usize; 4])> {
         self.slices
-            .get_mut(&level)
-            .is_some_and(|s| std::mem::take(&mut s.dirty))
+            .iter_mut()
+            .filter_map(|(l, s)| s.take().map(|b| (*l, b)))
+            .collect()
+    }
+
+    /// [`Self::take_dirty_at`] with the box of what was marked since.
+    pub fn take_dirty_box_at(&mut self, level: usize) -> Option<[usize; 4]> {
+        self.slices.get_mut(&level).and_then(FootSlice::take)
+    }
+
+    /// Whether the point `(x, y)` (in-plane voxel coordinates) of a slice
+    /// is inside the stroke's outline there ([`Self::region`]), asked of the
+    /// four cells around it: the marching-squares outline between their
+    /// centres, case by case, saddles split as the trace splits them.
+    fn inside(&self, s: &FootSlice, x: f64, y: f64) -> bool {
+        let cx = (x + 0.5) * self.sub[0] as f64 - 0.5;
+        let cy = (y + 0.5) * self.sub[1] as f64 - 0.5;
+        let (i, j) = (cx.floor(), cy.floor());
+        let (u, v) = (cx - i, cy - j);
+        let (i, j) = (i as i64, j as i64);
+        let case = s.cell(i, j) as u8
+            | (s.cell(i + 1, j) as u8) << 1
+            | (s.cell(i + 1, j + 1) as u8) << 2
+            | (s.cell(i, j + 1) as u8) << 3;
+        let c00 = u + v < 0.5;
+        let c10 = (1.0 - u) + v < 0.5;
+        let c11 = (1.0 - u) + (1.0 - v) < 0.5;
+        let c01 = u + (1.0 - v) < 0.5;
+        match case {
+            0 => false,
+            15 => true,
+            1 => c00,
+            2 => c10,
+            4 => c11,
+            8 => c01,
+            14 => !c00,
+            13 => !c10,
+            11 => !c11,
+            7 => !c01,
+            3 => v < 0.5,
+            12 => v >= 0.5,
+            9 => u < 0.5,
+            6 => u >= 0.5,
+            5 => c00 || c11,
+            _ => c10 || c01,
+        }
+    }
+
+    /// The slice `current` - this stroke's earlier merges into `base`, the
+    /// slice as the stroke found it - with what the stroke marked on
+    /// `level` inside `dirty` (a box from [`Self::take_dirty_boxes`]) merged
+    /// in as well: the answer of [`Self::merged`] from `base`, made over a
+    /// window around the box only. Outside it the new cells change nothing,
+    /// so the outline there is `current`'s, vertex for vertex; inside, the
+    /// cells are those of `base` and of the stroke (never of `current`'s
+    /// outline of them), so however often a slice is merged nothing
+    /// compounds. Where the splice cannot be made this is [`Self::merged`].
+    pub fn merge(
+        &self,
+        level: usize,
+        dirty: [usize; 4],
+        base: &Region,
+        current: &Region,
+        erase: bool,
+    ) -> Region {
+        let Some(s) = self.slices.get(&level) else {
+            return current.clone();
+        };
+        if dirty[0] > dirty[2] || dirty[1] > dirty[3] {
+            return current.clone();
+        }
+        let (su, sv) = (self.sub[0] as f64, self.sub[1] as f64);
+        // The new cells' extent in voxels, a cell wider each way: the
+        // outline between a new cell and its neighbours moves too.
+        let b = [
+            (dirty[0] as f64 - 1.0) / su - 0.5,
+            (dirty[1] as f64 - 1.0) / sv - 0.5,
+            (dirty[2] as f64 + 2.0) / su - 0.5,
+            (dirty[3] as f64 + 2.0) / sv - 0.5,
+        ];
+        for margin in [1.0, 2.5] {
+            let Some(win) = Window::around(b, margin, BOOL_SS, BOOL_MAX_CELLS) else {
+                break;
+            };
+            let cur = win.fill(current);
+            let was = win.fill(base);
+            let mut cells = vec![false; win.w * win.h];
+            for j in 0..win.h {
+                let y = win.y0 + (j as f64 + 0.5) * win.step;
+                for i in 0..win.w {
+                    let x = win.x0 + (i as f64 + 0.5) * win.step;
+                    let k = j * win.w + i;
+                    cells[k] = if erase {
+                        was[k] && !self.inside(s, x, y)
+                    } else {
+                        was[k] || self.inside(s, x, y)
+                    };
+                }
+            }
+            if let Some(r) = splice_window(current, &win, &cells, &cur) {
+                return r;
+            }
+        }
+        self.merged(level, base, erase)
     }
 
     /// The stroke's outline on `level`, in the stack's in-plane voxel
@@ -3607,5 +4388,275 @@ mod tests {
             once.area()
         );
         assert!((edge.merged(10, &base, false).area() - once.area()).abs() < 1e-9);
+    }
+
+    /// A many-vertex circle, the outline of something body-sized.
+    fn big_circle(c: Pt, r: f64, n: usize) -> Region {
+        let mut p = Poly::circle(c, r, n);
+        p.orient(true);
+        Region::from_ring(p)
+    }
+
+    /// The traced outline of a window's cells is wound with the cells on
+    /// its left, a hole the other way, and an edge of the window ends a
+    /// chain rather than closing a loop.
+    #[test]
+    fn a_window_traces_its_cells_with_the_filled_side_on_the_left() {
+        let (w, h) = (8, 8);
+        let mut cells = vec![false; w * h];
+        for j in 2..6 {
+            for i in 2..6 {
+                cells[j * w + i] = !(i == 3 && j == 3);
+            }
+        }
+        let (chains, loops) = trace_window(&cells, w, h).unwrap();
+        assert!(chains.is_empty());
+        assert_eq!(loops.len(), 2);
+        let area = |l: &Vec<Key>| {
+            Poly::new(l.iter().map(|k| [k.0 as f64, k.1 as f64]).collect()).signed_area()
+        };
+        let mut a: Vec<f64> = loops.iter().map(area).collect();
+        a.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert!(a[0] < 0.0 && a[1] > 0.0, "{a:?}");
+        // A block running off the right edge: one chain, border to border.
+        let mut cells = vec![false; w * h];
+        for j in 2..6 {
+            for i in 4..8 {
+                cells[j * w + i] = true;
+            }
+        }
+        let (chains, loops) = trace_window(&cells, w, h).unwrap();
+        assert!(loops.is_empty());
+        assert_eq!(chains.len(), 1);
+        let (s, e) = (chains[0][0], *chains[0].last().unwrap());
+        assert!(s.0 == 14 && e.0 == 14, "{s:?} {e:?}");
+    }
+
+    /// The windowed boolean gives the whole raster's answer - the same
+    /// area, the same voxels - and keeps every vertex of the outline it did
+    /// not reach exactly where it was: a capsule painted over and erased
+    /// from the edge of a large circle, across a long edge of a square (an
+    /// edge that enters and leaves the window without a vertex in it), and
+    /// into a hole.
+    #[test]
+    fn a_windowed_boolean_matches_the_whole_raster_and_keeps_the_rest() {
+        let body = big_circle([200.0, 160.0], 150.0, 1500);
+        // Off the voxel centres, so their rasters do not hang on a tie.
+        let mut square_hole = Region::from_ring(square(20.3, 20.3, 300.0));
+        let mut hole = square(150.3, 150.3, 40.0);
+        hole.orient(false);
+        square_hole.rings.push(hole);
+        square_hole.normalize();
+        let cases = [
+            (
+                &body,
+                Poly::capsule([345.0, 160.0], [352.0, 175.0], 6.0, 40),
+            ),
+            (&body, Poly::capsule([200.0, 8.0], [215.0, 12.0], 9.0, 40)),
+            (
+                &square_hole,
+                Poly::capsule([170.0, 15.0], [175.0, 25.0], 7.0, 40),
+            ),
+            (
+                &square_hole,
+                Poly::capsule([150.0, 170.0], [160.0, 175.0], 5.0, 40),
+            ),
+        ];
+        for (n, (region, stamp)) in cases.iter().enumerate() {
+            let b = Region::from_ring(stamp.clone());
+            for op in [BoolOp::Union, BoolOp::Subtract] {
+                let whole = region.boolean(&b, op);
+                let local = window_boolean(region, &b, op, BOOL_SS)
+                    .unwrap_or_else(|| panic!("case {n} {op:?}: no splice"));
+                // The change in area is the stamp's less what it shares with
+                // the region (a boolean over the stamp's box alone, whose
+                // raster is exact to a fraction of a cell); the whole
+                // raster re-traces everything and is off by its own bias.
+                let common = region.boolean(&b, BoolOp::Intersect).area();
+                let want = match op {
+                    BoolOp::Union => b.area() - common,
+                    _ => -common,
+                };
+                let got = local.area() - region.area();
+                assert!(got.abs() > 1.0, "case {n} {op:?}: nothing changed");
+                // Each raster puts an outline within half a cell (1/16 of a
+                // voxel) of the true one.
+                let slack = 0.5 + stamp.perimeter() / 16.0;
+                assert!(
+                    (got - want).abs() < slack,
+                    "case {n} {op:?}: {got} vs {want}"
+                );
+                // Around the stamp both are the trace of the same cells.
+                let sb = stamp.bbox();
+                let (w, h) = (360, 360);
+                let (rw, rl) = (whole.rasterize(w, h), local.rasterize(w, h));
+                let differ = (0..w * h)
+                    .filter(|&k| {
+                        let (x, y) = ((k % w) as f64, (k / w) as f64);
+                        x > sb[0] - 2.0 && x < sb[2] + 2.0 && y > sb[1] - 2.0 && y < sb[3] + 2.0
+                    })
+                    .filter(|&k| rw[k] != rl[k])
+                    .count();
+                assert!(differ <= 4, "case {n} {op:?}: {differ} voxels differ");
+                // Far from the stamp, the vertices are the original ones.
+                let far = |p: &Pt| {
+                    p[0] < sb[0] - 4.0
+                        || p[0] > sb[2] + 4.0
+                        || p[1] < sb[1] - 4.0
+                        || p[1] > sb[3] + 4.0
+                };
+                for ring in &region.rings {
+                    for p in ring.pts.iter().filter(|p| far(p)) {
+                        assert!(
+                            local.rings.iter().any(|r| r.pts.contains(p)),
+                            "case {n} {op:?}: {p:?} lost"
+                        );
+                    }
+                }
+            }
+        }
+        // A ring on its own, painted next to: no splice needed, nothing
+        // inside the window to keep.
+        let lone = Region::from_ring(square(10.0, 10.0, 5.0));
+        let other = Region::from_ring(square(100.0, 100.0, 5.0));
+        let got = lone.boolean_local(&other, BoolOp::Union);
+        // The new square is the raster's trace of it, as from the whole
+        // raster; the old one is kept as it is.
+        let traced = other.boolean(&Region::new(), BoolOp::Union).area();
+        assert!(
+            (got.area() - 25.0 - traced).abs() < 1e-6,
+            "{} vs {}",
+            got.area(),
+            25.0 + traced
+        );
+        assert!(got.rings.iter().any(|r| r.pts == lone.rings[0].pts));
+    }
+
+    /// The brush on a structure, sample by sample: a slice merged after
+    /// every sample from what the last merge left, and one merged once from
+    /// the slice as the stroke found it, come out the same; merging again
+    /// changes nothing.
+    #[test]
+    fn a_footprint_merged_sample_by_sample_is_the_one_merged_at_once() {
+        let sp = [0.9, 0.9, 3.0];
+        let g = grid([400, 400, 20], sp);
+        let base = big_circle([200.0, 200.0], 150.0, 1200);
+        for erase in [false, true] {
+            let mut f = BallFootprint::new(&g, 2, 12.0);
+            let mut cur = base.clone();
+            let mut prev = [348.0, 200.0, 10.0];
+            let mut path = vec![prev];
+            for s in 0..40 {
+                let a = s as f64 * 0.05;
+                let p = [200.0 + 148.0 * a.cos(), 200.0 + 148.0 * a.sin(), 10.0];
+                f.sweep(prev, p, 12.0, |_| true);
+                prev = p;
+                path.push(p);
+                if let Some(b) = f.take_dirty_box_at(10) {
+                    cur = f.merge(10, b, &base, &cur, erase);
+                }
+            }
+            // Merged at once re-traces the whole slice, which moves its area
+            // a little by itself: the change is compared.
+            let once = f.merged(10, &base, erase);
+            let retraced = base.boolean(&Region::new(), BoolOp::Union).area();
+            let (d_cur, d_once) = (cur.area() - base.area(), once.area() - retraced);
+            assert!(d_cur.abs() > 500.0, "erase {erase}: {d_cur}");
+            assert!(
+                (d_cur - d_once).abs() < 0.01 * d_once.abs() + 2.0,
+                "erase {erase}: {d_cur} vs {d_once}"
+            );
+            // Where the ball went, both are the trace of the same cells.
+            let reach = 12.0 / 0.9 + 0.5;
+            let near = |x: f64, y: f64| {
+                path.windows(2).any(|s| {
+                    let (a, b) = ([s[0][0], s[0][1]], [s[1][0], s[1][1]]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let l2 = (dx * dx + dy * dy).max(1e-12);
+                    let t = (((x - a[0]) * dx + (y - a[1]) * dy) / l2).clamp(0.0, 1.0);
+                    (x - a[0] - t * dx).hypot(y - a[1] - t * dy) < reach
+                })
+            };
+            let (rc, ro) = (cur.rasterize(400, 400), once.rasterize(400, 400));
+            let differ = (0..400 * 400)
+                .filter(|&k| rc[k] != ro[k] && near((k % 400) as f64, (k / 400) as f64))
+                .count();
+            assert!(differ <= 8, "erase {erase}: {differ} voxels differ");
+            let a = cur.area();
+            // The whole stroke again at once: the same outline.
+            let s = &f.slices[&10];
+            let all = [s.lo[0], s.lo[1], s.hi[0], s.hi[1]];
+            let again = f.merge(10, all, &base, &cur, erase);
+            assert!((again.area() - a).abs() < 2.0, "{} vs {a}", again.area());
+            // The far side of the circle was never reached: its vertices
+            // are the base's own.
+            let p = base.rings[0].pts[600];
+            assert!(cur.rings.iter().any(|r| r.pts.contains(&p)));
+        }
+    }
+
+    /// A sagittal stack re-cut onto a slab of axial slices gives those
+    /// slices exactly as re-cutting the whole does; written into an ROI, the
+    /// slab is re-cut and every other axial contour stays the ROI's own.
+    #[test]
+    fn a_slab_of_axial_slices_is_re_cut_as_the_whole_is() {
+        let dims = [40, 40, 20];
+        let g = grid(dims, [1.5, 1.5, 3.0]);
+        let axial = Stack::from_mask(&ball(dims, 12.0), dims, 2);
+        let mut sag = axial.to_axis(dims, 0);
+        // An edit on the sagittal stack, so the re-cut is not the original.
+        sag.region_mut(20).subtract_ring(&square(5.0, 8.0, 30.0));
+        let whole = sag.to_axis(dims, 2);
+        let slab = sag.to_axis_levels(dims, 2, [8, 11]);
+        let inside = |l: usize| (8..=11).contains(&l);
+        assert!(!slab.slices.is_empty());
+        assert!(slab.slices.iter().all(|s| inside(s.level)));
+        assert_eq!(
+            slab.slices.len(),
+            whole.slices.iter().filter(|s| inside(s.level)).count()
+        );
+        for s in &slab.slices {
+            assert_eq!(
+                Some(&s.region),
+                whole.region_at(s.level),
+                "level {}",
+                s.level
+            );
+        }
+        let near = |a: &Region, b: &Region| {
+            a.rings.len() == b.rings.len()
+                && a.rings.iter().zip(&b.rings).all(|(x, y)| {
+                    x.pts.len() == y.pts.len()
+                        && x.pts
+                            .iter()
+                            .zip(&y.pts)
+                            .all(|(p, q)| (p[0] - q[0]).abs() < 1e-6 && (p[1] - q[1]).abs() < 1e-6)
+                })
+        };
+        let mut roi = Roi {
+            number: 1,
+            name: "ball".into(),
+            color: [255, 0, 0],
+            roi_type: "ORGAN".into(),
+            description: String::new(),
+            contours: Vec::new(),
+        };
+        axial.apply_to_roi(&mut roi, &g);
+        sag.apply_levels_to_roi(&mut roi, &g, [8, 11]);
+        let after = Stack::from_roi(&roi, &g);
+        assert_eq!(after.axis, 2);
+        assert_eq!(after.occupied(), axial.occupied());
+        for s in &after.slices {
+            let want = if inside(s.level) {
+                whole.region_at(s.level)
+            } else {
+                axial.region_at(s.level)
+            };
+            assert!(
+                want.is_some_and(|w| near(w, &s.region)),
+                "level {}",
+                s.level
+            );
+        }
     }
 }

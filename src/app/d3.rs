@@ -147,17 +147,7 @@ pub(super) struct D3Frame {
     pub(super) order: Vec<u64>,
 }
 
-/// Map an `f32` to a `u32` that sorts in the same order, so the painter's
-/// algorithm can use a primitive sort instead of a float comparator.
-#[inline]
-fn depth_key(d: f32) -> u32 {
-    let b = d.to_bits();
-    if b & 0x8000_0000 != 0 {
-        !b
-    } else {
-        b ^ 0x8000_0000
-    }
-}
+use crate::mesh3d::depth_key;
 
 /// The identity of one structure's geometry, for the 3D window's partial
 /// rebuilds.
@@ -299,28 +289,13 @@ fn set_meshes(w: &mut D3Window, meshes: Arc<Vec<RoiMesh>>) {
 /// radius to its half-diagonal. False, and the camera untouched, when there
 /// is no vertex to fit to.
 fn fit_to_meshes(w: &mut D3Window, meshes: &[RoiMesh]) -> bool {
-    let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for m in meshes {
-        for v in &m.verts {
-            for a in 0..3 {
-                mn[a] = mn[a].min(v[a]);
-                mx[a] = mx[a].max(v[a]);
-            }
+    match mesh3d::bounding_sphere(meshes) {
+        Some((center, radius)) => {
+            (w.center, w.radius) = (center, radius);
+            true
         }
+        None => false,
     }
-    if mn[0] >= mx[0] {
-        return false;
-    }
-    w.center = [
-        (mn[0] + mx[0]) * 0.5,
-        (mn[1] + mx[1]) * 0.5,
-        (mn[2] + mx[2]) * 0.5,
-    ];
-    w.radius = (0..3)
-        .map(|a| (mx[a] - mn[a]) * 0.5)
-        .fold(0.0f32, |acc, v| (acc * acc + v * v).sqrt())
-        .max(10.0);
-    true
 }
 
 /// The most sets of meshes a window keeps by key, and the most bytes they
@@ -1692,7 +1667,7 @@ impl ViewerApp {
             );
             return;
         }
-        let scale = 0.45 * rect.width().min(rect.height()) / w.radius * w.zoom;
+        let scale = mesh3d::scene_scale(rect.width(), rect.height(), w.radius, w.zoom);
         let cx = rect.center().x + w.pan.x;
         let cyc = rect.center().y + w.pan.y;
         let alpha = (w.opacity * 255.0) as u8;
@@ -1789,22 +1764,11 @@ impl ViewerApp {
             f.vertex_key = Some(vertex_key);
         }
         if w.frame.vertex_key != Some(vertex_key) {
-            let (sy, cy) = w.yaw.sin_cos();
-            let (sp, cp) = w.pitch.sin_cos();
+            let (yaw, pitch) = (w.yaw.sin_cos(), w.pitch.sin_cos());
             let c = w.center;
-            // Yaw about patient z, then pitch about the screen x.
-            let rot = |p: [f32; 3], centered: bool| -> [f32; 3] {
-                let (x, y, z) = if centered {
-                    (p[0] - c[0], p[1] - c[1], p[2] - c[2])
-                } else {
-                    (p[0], p[1], p[2])
-                };
-                let x1 = cy * x - sy * y;
-                let y1 = sy * x + cy * y;
-                let y2 = cp * y1 - sp * z;
-                let z2 = sp * y1 + cp * z;
-                [x1, y2, z2]
-            };
+            // Yaw about patient z, then pitch about the screen x: the one
+            // turn the posture film's scene uses too.
+            let rot = |p: [f32; 3], centered: bool| mesh3d::turn(yaw, pitch, c, p, centered);
             let reorder = w.frame.order_key != Some(order_key);
             let f = &mut w.frame;
             // Buffers are reused across frames; `make_mut` hands
@@ -1862,7 +1826,7 @@ impl ViewerApp {
                 // External/body contours render translucent so the
                 // interior structures remain visible.
                 let roi_alpha = if external {
-                    (entry_alpha as f32 * 0.22) as u8
+                    (entry_alpha as f32 * mesh3d::EXTERNAL_ALPHA) as u8
                 } else {
                     entry_alpha
                 };
@@ -1886,7 +1850,7 @@ impl ViewerApp {
                         _ => color,
                     };
                     // Headlight along the view axis, two-sided.
-                    let inten = 0.30 + 0.70 * nn[1].abs();
+                    let inten = mesh3d::headlight(nn);
                     let col = Color32::from_rgba_unmultiplied(
                         (color[0] as f32 * inten) as u8,
                         (color[1] as f32 * inten) as u8,

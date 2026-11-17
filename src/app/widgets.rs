@@ -109,6 +109,21 @@ pub(super) fn tip_button(
     ui.button(text).tip(tip).clicked()
 }
 
+/// The spacing of a deformation field's arrows over the views, whole mm:
+/// the one slider for every place that sets the main viewer's
+/// (*Settings ▸ Viewer*, the registration's *Vector field* fold).
+pub(super) fn arrow_spacing_slider(ui: &mut egui::Ui, mm: &mut u32) -> egui::Response {
+    ui.add(
+        egui::Slider::new(mm, crate::settings::ARROW_SPACING_MM)
+            .suffix(" mm")
+            .text("Arrow spacing"),
+    )
+    .on_hover_text(
+        "One arrow (or one line of the deformed grid) every so many millimetres over the views. \
+         Closer arrows are drawn shorter in proportion, so a dense field does not pile up.",
+    )
+}
+
 /// [`tip_button`], small.
 pub(super) fn small_tip_button(
     ui: &mut egui::Ui,

@@ -1179,6 +1179,23 @@ windowing, the dose colorwash and the overlays keep one calibrated
 appearance; unit tests assert the accent colors clear WCAG AA contrast on
 both backgrounds.
 
+### What is drawn over the views
+
+*Settings ▸ Viewer* switches the orientation cube and the ruler view by
+view, and sets the **arrow spacing** of a deformation field over the views
+(*Deformation field ▸ Arrow spacing*, 2 to 60 mm, 12 by default): one
+arrow, or one line of the deformed grid, every so many millimetres of the
+view, the same density in all three planes whatever their slice
+thickness. The registration's *Vector field* fold has the same slider
+(there a change also samples the field again on a lattice of that step,
+[registration.md](registration.md#the-fusion-overlay-and-the-vector-field)).
+Closer arrows are drawn shorter in proportion: the *Arrow scale* is the
+length at 12 mm (`dvf::arrow_length_factor`), so a dense field does not
+pile its arrows onto each other and all arrows of a view still compare.
+The choice is kept in `viewer_settings.txt` (`field_arrow_spacing_mm`).
+The posture model's window has its own spacing beside its overlay
+([posture-model.md](posture-model.md#the-window)).
+
 ## Graphics backend
 
 The viewer draws - and, with the GPU feature, runs the segmentation networks -

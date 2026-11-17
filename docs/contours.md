@@ -120,7 +120,8 @@ along a direction that is not their normal) the circle on a neighbouring
 slice is smaller by the true distance and shifted by the tilt, as the
 sphere really crosses it. On a sagittal or coronal view the slices are
 that plane's, and the result is re-cut onto the axial contours the
-structure is stored as, as any off-axis stroke is.
+structure is stored as, as any off-axis stroke is (the axial slices it
+reached; *The drawing plane* below).
 
 The obvious implementation - a contour boolean on every reached slice on
 every mouse sample - is what kept the brush on one slice: five to fifty
@@ -128,17 +129,31 @@ booleans per sample cannot follow a hand. So a stroke keeps a **raster of
 what the ball has covered** (`contours::BallFootprint`): each sample only
 marks the cells under the ball, finer than the voxels (a radius is at least
 24 cells, a cell no finer than 0.2 mm), on every slice it reaches - a few
-thousand distance tests, nothing else. A slice's cells become an outline
-the way a mask slice does (marching squares, `region_of_mask`'s trace) and
-are merged into the contours by one boolean: the slice being drawn on at
-once, so the stroke under the pointer shows as it goes, the other slices
-every 100 ms and on release. A merge always starts from the slice as the
-stroke found it, so however often it runs nothing compounds, and the rings
-the ball never touched keep their vertices (the boolean passes them
-through). The other views, the 3D scene and *Save changes to the PACS*
-see the contours as they are merged, through the same writes as every
-other contour edit. The whole stroke is one undo step; `Alt`, `Shift`+wheel
-and `[` `]` work as on the slice.
+thousand distance tests, nothing else. The cells are merged into the
+contours slice by slice: the slice being drawn on with every sample, so
+the stroke under the pointer shows as it goes; each other slice every sixth
+sample (a sixth of them with each sample, so no sample carries them all:
+ten times a second at 60 Hz), and everything left on release. The
+schedule is counted in samples, not in time, so the same stroke lands the
+same however fast the frames came.
+
+A merge covers only what was marked on that slice since its last merge
+(`BallFootprint::merge`): a window around those cells, on the boolean's
+own lattice of fine cells. Inside the window the answer is made from the
+slice as the stroke found it and the stroke's cells (the outline of the
+cells, marching squares between their centres, asked cell by cell), never
+from the contours the last merge left, so however often a slice is merged
+nothing compounds. Outside it the contours are what they were, vertex for
+vertex, and the window's trace is spliced into them where they cross its
+border (*Booleans within a window* below). Merging the whole slice from
+where the stroke started, on every merge, is what this replaces: on a
+body outline that was 50 ms a sample and 0.6 s every 100 ms for a 20 mm
+ball (dev build); now it is 5 ms a sample, and the release 4 ms.
+
+The other views, the 3D scene and *Save changes to the PACS* see the
+contours as they are merged, through the same writes as every other
+contour edit. The whole stroke is one undo step; `Alt`, `Shift`+wheel and
+`[` `]` work as on the slice.
 
 The smart brush's edge band applies voxel by voxel through the ball, as it
 does through the segment brush's sphere: a cell is marked only if the voxel
@@ -385,7 +400,12 @@ is cached, so a session of sagittal strokes costs one conversion in, not one
 per stroke, and the shape does not erode with each. While a brush, nudge
 or drag stroke goes on in such a view, the axial contours are written back
 at most a few times a second and once more when the button is let go, and
-only the box the structure occupies is converted.
+only the box the structure occupies is converted - and of it, only the
+axial slices the edits since the last write reached: the vertices that
+changed (with their neighbours along the ring) say which, since every edit
+keeps the vertices it does not reach. The other axial slices keep the
+contours they had. On a body outline a write of a 20 mm ball's stroke went
+from 130 ms (all of it re-cut) to 21 ms (its 15 slices), dev build.
 
 ## Points of interest
 
@@ -453,6 +473,26 @@ Two paths, and the fast one is exact:
   draws. It cannot fail, has no degenerate cases, and handles holes, multiple
   components and self-intersecting freehand strokes alike.
 
+**Booleans within a window.** A brush stroke changes a slice only where
+the brush went, but a bounding box of both operands is the whole body
+outline when the brush sits on its edge: a few million fine cells per mouse
+sample, and the whole outline re-traced. So a brush stamp, a ball's merge
+(and every `add_ring` / `subtract_ring`) rasterize only a **window**
+around what changes - on the same lattice of fine cells, so the cells are
+the ones the whole raster has there - and splice its trace into the outline
+outside, which keeps its own vertices. The window's cells traced between
+their centres give loops (wholly inside) and chains from border to border;
+the outline as it was gives pieces that leave the window and come back.
+The window's border cells are filled from the outline as it was, so every
+piece meets a chain end of the same kind (leaving or entering) beside it,
+in the same order round the border: they are matched in that order and
+joined. Anything that does not match - an outline crossing the border
+twice between two cell centres, a vertex grazing it - and any result whose
+area is not the one its cells give is refused, and the window is tried
+again with its border elsewhere, then the whole raster does it as before.
+The slice brush on a body outline went from 50 ms to 2 ms a sample (20 mm,
+dev build).
+
 While you draw, the volume under the structure's name is planimetry on the
 contours themselves - the area of every slice times the slice thickness -
 which is cheap enough to recompute every frame and finer than counting
@@ -496,7 +536,16 @@ two overlapping discs; a subtraction that cuts a real hole; the exact fast
 paths leaving untouched rings untouched (by `assert_eq!` on the ring itself);
 tidying; a mask round-tripping through contours voxel for voxel; the trip
 through patient coordinates; a sagittal stack converting to axial with its
-volume; interpolation of a sphere; components; the point cap; the transforms.
+volume; interpolation of a sphere; components; the point cap; the transforms;
+the windowed boolean against the stamp's own area, voxel for voxel against
+the whole raster around the stamp, and every far vertex kept (on a circle,
+across a long edge of a square, into a hole); a ball merged sample by
+sample against the same stroke merged at once; a slab of axial slices
+re-cut from a sagittal stack against the whole re-cut, the other slices
+of the ROI kept. `examples/brush_bench.rs`
+times a stroke on a real structure both ways (`--body` makes a body
+outline from the CT), and the `#[ignore]`d `brush_frame_timing` in
+`tests/ui.rs` times the frames of a drag delivered one move a frame.
 
 `crates/rds-domain/src/livewire.rs` has its own: a path between two points of a disc's rim
 that follows the rim to within a pixel and a half instead of cutting across

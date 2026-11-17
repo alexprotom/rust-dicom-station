@@ -231,16 +231,35 @@ impl ViewerApp {
         let study = s.study.as_ref()?;
         let spacing = study.volume.spacing;
         let dims = seg.dims;
-        let voxels = crate::morphology::count_set(&seg.mask);
+        // Drawn every frame the section is open, a stroke's frames among
+        // them: the count the edits keep, not a pass over the whole mask
+        // (two of them cost 20 ms a frame on a 512 x 512 x 133 lattice).
+        let voxels = seg.count;
         // How many slices of the stack the mask touches: the same count the
-        // contour editor shows, so the two sections read alike.
+        // contour editor shows, so the two sections read alike. Only the box
+        // the voxels were ever set in is looked at, and a slice stops at its
+        // first set voxel.
         let per_slice = dims[0] * dims[1];
-        let occupied = (0..dims[2])
-            .filter(|k| {
-                let from = k * per_slice;
-                seg.mask[from..from + per_slice].iter().any(|v| *v != 0)
-            })
-            .count();
+        let occupied = match seg.bbox {
+            Some((lo, hi)) if dims.iter().all(|&d| d > 0) => {
+                let hi = [
+                    hi[0].min(dims[0] - 1),
+                    hi[1].min(dims[1] - 1),
+                    hi[2].min(dims[2] - 1),
+                ];
+                (lo[2]..=hi[2])
+                    .filter(|&k| {
+                        (lo[1]..=hi[1]).any(|j| {
+                            let row = k * per_slice + j * dims[0];
+                            seg.mask
+                                .get(row + lo[0]..=row + hi[0])
+                                .is_some_and(|r| r.iter().any(|v| *v != 0))
+                        })
+                    })
+                    .count()
+            }
+            _ => 0,
+        };
         Some((
             seg.name.clone(),
             seg.color,

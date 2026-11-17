@@ -193,6 +193,65 @@ impl VectorField {
     }
 }
 
+/// The arrow spacing a fresh installation draws with, mm: one arrow (and
+/// one line of a deformed grid) every this many millimetres of a view.
+pub const DEFAULT_ARROW_SPACING_MM: f64 = 12.0;
+/// The arrow spacing a user may pick, mm.
+pub const ARROW_SPACING_RANGE: std::ops::RangeInclusive<f64> = 2.0..=60.0;
+
+/// How long an arrow is drawn, as a multiple of the displacement it stands
+/// for: the user's *Arrow scale* at the default spacing, in proportion to
+/// the spacing otherwise. Arrows twice as close are drawn half as long, so
+/// a denser field does not pile its arrows onto each other, and the
+/// default draws exactly what it always did. All arrows of a view share
+/// the one factor, so their lengths still compare.
+pub fn arrow_length_factor(scale: f32, spacing_mm: f64) -> f32 {
+    let s = if spacing_mm.is_finite() && spacing_mm > 0.0 {
+        spacing_mm
+    } else {
+        DEFAULT_ARROW_SPACING_MM
+    };
+    scale * (s / DEFAULT_ARROW_SPACING_MM) as f32
+}
+
+/// An arrow's colour, RGBA (not premultiplied): blue to red by magnitude
+/// over the field's largest ([`render::dose_colormap`]), or one pale yellow
+/// when the field is not coloured by magnitude.
+pub fn arrow_rgba(magnitude: f32, max: f32, colored: bool) -> [u8; 4] {
+    if colored {
+        let c = render::dose_colormap((magnitude / max.max(1e-6)).clamp(0.0, 1.0));
+        [c[0], c[1], c[2], 235]
+    } else {
+        [255, 235, 130, 215]
+    }
+}
+
+/// The colour of a deformed grid's lines, RGBA (not premultiplied).
+pub fn grid_rgba(colored: bool) -> [u8; 4] {
+    if colored {
+        let c = render::dose_colormap(0.55);
+        [c[0], c[1], c[2], 170]
+    } else {
+        [255, 235, 130, 160]
+    }
+}
+
+/// How an arrow is drawn, in pixels of what it is drawn on: shorter than
+/// [`ARROW_MIN_LEN`] it is a disc ([`arrow_disc_radius`]), since nearly all
+/// its displacement leaves the plane; otherwise a line with a head of
+/// [`ARROW_HEAD`] of its length (at most [`ARROW_HEAD_MAX`]) and
+/// [`ARROW_HEAD_WIDTH`] of that across.
+pub const ARROW_MIN_LEN: f32 = 1.5;
+pub const ARROW_HEAD: f32 = 0.32;
+pub const ARROW_HEAD_MAX: f32 = 7.0;
+pub const ARROW_HEAD_WIDTH: f32 = 0.45;
+
+/// The disc a nearly out-of-plane arrow is drawn as: its radius grows with
+/// the out-of-plane part, from 1.5 to 5 pixels.
+pub fn arrow_disc_radius(out_of_plane: f32, max: f32) -> f32 {
+    1.5 + (out_of_plane.abs() / max.max(1e-6) * 3.5).min(3.5)
+}
+
 /// One arrow in a view: where it starts and ends in display-pixel space,
 /// how long the displacement really is, and how much of it points out of
 /// the plane (which a 2-D arrow cannot show and a colour must).
@@ -398,6 +457,29 @@ mod tests {
         let g = glyphs_on_plane(&f, &v, ViewPlane::Sagittal, 20, 20.0);
         assert!(g.iter().all(|a| a.out_of_plane.abs() < 1e-4));
         assert!(g.iter().any(|a| (a.from[1] - a.to[1]).abs() > 1.0));
+    }
+
+    #[test]
+    fn closer_arrows_are_drawn_shorter_in_proportion() {
+        assert_eq!(arrow_length_factor(3.0, DEFAULT_ARROW_SPACING_MM), 3.0);
+        assert_eq!(arrow_length_factor(3.0, 6.0), 1.5);
+        assert_eq!(arrow_length_factor(2.0, 24.0), 4.0);
+        assert_eq!(arrow_length_factor(3.0, f64::NAN), 3.0, "the default");
+        // Halving the spacing doubles the arrows a plane gets along each
+        // axis; their drawn length halves with it.
+        let v = vol([40, 40, 20]);
+        let t = Transform3::rigid_only(RigidTransform::new(
+            [0.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            Vec3::ZERO,
+        ));
+        // A lattice on every voxel, so no arrow falls past its last node.
+        let f = VectorField::sample(&v, &t, None, 2.0);
+        let n = |mm| glyphs_on_plane(&f, &v, ViewPlane::Axial, 10, mm).len();
+        assert_eq!(n(8.0), 4 * n(16.0));
+        assert_eq!(arrow_rgba(5.0, 10.0, false), [255, 235, 130, 215]);
+        let c = render::dose_colormap(1.0);
+        assert_eq!(arrow_rgba(20.0, 10.0, true), [c[0], c[1], c[2], 235]);
+        assert!(arrow_disc_radius(0.0, 1.0) == 1.5 && arrow_disc_radius(9.0, 1.0) == 5.0);
     }
 
     #[test]

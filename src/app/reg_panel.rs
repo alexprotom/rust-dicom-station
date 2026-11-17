@@ -643,7 +643,7 @@ impl ViewerApp {
             );
             return;
         }
-        let step = self.field_step_mm;
+        let step = self.arrow_spacing_mm();
         let warp_only = self.field_warp_only;
         let progress = Arc::new(Progress::default());
         progress.set("starting");
@@ -748,7 +748,7 @@ impl ViewerApp {
             &vol,
             &transform,
             None,
-            self.field_step_mm,
+            self.arrow_spacing_mm(),
             self.field_warp_only,
         );
         self.registration = Some(ActiveRegistration {
@@ -946,7 +946,7 @@ impl ViewerApp {
         let vol = reg.fixed_vol.clone();
         let t = reg.result.transform.clone();
         let region = reg.region.clone();
-        let step = self.field_step_mm;
+        let step = self.arrow_spacing_mm();
         let warp_only = self.field_warp_only;
         let progress = Arc::new(Progress::default());
         self.field_job = Some(Job::spawn(progress, move |_| {
@@ -1221,6 +1221,8 @@ impl ViewerApp {
             self.reg_landmarks.clear();
         }
         if resample {
+            // The spacing may be what changed: it is kept in the settings.
+            self.persist_settings();
             self.rebuild_field();
         }
         if save_field {
@@ -2203,27 +2205,22 @@ impl ViewerApp {
                             ui.selectable_value(&mut self.field_style, s, s.label());
                         }
                     });
-                    ui.horizontal(|ui| {
-                        ui.label("Spacing");
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut self.field_step_mm)
-                                    .speed(1.0)
-                                    .range(2.0..=60.0)
-                                    .suffix(" mm"),
-                            )
-                            .on_hover_text("Arrow spacing")
-                            .changed()
-                        {
-                            resample = true;
-                        }
-                    });
+                    // The density: kept in the settings (Settings ▸ Viewer
+                    // has the same slider); the field is sampled again on a
+                    // lattice of that step when the drag ends.
+                    let spacing = arrow_spacing_slider(ui, &mut self.overlays.arrow_spacing_mm);
+                    if spacing.drag_stopped() || (spacing.changed() && !spacing.dragged()) {
+                        resample = true;
+                    }
                     ui.horizontal(|ui| {
                         ui.label("Arrow scale");
                         ui.add(
                             egui::Slider::new(&mut self.field_scale, 0.5..=20.0).logarithmic(true),
                         )
-                        .tip("Arrow length, times the true length");
+                        .tip(
+                            "Arrow length, times the true length at the 12 mm spacing; closer \
+                             arrows are drawn shorter in proportion, so they do not pile up",
+                        );
                     });
                     ui.checkbox(&mut self.field_color, "Colour by magnitude")
                         .on_hover_text("Blue → red by magnitude");

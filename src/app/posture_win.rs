@@ -77,10 +77,20 @@
 //! Structure Set marked as interpolated, the film of a pane as GIF or
 //! PNG frames (the recorder of [`super::record`], run on this window's own
 //! screenshots), and *Save GIF*: the path rendered frame by frame from the
-//! model, never from the screen ([`crate::posture::film`]), all three
-//! planes in one or the **selected view** only - the pane last clicked in
-//! the window (any button), which is also the pane the recorder films and
-//! the one its list beside ⏺ shows.
+//! model, never from the screen ([`crate::posture::film`]): all views (the
+//! three planes, the 3D scene under them) or any one of them, the vector
+//! field over the planes if asked. The menu starts from the **selected
+//! view** - the pane last clicked in the window (any button), which is
+//! also the pane the recorder films and the one its list beside ⏺ shows -
+//! and any view can be picked in it. The 3D scene of the film is drawn by
+//! the film from the 3D pane's camera, opacities and structures, the
+//! meshes carried to each time, as the pane draws them.
+//!
+//! **Arrow spacing.** The overlay's arrows (and grid lines) are this
+//! window's own spacing apart (the millimetres beside the overlay list),
+//! drawn shorter in proportion when closer
+//! ([`crate::registration::dvf::arrow_length_factor`]); the colours and
+//! the arrow scale are the main viewer's.
 //!
 //! The tables are `posture_table.rs`.
 
@@ -214,9 +224,12 @@ pub(super) struct PostureWin {
     pub(super) film: PaneKind,
     pub(super) rec: Option<record::Recording>,
     pub(super) rec_status: Option<String>,
-    /// *Save GIF*: the three planes (else the selected pane alone), the
-    /// film's width in pixels, there and back, the job writing it.
-    pub(super) gif_all: bool,
+    /// *Save GIF*: the views (all of them until a pane is selected, then
+    /// whichever was chosen last: a pane clicked, or a view picked in the
+    /// menu), the field over the planes, the film's width in pixels, there
+    /// and back, the job writing it.
+    pub(super) gif_view: pfilm::FilmViews,
+    pub(super) gif_field: bool,
     pub(super) gif_width: usize,
     pub(super) gif_bounce: bool,
     /// What the last GIF came to, or why it did not.
@@ -224,6 +237,13 @@ pub(super) struct PostureWin {
     pub(super) gif_job: Option<Job<anyhow::Result<(std::path::PathBuf, pfilm::FilmSummary)>>>,
     /// Width over height of a plane's pane as last drawn: the film's cells.
     pub(super) pane_aspect: Option<f32>,
+    /// The 3D pane as last drawn, and the whole row under the planes: the
+    /// scene's cell alone and under the planes in the film.
+    pub(super) scene_rect: Option<Vec2>,
+    pub(super) lower_rect: Option<Vec2>,
+    /// The overlay's arrow spacing over this window's views, mm (and in
+    /// *Save GIF*).
+    pub(super) arrow_mm: f64,
     /// The forward displacement on screen, for the overlay, and its count.
     pub(super) field: Option<Arc<VectorField>>,
     pub(super) field_gen: u64,
@@ -288,12 +308,16 @@ impl Default for PostureWin {
             film: PaneKind::Plane(ViewPlane::Sagittal),
             rec: None,
             rec_status: None,
-            gif_all: true,
+            gif_view: pfilm::FilmViews::All,
+            gif_field: false,
             gif_width: 800,
             gif_bounce: false,
             gif_status: None,
             gif_job: None,
             pane_aspect: None,
+            scene_rect: None,
+            lower_rect: None,
+            arrow_mm: crate::registration::dvf::DEFAULT_ARROW_SPACING_MM,
             field: None,
             field_gen: 0,
             export_job: None,
@@ -1102,12 +1126,13 @@ impl ViewerApp {
         if let Some(res) = poll_job(&mut self.posture.gif_job, ctx, "GIF", &mut self.error) {
             self.posture.gif_status = match res {
                 Ok((dest, s)) => Some(format!(
-                    "GIF: {} frames, {} x {} px, {} KB, on the {}, written to {}",
+                    "GIF: {} frames, {} x {} px, {} KB, on the {}{}, written to {}",
                     s.frames,
                     s.width,
                     s.height,
                     s.bytes.div_ceil(1024),
                     if s.gpu { "GPU" } else { "CPU" },
+                    if s.scene { ", with the 3D scene" } else { "" },
                     dest.display()
                 )),
                 Err(e) if progress::is_cancellation(&e) => Some("GIF cancelled".into()),
@@ -1553,12 +1578,17 @@ impl ViewerApp {
             if let Some((k, _)) = rects.iter().find(|(k, r)| {
                 r.contains(at) && matches!(k, PaneKind::Plane(_) | PaneKind::Scene3d)
             }) {
-                self.posture.film = *k;
+                self.posture_select_pane(*k);
             }
         }
         if let Some((_, r)) = rects.first() {
             self.posture.pane_aspect = Some(r.width() / r.height().max(1.0));
         }
+        self.posture.scene_rect = rects
+            .iter()
+            .find(|(k, _)| *k == PaneKind::Scene3d)
+            .map(|(_, r)| r.size());
+        self.posture.lower_rect = Some(lower.size());
         let film = rects
             .iter()
             .find(|(k, _)| *k == self.posture.film)
@@ -1685,6 +1715,23 @@ impl ViewerApp {
             // Shown again with the field (or without it).
             self.posture.shown = None;
         }
+        // The density of the arrows (and of the deformed grid's lines); the
+        // views walk their arrows again at the new spacing by themselves.
+        ui.add(
+            egui::DragValue::new(&mut self.posture.arrow_mm)
+                .range(crate::registration::dvf::ARROW_SPACING_RANGE)
+                .speed(0.25)
+                .fixed_decimals(0)
+                .suffix(" mm"),
+        )
+        // Its value ("12 mm") has words of a sort, so the tooltip would not
+        // name it: named outright.
+        .named("Arrow spacing")
+        .on_hover_text(
+            "Arrow spacing: one arrow (or one line of the deformed grid) every so many \
+             millimetres, in the views and in Save GIF; closer arrows are drawn shorter in \
+             proportion",
+        );
         // The extras: the wash and the dose; a change renders again.
         let (wash, dose) = (self.posture.wash, self.posture.dose_on);
         ui.checkbox(&mut self.posture.wash, "Jacobian wash")
@@ -1781,13 +1828,15 @@ impl ViewerApp {
             .width(70.0)
             .show_ui(ui, |ui| {
                 for (k, l) in films {
-                    ui.selectable_value(&mut self.posture.film, k, l);
+                    if ui.selectable_label(self.posture.film == k, l).clicked() {
+                        self.posture_select_pane(k);
+                    }
                 }
             })
             .response
             .on_hover_text(
-                "The selected view: the pane a recording films and Save GIF takes alone. A click \
-                 in a pane selects it too.",
+                "The selected view: the pane a recording films, and the view Save GIF starts \
+                 from. A click in a pane selects it too.",
             );
         let armed = self.posture.rec.is_some();
         if ui
@@ -1810,12 +1859,94 @@ impl ViewerApp {
         }
     }
 
-    /// The plane the selected view shows, if it is a plane.
-    fn posture_film_plane(&self) -> Option<ViewPlane> {
-        match self.posture.film {
-            PaneKind::Plane(p) => Some(p),
-            _ => None,
+    /// Select a pane (a click in it, or the list beside ⏺): the pane a
+    /// recording films, and the view *Save GIF* offers first.
+    fn posture_select_pane(&mut self, kind: PaneKind) {
+        self.posture.film = kind;
+        self.posture.gif_view = match kind {
+            PaneKind::Plane(p) => pfilm::FilmViews::One(p),
+            PaneKind::Scene3d => pfilm::FilmViews::Scene,
+            _ => self.posture.gif_view,
+        };
+    }
+
+    /// Has the first state surfaces for the 3D scene of a film?
+    fn posture_has_scene(&self) -> bool {
+        self.posture
+            .built
+            .as_ref()
+            .is_some_and(|b| b.base_meshes.iter().any(|m| !m.tris.is_empty()))
+    }
+
+    /// The field over the planes as the window draws it: the overlay's
+    /// style (arrows while the overlay is off), this window's spacing, the
+    /// viewer's arrow scale and colours.
+    fn posture_film_field(&self) -> pfilm::FieldOverlay {
+        pfilm::FieldOverlay {
+            style: match self.posture.overlay {
+                FieldStyle::None => FieldStyle::Arrows,
+                s => s,
+            },
+            spacing_mm: self.posture.arrow_mm,
+            scale: self.field_scale,
+            colored: self.field_color,
         }
+    }
+
+    /// The 3D scene of a film as the model workspace's 3D pane shows it:
+    /// the first state's meshes (the film carries them to each time), the
+    /// pane's camera and opacity, and each structure's tick, colour and
+    /// opacity.
+    fn posture_film_scene(&self, slot: usize) -> Option<pfilm::FilmScene> {
+        let b = self.posture.built.as_ref()?;
+        let mut scene = pfilm::FilmScene::new(b.base_meshes.clone());
+        let w = self.d3_windows.iter().find(|w| w.slot == slot);
+        if let Some(w) = w {
+            // The pane holds its pan in points; the film in a fraction of
+            // the pane's shorter side, which carries it to any size.
+            let side = self
+                .posture
+                .scene_rect
+                .map_or(1.0, |s| s.x.min(s.y).max(1.0));
+            scene.camera = pfilm::SceneCamera {
+                yaw: w.yaw,
+                pitch: w.pitch,
+                zoom: w.zoom,
+                pan: [w.pan.x / side, w.pan.y / side],
+                center: w.center,
+                radius: w.radius,
+            };
+            scene.opacity = w.opacity;
+        }
+        let s = &self.slots[slot];
+        let colors: Vec<[u8; 3]> = s
+            .active_structures()
+            .map(|ss| ss.rois.iter().map(|r| r.color).collect())
+            .unwrap_or_default();
+        let n = colors.len().max(s.roi_visible.len()).max(
+            b.base_meshes
+                .iter()
+                .map(|m| m.roi_index + 1)
+                .max()
+                .unwrap_or(0),
+        );
+        scene.rois = (0..n)
+            .map(|i| pfilm::SceneRoi {
+                visible: s.roi_visible.get(i).copied().unwrap_or(true),
+                color: colors
+                    .get(i)
+                    .copied()
+                    .or_else(|| {
+                        b.base_meshes
+                            .iter()
+                            .find(|m| m.roi_index == i)
+                            .map(|m| m.color)
+                    })
+                    .unwrap_or([200, 200, 200]),
+                alpha: w.and_then(|w| w.roi_alpha.get(&i).copied()).unwrap_or(1.0),
+            })
+            .collect();
+        Some(scene)
     }
 
     /// *Save GIF*: its choices in a menu, or the job writing it.
@@ -1832,7 +1963,7 @@ impl ViewerApp {
             }
             return;
         }
-        let selected = self.posture_film_plane();
+        let has_scene = self.posture_has_scene();
         let mut save = false;
         // Choices, like the View menu: setting one leaves the menu open; it
         // closes on a click outside it, or on *Save...*.
@@ -1843,26 +1974,39 @@ impl ViewerApp {
             )
             .ui(ui, |ui| {
                 ui.weak("The path as an animated GIF, every frame rendered from the model");
-                ui.radio_value(&mut self.posture.gif_all, true, "All views")
-                    .on_hover_text(
-                        "Axial, sagittal and coronal side by side, as the window has them",
-                    );
-                let name = selected.map_or("3D", |p| p.title());
-                ui.add_enabled_ui(selected.is_some(), |ui| {
-                    ui.radio_value(
-                    &mut self.posture.gif_all,
-                    false,
-                    format!("Selected view only ({name})"),
-                )
-                .on_hover_text(
-                    "The pane last clicked in this window (or picked in the selected-view list \
-                     beside the record button)",
-                )
-                .on_disabled_hover_text(
-                    "The 3D scene is not rendered into a GIF: click a plane, or record the 3D \
-                     pane from the screen",
-                );
-                });
+                ui.label("View");
+                for v in pfilm::FilmViews::CHOICES {
+                    let hint = match v {
+                        pfilm::FilmViews::All => {
+                            "Axial, sagittal and coronal side by side and the 3D scene under \
+                             them, as the window has them"
+                        }
+                        pfilm::FilmViews::One(_) => "This plane alone, the whole slice",
+                        pfilm::FilmViews::Scene => {
+                            "The 3D scene alone, turned and zoomed as the 3D pane is"
+                        }
+                    };
+                    let enabled = v != pfilm::FilmViews::Scene || has_scene;
+                    ui.add_enabled_ui(enabled, |ui| {
+                        ui.radio_value(&mut self.posture.gif_view, v, v.label())
+                            .on_hover_text(hint)
+                            .on_disabled_hover_text(
+                                "The first state has no structure with a surface to show in 3D",
+                            );
+                    });
+                }
+                ui.weak("A click in a pane picks it here too.");
+                let style = match self.posture.overlay {
+                    FieldStyle::Grid => "the deformed grid",
+                    _ => "arrows",
+                };
+                ui.checkbox(&mut self.posture.gif_field, "Vector field")
+                    .on_hover_text(format!(
+                        "The displacement from the first state over the planes, as the views \
+                         draw it: {style} (the overlay list on the bar), one every {:.0} mm \
+                         (the spacing beside it), in the views' colours",
+                        self.posture.arrow_mm
+                    ));
                 ui.horizontal(|ui| {
                     ui.label("Width");
                     ui.add(
@@ -1876,7 +2020,7 @@ impl ViewerApp {
                 ui.checkbox(&mut self.posture.gif_bounce, "There and back")
                     .on_hover_text("The way back added after the way there, so the loop is smooth");
                 ui.weak(format!(
-                    "{} frames at {:.1} fps (the bar's), {}, the structures outlined{}",
+                    "{} frames at {:.1} fps (the bar's), {}, the structures outlined{}{}",
                     self.posture.frames.clamp(2, 200),
                     self.posture.fps,
                     self.posture.show.label(),
@@ -1884,9 +2028,14 @@ impl ViewerApp {
                         ", with the Jacobian wash"
                     } else {
                         ""
+                    },
+                    if self.posture.gif_field {
+                        ", with the vector field"
+                    } else {
+                        ""
                     }
                 ));
-                let ready = self.posture.gif_all || selected.is_some();
+                let ready = self.posture.gif_view != pfilm::FilmViews::Scene || has_scene;
                 if ui
                     .add_enabled(ready, egui::Button::new("Save..."))
                     .on_hover_text("Choose the file and write the GIF in the background")
@@ -1897,7 +2046,8 @@ impl ViewerApp {
                 }
             });
         menu.on_hover_text(
-            "Save the animation as a GIF: all views in one, or the selected view only",
+            "Save the animation as a GIF: all views in one, or any one of them, with the vector \
+             field if asked",
         );
         if let Some(s) = &self.posture.gif_status {
             ui.weak(s.as_str());
@@ -1917,15 +2067,13 @@ impl ViewerApp {
     }
 
     /// Write the GIF to `dest` on a background job: the times of a run,
-    /// each frame rendered exactly on the full grid ([`pfilm::write_gif`]).
+    /// each frame rendered exactly on the full grid, the scene drawn from
+    /// the carried meshes ([`pfilm::write_gif`]).
     pub(super) fn posture_start_gif(&mut self, dest: std::path::PathBuf) {
         let (Some(b), Some(slot)) = (self.posture.built.as_ref(), self.posture.slot) else {
             return;
         };
-        let views = match (self.posture.gif_all, self.posture_film_plane()) {
-            (false, Some(p)) => pfilm::FilmViews::One(p),
-            _ => pfilm::FilmViews::All,
-        };
+        let views = self.posture.gif_view;
         // The views' slices on the full grid (a key frame's volume may be
         // on a coarser one of the same extent).
         let full = b.model.grid.dims;
@@ -1955,6 +2103,17 @@ impl ViewerApp {
             });
             ss
         });
+        let scene = views
+            .wants_scene()
+            .then(|| self.posture_film_scene(slot))
+            .flatten();
+        // The scene's cell: the 3D pane's shape alone, the whole row under
+        // the planes in the full layout.
+        let scene_aspect = match views {
+            pfilm::FilmViews::Scene => self.posture.scene_rect,
+            _ => self.posture.lower_rect,
+        }
+        .map(|s| s.x / s.y.max(1.0));
         let params = pfilm::FilmParams {
             views,
             slices,
@@ -1965,8 +2124,10 @@ impl ViewerApp {
             window: (self.window_center[slot], self.window_width[slot]),
             width: self.posture.gif_width,
             cell_aspect: self.posture.pane_aspect,
+            scene_aspect,
             outlines: true,
             wash: self.posture.wash,
+            field: self.posture.gif_field.then(|| self.posture_film_field()),
         };
         let model = b.model.clone();
         let images = b.images.clone();
@@ -1981,6 +2142,7 @@ impl ViewerApp {
                 &images,
                 slicer.as_deref(),
                 structures.as_ref(),
+                scene.as_ref(),
                 &params,
                 p,
             )

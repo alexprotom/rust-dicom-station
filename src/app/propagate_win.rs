@@ -1171,7 +1171,7 @@ impl ViewerApp {
         if !params.method.is_deformable() {
             params.method = registration::RegMethod::PlastimatchBSpline;
         }
-        let field_step = self.field_step_mm;
+        let field_step = self.arrow_spacing_mm();
         let warp_only = self.field_warp_only;
 
         let progress = Arc::new(Progress::default());

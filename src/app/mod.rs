@@ -687,8 +687,10 @@ pub struct ViewerApp {
     /// series to be put on display: (workspace, series UID, phase index).
     pending_phase_field: Option<(usize, String, usize)>,
     field_style: FieldStyle,
-    field_step_mm: f64,
-    /// Arrows are drawn this many times their true length.
+    // The arrow spacing is `overlays.arrow_spacing_mm` (persisted): see
+    // [`Self::field_spacing`].
+    /// Arrows are drawn this many times their true length at the default
+    /// spacing (`dvf::arrow_length_factor`).
     field_scale: f32,
     field_color: bool,
     /// A re-sampling of the field after the lattice step changed.
@@ -1316,7 +1318,6 @@ impl ViewerApp {
             field_warp_only: false,
             pending_phase_field: None,
             field_style: FieldStyle::Arrows,
-            field_step_mm: 12.0,
             field_scale: 3.0,
             field_color: true,
             field_job: None,

@@ -41,6 +41,99 @@ pub struct RoiMesh {
     pub tris: Vec<[u32; 3]>,
 }
 
+/// How much of its opacity an EXTERNAL / body surface keeps in a scene, so
+/// the structures inside it show through.
+pub const EXTERNAL_ALPHA: f32 = 0.22;
+
+/// The turn a scene starts with: yaw about the patient's z, pitch about the
+/// screen's x, radians.
+pub const SCENE_YAW: f32 = 0.7;
+pub const SCENE_PITCH: f32 = -0.5;
+
+/// A point (or, with `centered` false, a direction) turned into the scene's
+/// camera frame: yaw about patient z, then pitch about the screen x. The
+/// result's `[0]` runs across the screen, `[2]` up it, `[1]` into it (the
+/// viewer at `-y`). `yaw` and `pitch` are `(sin, cos)` pairs. The 3D pane
+/// (`app/d3.rs`) and the posture film (`posture::film`) both turn their
+/// vertices through this one function, so they draw the same picture.
+#[inline]
+pub fn turn(
+    yaw: (f32, f32),
+    pitch: (f32, f32),
+    c: [f32; 3],
+    p: [f32; 3],
+    centered: bool,
+) -> [f32; 3] {
+    let ((sy, cy), (sp, cp)) = (yaw, pitch);
+    let (x, y, z) = if centered {
+        (p[0] - c[0], p[1] - c[1], p[2] - c[2])
+    } else {
+        (p[0], p[1], p[2])
+    };
+    let x1 = cy * x - sy * y;
+    let y1 = sy * x + cy * y;
+    let y2 = cp * y1 - sp * z;
+    let z2 = sp * y1 + cp * z;
+    [x1, y2, z2]
+}
+
+/// The scene's light: a headlight along the view axis, two-sided, on a
+/// normal already [`turn`]ed. Multiplies the surface colour.
+#[inline]
+pub fn headlight(turned_normal: [f32; 3]) -> f32 {
+    0.30 + 0.70 * turned_normal[1].abs()
+}
+
+/// Map an `f32` to a `u32` that sorts in the same order, so the painter's
+/// algorithm can use a primitive sort instead of a float comparator: a
+/// scene sorts its triangles by `(!depth_key(mean depth)) << 32 | index`,
+/// far first, ties in the order the triangles come.
+#[inline]
+pub fn depth_key(d: f32) -> u32 {
+    let b = d.to_bits();
+    if b & 0x8000_0000 != 0 {
+        !b
+    } else {
+        b ^ 0x8000_0000
+    }
+}
+
+/// Pixels per millimetre of a scene drawn in a `w` by `h` rectangle: the
+/// bounding sphere of radius `radius` fitted to 0.45 of the shorter side,
+/// times the camera's zoom.
+#[inline]
+pub fn scene_scale(w: f32, h: f32, radius: f32, zoom: f32) -> f32 {
+    0.45 * w.min(h) / radius * zoom
+}
+
+/// The bounding sphere a scene fits its camera to: the centre of the
+/// meshes' bounding box and its half-diagonal (at least 10 mm); `None`
+/// without a vertex.
+pub fn bounding_sphere(meshes: &[RoiMesh]) -> Option<([f32; 3], f32)> {
+    let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for m in meshes {
+        for v in &m.verts {
+            for a in 0..3 {
+                mn[a] = mn[a].min(v[a]);
+                mx[a] = mx[a].max(v[a]);
+            }
+        }
+    }
+    if mn[0] >= mx[0] {
+        return None;
+    }
+    let center = [
+        (mn[0] + mx[0]) * 0.5,
+        (mn[1] + mx[1]) * 0.5,
+        (mn[2] + mx[2]) * 0.5,
+    ];
+    let radius = (0..3)
+        .map(|a| (mx[a] - mn[a]) * 0.5)
+        .fold(0.0f32, |acc, v| (acc * acc + v * v).sqrt())
+        .max(10.0);
+    Some((center, radius))
+}
+
 /// Build surface meshes for every ROI of a structure set (parallel).
 pub fn build_meshes(ss: &StructureSet, progress: &Progress) -> Vec<RoiMesh> {
     let n = ss.rois.len();

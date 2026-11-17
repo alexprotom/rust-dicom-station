@@ -33,11 +33,14 @@
 //! * `--show forward|backward|crossfade|difference|jacobian` - what the key
 //!   frames and the GIF show;
 //! * `--gif FILE` - the path as an animated GIF (`posture::film`, on the
-//!   CPU): `--gif-view all|axial|sagittal|coronal` (default `all`, the
-//!   three planes through the centre side by side), `--gif-width PX`
-//!   (800), `--gif-frames N` (21), `--fps F` (6), `--bounce` (there and
-//!   back), `--wash` (the Jacobian wash); the structures of the first
-//!   state outlined;
+//!   CPU): `--gif-view all|axial|sagittal|coronal|3d` (default `all`: the
+//!   three planes through the centre side by side and the 3D scene of the
+//!   first state's structures under them, its camera as a fresh 3D pane
+//!   has it), `--gif-width PX` (800), `--gif-frames N` (21), `--fps F`
+//!   (6), `--bounce` (there and back), `--wash` (the Jacobian wash),
+//!   `--gif-field arrows|grid` (the displacement over the planes, as the
+//!   window's overlay) with `--arrow-spacing MM` (12) and `--arrow-scale X`
+//!   (3); the structures of the first state outlined;
 //! * `--export T` - the image and structures at time `T` as DICOM
 //!   (`frame_T/`);
 //! * `--wepl GANTRY[,COUCH]` - the WEPL to each structure's centroid along
@@ -55,8 +58,10 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use rust_dicom_station::gen_test_data::{self, ArticulatedParams};
 use rust_dicom_station::loader::LoadedStudy;
+use rust_dicom_station::mesh3d;
 use rust_dicom_station::posture::{apply, file, film, Anchor, Mode};
 use rust_dicom_station::progress::Progress;
+use rust_dicom_station::registration::dvf::{self, FieldStyle};
 use rust_dicom_station::simulate::{generate_transformed_study, SimParams};
 use rust_dicom_station::volume::{ViewPlane, Volume};
 use rust_dicom_station::workflow::posture::{self as wp, Bodies, PostureRequest, StateInput};
@@ -141,10 +146,13 @@ fn bench_slices(
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const VALUED: [&str; 21] = [
+    const VALUED: [&str; 24] = [
         "--wepl",
         "--gif",
         "--gif-view",
+        "--gif-field",
+        "--arrow-spacing",
+        "--arrow-scale",
         "--gif-width",
         "--gif-frames",
         "--fps",
@@ -420,13 +428,32 @@ fn main() -> Result<()> {
         let images: Vec<Arc<Volume>> = studies.iter().map(|s| s.volume.clone()).collect();
         let window = show.window().unwrap_or(studies[0].default_window);
         let mut fp = film::FilmParams::centred(&o.model.grid, show, window);
-        fp.views = match opt("--gif-view").as_deref() {
-            None | Some("all") => film::FilmViews::All,
-            Some("axial") => film::FilmViews::One(ViewPlane::Axial),
-            Some("sagittal") => film::FilmViews::One(ViewPlane::Sagittal),
-            Some("coronal") => film::FilmViews::One(ViewPlane::Coronal),
-            Some(v) => bail!("--gif-view {v}: all, axial, sagittal or coronal"),
+        fp.views = match opt("--gif-view") {
+            None => film::FilmViews::All,
+            Some(v) => film::FilmViews::from_key(&v)
+                .ok_or_else(|| anyhow!("--gif-view {v}: all, axial, sagittal, coronal or 3d"))?,
         };
+        fp.field = match opt("--gif-field").as_deref() {
+            None => None,
+            Some(s) => Some(film::FieldOverlay {
+                style: match s {
+                    "arrows" => FieldStyle::Arrows,
+                    "grid" => FieldStyle::Grid,
+                    _ => bail!("--gif-field {s}: arrows or grid"),
+                },
+                spacing_mm: num("--arrow-spacing", dvf::DEFAULT_ARROW_SPACING_MM)?,
+                scale: num("--arrow-scale", 3.0)? as f32,
+                colored: true,
+            }),
+        };
+        // The 3D scene: the first state's structures, meshed.
+        let scene = studies[0]
+            .structure_sets
+            .first()
+            .filter(|_| fp.views.wants_scene())
+            .map(|ss| {
+                film::FilmScene::new(Arc::new(mesh3d::build_meshes(ss, &Progress::default())))
+            });
         fp.width = num("--gif-width", 800.0)? as usize;
         fp.frames = num("--gif-frames", 21.0)? as usize;
         fp.fps = num("--fps", 6.0)? as f32;
@@ -439,16 +466,18 @@ fn main() -> Result<()> {
             &images,
             None,
             studies[0].structure_sets.first(),
+            scene.as_ref(),
             &fp,
             &Progress::default(),
         )?;
         println!(
-            "GIF: {} frames, {} x {} px, {} KB in {:.1} s: {gif}",
+            "GIF: {} frames, {} x {} px, {} KB in {:.1} s{}: {gif}",
             s.frames,
             s.width,
             s.height,
             s.bytes.div_ceil(1024),
-            t0.elapsed().as_secs_f64()
+            t0.elapsed().as_secs_f64(),
+            if s.scene { ", with the 3D scene" } else { "" }
         );
     }
 

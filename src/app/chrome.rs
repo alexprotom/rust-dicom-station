@@ -383,7 +383,14 @@ impl ViewerApp {
                                         .named_with(|| format!("Ruler on {name}"));
                                 }
                             });
-                            if self.overlays != before {
+                            ui.separator();
+                            // A registration's field over the views; saved
+                            // when the drag ends, not at every step of it.
+                            ui.label("Deformation field");
+                            let r = arrow_spacing_slider(ui, &mut o.arrow_spacing_mm);
+                            let spacing_done = r.drag_stopped();
+                            let dragging = r.dragged() && !spacing_done;
+                            if (self.overlays != before && !dragging) || spacing_done {
                                 save_settings = true;
                             }
                         });
