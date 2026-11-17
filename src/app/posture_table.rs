@@ -281,7 +281,7 @@ impl ViewerApp {
                             for j in &tb.joints {
                                 ui.label(&j.name)
                                     .on_hover_text(format!("{} relative to {}", j.second, j.first));
-                                for a in 0..3 {
+                                for a in [0, 1, 2] {
                                     ui.label(f(Self::posture_at(tb, t, |i| j.at[i][a]), 1));
                                 }
                                 if ui
@@ -299,7 +299,7 @@ impl ViewerApp {
                 if names.len() >= 2 {
                     ui.horizontal(|ui| {
                         ui.label("Joint:");
-                        for k in 0..2 {
+                        for k in [0, 1] {
                             egui::ComboBox::from_id_salt(("posture_joint", k))
                                 .selected_text(if self.posture.joint_pick[k].is_empty() {
                                     "(body)".to_string()

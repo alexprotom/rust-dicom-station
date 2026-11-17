@@ -670,7 +670,7 @@ mod tests {
             let round = Field::compose(&back, &fwd);
             // Inside, away from the faces where the extension is a guess.
             let mut worst: f64 = 0.0;
-            for n in 0..lat.len() {
+            for (n, d) in round.d.iter().enumerate() {
                 let [i, j, k] = lat.ijk(n);
                 if i < 3
                     || j < 3
@@ -681,7 +681,7 @@ mod tests {
                 {
                     continue;
                 }
-                worst = worst.max(round.d[n].length());
+                worst = worst.max(d.length());
             }
             // Interpolation on a 5 mm lattice: a few per cent of a step.
             assert!(worst < 0.3, "t {t}: {worst} mm");
