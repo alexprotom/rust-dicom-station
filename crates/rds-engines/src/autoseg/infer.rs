@@ -26,6 +26,8 @@ use anyhow::{anyhow, bail, Result};
 use rayon::prelude::*;
 
 use super::config::ModelConfig;
+use super::timing::{self, Stage};
+use std::time::Instant;
 
 /// nnU-Net `compute_steps_for_sliding_window`.
 pub fn compute_steps(image_size: usize, tile_size: usize, step_frac: f64) -> Vec<usize> {
@@ -208,16 +210,60 @@ fn budget_for(free: Option<u64>) -> usize {
 }
 
 /// Bytes the system could give this process now (`MemAvailable` on Linux
-/// and Android); `None` where it does not say.
+/// and Android, `ullAvailPhys` of `GlobalMemoryStatusEx` on Windows);
+/// `None` where it does not say.
 pub fn available_memory() -> Option<u64> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(windows)]
+    {
+        windows_available_phys()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
     {
         None
     }
+}
+
+/// Physical memory free now on Windows, from kernel32's
+/// `GlobalMemoryStatusEx`: declared here rather than through a bindings
+/// crate, for the one call. The struct is `MEMORYSTATUSEX` as the SDK
+/// lays it out; `dwLength` must hold its size before the call.
+#[cfg(windows)]
+fn windows_available_phys() -> Option<u64> {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut m = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    // SAFETY: `m` is a live, correctly sized MEMORYSTATUSEX with its length
+    // set, which is all the call reads; it writes only into `m`.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut m) };
+    (ok != 0 && m.avail_phys > 0).then_some(m.avail_phys)
 }
 
 /// `MemAvailable` of a `/proc/meminfo` text, in bytes. Only Linux and
@@ -245,11 +291,13 @@ pub fn predict(
     step_frac: f64,
     hooks: &dyn InferHooks,
 ) -> Result<Vec<u8>> {
+    let t = Instant::now();
     let inv_std = 1.0 / cfg.std.max(1e-8);
     let normalized: Vec<f32> = vol
         .par_iter()
         .map(|&v| (v.clamp(cfg.clip_lo, cfg.clip_hi) - cfg.mean) * inv_std)
         .collect();
+    timing::add(Stage::Normalize, t);
     let plan = nnunet_plan(dims, cfg.patch_size, step_frac);
     predict_plan(&normalized, dims, classes, &plan, acc_budget(), hooks)
 }
@@ -323,11 +371,23 @@ pub fn predict_plan(
             scope.spawn(move || {
                 let mut patch = vec![0f32; p0 * p1 * p2];
                 for &(_, origin) in order_ref {
+                    let t = Instant::now();
                     extract_patch(vol, dims, plan, origin, &mut patch);
+                    timing::add(Stage::Extract, t);
+                    let t = Instant::now();
+                    let mut in_sink = 0u64;
                     let sent = hooks.forward_classes(&patch, &mut |c0, piece| {
-                        tx.send(Ok((c0, piece.into_owned())))
-                            .map_err(|_| anyhow!("the run stopped"))
+                        let ts = Instant::now();
+                        let r = tx
+                            .send(Ok((c0, piece.into_owned())))
+                            .map_err(|_| anyhow!("the run stopped"));
+                        in_sink += ts.elapsed().as_nanos() as u64;
+                        r
                     });
+                    timing::add_ns(
+                        Stage::Forward,
+                        (t.elapsed().as_nanos() as u64).saturating_sub(in_sink),
+                    );
                     if let Err(e) = sent {
                         // The receiver gone means the run was stopped there;
                         // anything else is the network's error to report.
@@ -337,8 +397,12 @@ pub fn predict_plan(
                 }
             });
             let next = || -> Result<(usize, Vec<f32>)> {
-                rx.recv()
-                    .map_err(|_| anyhow!("the inference thread stopped"))?
+                let t = Instant::now();
+                let r = rx
+                    .recv()
+                    .map_err(|_| anyhow!("the inference thread stopped"))?;
+                timing::add(Stage::Wait, t);
+                r
             };
             run_tiles(
                 &order,
@@ -371,8 +435,22 @@ pub fn predict_plan(
             hooks,
             &mut labels,
             &mut |origin, _, take| {
+                let t = Instant::now();
                 extract_patch(vol, dims, plan, origin, &mut patch);
-                hooks.forward_classes(&patch, take)
+                timing::add(Stage::Extract, t);
+                let t = Instant::now();
+                let mut in_sink = 0u64;
+                let r = hooks.forward_classes(&patch, &mut |c0, piece| {
+                    let ts = Instant::now();
+                    let r = take(c0, piece);
+                    in_sink += ts.elapsed().as_nanos() as u64;
+                    r
+                });
+                timing::add_ns(
+                    Stage::Forward,
+                    (t.elapsed().as_nanos() as u64).saturating_sub(in_sink),
+                );
+                r
             },
         )?;
     }
@@ -411,6 +489,7 @@ fn run_tiles(
         let mut finalized = 0usize;
         let finalize_rows = |acc: &mut [f32], labels: &mut [u8], from: usize, to: usize| {
             // argmax per voxel of rows [from, to), then zero the slots.
+            let t = Instant::now();
             let rows: Vec<(usize, Vec<u8>)> = (from..to)
                 .into_par_iter()
                 .map(|r| {
@@ -421,14 +500,28 @@ fn run_tiles(
                     )
                 })
                 .collect();
-            for (r, out) in rows {
+            for (r, out) in &rows {
                 for y in 0..h {
                     let dst = (r * d1 + y_lo + y) * d2;
                     labels[dst..dst + d2].copy_from_slice(&out[y * d2..(y + 1) * d2]);
                 }
-                let slot = r % win;
-                acc[slot * classes * plane..(slot + 1) * classes * plane].fill(0.0);
             }
+            // The finalized rows' slots zeroed for the rows that come next,
+            // in parallel (a slot of the 117-class model at 3 mm is a dozen
+            // megabytes). At most `win` rows are open, so they are
+            // distinct slots.
+            let mut clear = vec![false; win];
+            for (r, _) in &rows {
+                clear[r % win] = true;
+            }
+            acc.par_chunks_mut(classes * plane)
+                .zip(clear.par_iter())
+                .for_each(|(slot, &c)| {
+                    if c {
+                        slot.fill(0.0);
+                    }
+                });
+            timing::add(Stage::Argmax, t);
         };
         while let Some(&&(tsi, origin)) = tiles.peek() {
             if tsi != si {
@@ -464,6 +557,7 @@ fn run_tiles(
                 if c0 + n > classes {
                     bail!("model returned {} classes, expected {classes}", c0 + n);
                 }
+                let t = Instant::now();
                 (0..p0).into_par_iter().for_each(|pz| {
                     let z = s0 + pz;
                     if z < plan.off[0] || z >= plan.off[0] + d0 {
@@ -490,9 +584,11 @@ fn run_tiles(
                         plan.floor,
                     );
                 });
+                timing::add(Stage::Accumulate, t);
                 seen += n;
                 Ok(())
             })?;
+            timing::tile();
             if seen != classes {
                 bail!("model returned {seen} classes, expected {classes}");
             }
@@ -860,6 +956,15 @@ mod tests {
                        MemAvailable:    3145728 kB\nBuffers:            1024 kB\n";
         assert_eq!(mem_available(meminfo), Some(3 << 30));
         assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
+    }
+
+    /// Windows says how much memory is free: something, and no more than
+    /// a machine could have.
+    #[cfg(windows)]
+    #[test]
+    fn windows_reports_free_memory() {
+        let free = available_memory().expect("GlobalMemoryStatusEx");
+        assert!(free > 16 << 20 && free < 1 << 50, "{free}");
     }
 
     /// A fake model with four classes whose logits depend on position and

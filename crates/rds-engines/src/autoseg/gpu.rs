@@ -5,6 +5,20 @@
 //! runtime. The network weights are uploaded once per model; each sliding-
 //! window patch is transferred, run, and the logits read back.
 //!
+//! The convolutions are not burn's: through the WGSL compiler burn has only
+//! its direct convolution (its implicit-GEMM ones need cooperative-matrix
+//! instructions, which WGSL does not have, and fail their autotune), at
+//! about 0.9 TFLOPS on a card that multiplies matrices several times
+//! faster. Every convolution with a kernel wider than a voxel is instead
+//! im2col and a matmul ([`conv3d_gemm`]: a few output slices at a time, so
+//! its extra memory is bounded), and the transposed convolutions are one
+//! matmul and a permutation ([`conv_transpose_gemm`]) - three times faster
+//! through the network at 3 mm. The products are those of the direct
+//! kernel, summed in another order, so the logits move in their last bits
+//! (the labels of the bundled CT are those of the direct kernels, voxel for
+//! voxel, at 3 and 1.5 mm); `RDS_GPU_CONV=direct` brings burn's kernels
+//! back, for comparing. The head (1×1×1) stays burn's.
+//!
 //! Both encoders of `net.rs` are mirrored here: the plain conv stages, and
 //! the residual stages whose strided skip path is an average pool (done as a
 //! depthwise conv3d with a constant kernel, which is what an average pool
@@ -33,8 +47,17 @@ use crate::nn::device::{guarded, GpuContext};
 
 type B = Wgpu;
 
+/// A convolution's weights, in the one form its convolution reads.
+enum ConvW {
+    /// `[cout, cin, kd, kh, kw]`, for burn's own kernel (a 1×1×1 kernel,
+    /// or every convolution under `RDS_GPU_CONV=direct`).
+    Direct(Tensor<B, 5>),
+    /// `[cin * taps, cout]`, for [`conv3d_gemm`].
+    Gemm(Tensor<B, 2>),
+}
+
 struct GBlock {
-    w: Tensor<B, 5>,
+    w: ConvW,
     b: Tensor<B, 1>,
     gamma: Tensor<B, 5>,
     beta: Tensor<B, 5>,
@@ -74,7 +97,9 @@ enum GStage {
 }
 
 struct GTransp {
-    w: Tensor<B, 5>,
+    /// `[cin, cout, s0, s1, s2]` for burn's kernel, or the same values as
+    /// `[cin, cout * taps]` for [`conv_transpose_gemm`].
+    w: ConvW,
     b: Tensor<B, 1>,
     stride: [usize; 3],
 }
@@ -114,8 +139,18 @@ impl GpuNet {
     pub fn new(ctx: &GpuContext, unet: &UNet) -> Result<GpuNet> {
         let d = ctx.device();
         let up_block = |blk: &ConvBlock| -> GBlock {
-            GBlock {
-                w: upload5(
+            let w = if gemm_conv() && blk.kernel != [1, 1, 1] {
+                // [cout, k] → [k, cout] on the host, once.
+                let k = blk.w.len() / blk.cout;
+                let mut t = vec![0f32; blk.w.len()];
+                for co in 0..blk.cout {
+                    for i in 0..k {
+                        t[i * blk.cout + co] = blk.w[co * k + i];
+                    }
+                }
+                ConvW::Gemm(Tensor::from_data(TensorData::new(t, [k, blk.cout]), d))
+            } else {
+                ConvW::Direct(upload5(
                     d,
                     &blk.w,
                     [
@@ -125,7 +160,10 @@ impl GpuNet {
                         blk.kernel[1],
                         blk.kernel[2],
                     ],
-                ),
+                ))
+            };
+            GBlock {
+                w,
                 b: upload1(d, &blk.b),
                 gamma: upload5(d, &blk.gamma, [1, blk.cout, 1, 1, 1]),
                 beta: upload5(d, &blk.beta, [1, blk.cout, 1, 1, 1]),
@@ -181,11 +219,19 @@ impl GpuNet {
             .transp
             .iter()
             .map(|t| GTransp {
-                w: upload5(
-                    d,
-                    &t.w,
-                    [t.cin, t.cout, t.stride[0], t.stride[1], t.stride[2]],
-                ),
+                w: if gemm_conv() {
+                    // `[cin, cout, s0, s1, s2]` is `[cin, cout * taps]` as it is.
+                    ConvW::Gemm(Tensor::from_data(
+                        TensorData::new(t.w.clone(), [t.cin, t.w.len() / t.cin]),
+                        d,
+                    ))
+                } else {
+                    ConvW::Direct(upload5(
+                        d,
+                        &t.w,
+                        [t.cin, t.cout, t.stride[0], t.stride[1], t.stride[2]],
+                    ))
+                },
                 b: upload1(d, &t.b),
                 stride: t.stride,
             })
@@ -241,6 +287,8 @@ impl GpuNet {
         sink: &mut dyn FnMut(usize, Vec<f32>) -> Result<()>,
     ) -> Result<()> {
         let channels = patch.len() / (p[0] * p[1] * p[2]).max(1);
+        let t_features = std::time::Instant::now();
+        let mut sink_ns = 0u64;
         let features = guarded(|| -> Result<Tensor<B, 5>> {
             let x = Tensor::<B, 5>::from_data(
                 TensorData::new(patch.to_vec(), [1, channels, p[0], p[1], p[2]]),
@@ -268,12 +316,15 @@ impl GpuNet {
             }
             let mut cur = skips.pop().unwrap();
             for (t, tc) in self.transp.iter().enumerate() {
-                cur = conv_transpose3d(
-                    cur,
-                    tc.w.clone(),
-                    Some(tc.b.clone()),
-                    ConvTransposeOptions::new(tc.stride, [0, 0, 0], [0, 0, 0], [1, 1, 1], 1),
-                );
+                cur = match &tc.w {
+                    ConvW::Gemm(wm) => conv_transpose_gemm(cur, tc, wm),
+                    ConvW::Direct(w) => conv_transpose3d(
+                        cur,
+                        w.clone(),
+                        Some(tc.b.clone()),
+                        ConvTransposeOptions::new(tc.stride, [0, 0, 0], [0, 0, 0], [1, 1, 1], 1),
+                    ),
+                };
                 let skip = skips.pop().unwrap();
                 cur = Tensor::cat(vec![cur, skip], 1);
                 for blk in &self.dec[t] {
@@ -283,6 +334,18 @@ impl GpuNet {
             Ok(cur)
         })
         .context("GPU forward")?;
+        if super::timing::enabled() {
+            // Timing only: wait for the features by reading one value.
+            guarded(|| {
+                let _ = features
+                    .clone()
+                    .slice([0..1, 0..1, 0..1, 0..1, 0..1])
+                    .into_data();
+                Ok(())
+            })?;
+            super::timing::add(super::timing::Stage::GpuFeatures, t_features);
+        }
+        let t_heads = std::time::Instant::now();
         for (c0, w, b) in &self.heads {
             let piece = guarded(|| -> Result<Vec<f32>> {
                 let logits = conv3d(
@@ -291,9 +354,11 @@ impl GpuNet {
                     Some(b.clone()),
                     ConvOptions::new([1, 1, 1], [0, 0, 0], [1, 1, 1], 1),
                 );
+                // `into_vec` keeps the read-back bytes as the vector where
+                // their alignment allows; `to_vec` always copied them.
                 logits
                     .into_data()
-                    .to_vec::<f32>()
+                    .into_vec::<f32>()
                     .map_err(|e| anyhow!("GPU readback failed: {e:?}"))
             })
             .context("GPU forward")?;
@@ -301,22 +366,141 @@ impl GpuNet {
             if piece.len() != n * p[0] * p[1] * p[2] {
                 bail!("GPU returned unexpected logits size {}", piece.len());
             }
+            let t_sink = std::time::Instant::now();
             sink(*c0, piece)?;
+            sink_ns += t_sink.elapsed().as_nanos() as u64;
         }
+        super::timing::add_ns(
+            super::timing::Stage::GpuHeads,
+            (t_heads.elapsed().as_nanos() as u64).saturating_sub(sink_ns),
+        );
         Ok(())
     }
 }
 
 /// Conv → InstanceNorm3d, without the activation.
 fn conv_norm(blk: &GBlock, x: Tensor<B, 5>) -> Tensor<B, 5> {
-    let pad = [blk.kernel[0] / 2, blk.kernel[1] / 2, blk.kernel[2] / 2];
-    let y = conv3d(
-        x,
-        blk.w.clone(),
-        Some(blk.b.clone()),
-        ConvOptions::new(blk.stride, pad, [1, 1, 1], 1),
-    );
+    let y = match &blk.w {
+        ConvW::Gemm(wt) => conv3d_gemm(x, wt, &blk.b, blk.kernel, blk.stride),
+        ConvW::Direct(w) => {
+            let pad = [blk.kernel[0] / 2, blk.kernel[1] / 2, blk.kernel[2] / 2];
+            conv3d(
+                x,
+                w.clone(),
+                Some(blk.b.clone()),
+                ConvOptions::new(blk.stride, pad, [1, 1, 1], 1),
+            )
+        }
+    };
     instance_norm(y, &blk.gamma, &blk.beta)
+}
+
+/// Whether the convolutions and transposed convolutions go through
+/// [`conv3d_gemm`] and [`conv_transpose_gemm`] (the default) rather than
+/// burn's own kernels, which `RDS_GPU_CONV=direct` asks for: on the WGSL
+/// compiler burn has only its direct convolution (the implicit-GEMM kernels
+/// need cooperative-matrix instructions WGSL does not have), and that runs
+/// at under a tenth of what the matmul does on the same card. Both sum the
+/// same products in another order, so the logits differ in the last bits;
+/// kept for comparing the two.
+pub fn gemm_conv() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RDS_GPU_CONV").map_or(true, |v| v != "direct"))
+}
+
+/// Floats of im2col one chunk of output slices builds at most (256 MB;
+/// the taps cut out for it and the matmul's output come on top, so a few
+/// hundred megabytes in all): a few slices of a full-resolution layer at a
+/// time, so the memory a window needs on the device grows by a bounded
+/// amount, not by the layer's whole `taps x` copy of its input.
+const GEMM_COL_FLOATS: usize = 64 << 20;
+
+/// A convolution with `kernel / 2` padding and any stride as im2col and a
+/// matmul. For a few output slices at a time the taps of the zero-padded
+/// input are cut out (stepped by the stride) and stacked into the columns
+/// `[voxels, cin * taps]`, in the order of the weights' own flattening
+/// (`[cout, cin, kd, kh, kw]` is `[cout, cin * taps]`), and multiplied by
+/// the weights transposed, `wt` = `[cin * taps, cout]`; the products,
+/// `[voxels, cout]`, are turned back to channels first and the chunks
+/// joined along the depth. Voxels as rows is the orientation burn's tiled
+/// matmul runs fastest in here (a tenth faster than `[cout, voxels]`).
+fn conv3d_gemm(
+    x: Tensor<B, 5>,
+    wt: &Tensor<B, 2>,
+    b: &Tensor<B, 1>,
+    kernel: [usize; 3],
+    stride: [usize; 3],
+) -> Tensor<B, 5> {
+    use burn::tensor::ops::PadMode;
+    use burn::tensor::Slice;
+    let [_, cin, d, h, w] = x.dims();
+    let [k, cout] = wt.dims();
+    let p: [usize; 3] = std::array::from_fn(|a| kernel[a] / 2);
+    let out_len = |len: usize, a: usize| (len + 2 * p[a] - kernel[a]) / stride[a] + 1;
+    let (od, oh, ow) = (out_len(d, 0), out_len(h, 1), out_len(w, 2));
+    let bias: Tensor<B, 2> = b.clone().reshape([1, cout]);
+    let xp: Tensor<B, 4> = x.reshape([cin, d, h, w]).pad(
+        [(p[0], p[0]), (p[1], p[1]), (p[2], p[2])],
+        PadMode::Constant(0.0),
+    );
+    let plane = oh * ow;
+    let cz = (GEMM_COL_FLOATS / (k * plane).max(1)).clamp(1, od);
+    // `n` positions from `start`, `step` apart.
+    let span = |start: usize, n: usize, step: usize| {
+        Slice::new(
+            start as isize,
+            Some((start + (n - 1) * step + 1) as isize),
+            step as isize,
+        )
+    };
+    let mut outs = Vec::with_capacity(od.div_ceil(cz));
+    for z0 in (0..od).step_by(cz) {
+        let n = cz.min(od - z0);
+        let mut taps: Vec<Tensor<B, 2>> = Vec::with_capacity(kernel.iter().product());
+        for kz in 0..kernel[0] {
+            for ky in 0..kernel[1] {
+                for kx in 0..kernel[2] {
+                    taps.push(
+                        xp.clone()
+                            .slice([
+                                Slice::new(0, Some(cin as isize), 1),
+                                span(z0 * stride[0] + kz, n, stride[0]),
+                                span(ky, oh, stride[1]),
+                                span(kx, ow, stride[2]),
+                            ])
+                            .reshape([cin, n * plane]),
+                    );
+                }
+            }
+        }
+        // [cin, taps, voxels] → [cin * taps, voxels] → [voxels, cin * taps]
+        let col: Tensor<B, 3> = Tensor::stack(taps, 1);
+        let col = col.reshape([k, n * plane]).transpose();
+        let y = col.matmul(wt.clone()) + bias.clone();
+        outs.push(y.transpose().reshape([cout, n, oh, ow]));
+    }
+    Tensor::cat(outs, 1).reshape([1, cout, od, oh, ow])
+}
+
+/// A transposed convolution with kernel = stride (nnU-Net's upsampling) as
+/// one matmul: every input voxel times the weights `[cin, cout * taps]`
+/// gives its `taps` output voxels of every channel, which a permutation
+/// interleaves into the larger grid (the outputs of two input voxels never
+/// overlap, so nothing is added up across them).
+fn conv_transpose_gemm(x: Tensor<B, 5>, t: &GTransp, wm: &Tensor<B, 2>) -> Tensor<B, 5> {
+    let [_, cin, d, h, w] = x.dims();
+    let [s0, s1, s2] = t.stride;
+    let cout = wm.dims()[1] / (s0 * s1 * s2);
+    let y: Tensor<B, 7> = x
+        .reshape([cin, d * h * w])
+        .transpose()
+        .matmul(wm.clone())
+        .reshape([d, h, w, cout, s0, s1, s2]);
+    // [d, h, w, cout, s0, s1, s2] → [cout, d, s0, h, s1, w, s2]
+    let y: Tensor<B, 5> =
+        y.permute([3, 0, 4, 1, 5, 2, 6])
+            .reshape([1, cout, d * s0, h * s1, w * s2]);
+    y + t.b.clone().reshape([1, cout, 1, 1, 1])
 }
 
 /// InstanceNorm3d (biased variance, eps 1e-5) with affine weights.

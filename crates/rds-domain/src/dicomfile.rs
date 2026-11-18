@@ -24,6 +24,16 @@
 //! what the data set says about itself, so the result is an ordinary
 //! [`DefaultDicomObject`]: pixel decoding, the RT parsers, the anonymiser and
 //! re-export all work on it without knowing where it came from.
+//!
+//! The standard reader stops at the tag it was asked to stop before, and a
+//! header-less file is read no further either: the sniff and the walk to that
+//! tag look at the element headers only (a first chunk of the file, and the
+//! odd header past it where a large value is skipped by its length), so a
+//! folder scan reads the header of a bare slice and not its pixels, and of a
+//! large file that is not DICOM at all the first chunk. Only where the
+//! offset cannot be established - an undefined-length sequence on the way,
+//! or an object with nothing past the tag - is the whole file read, as it
+//! is for a request of the whole file.
 
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -180,24 +190,31 @@ const LONG_VRS: [&[u8; 2]; 11] = [
     b"OB", b"OD", b"OF", b"OL", b"OV", b"OW", b"SQ", b"UC", b"UN", b"UR", b"UT",
 ];
 
-/// Walk the top-level element headers of `bytes` without decoding any value.
+/// Walk the top-level element headers of `src` without decoding any value.
 ///
 /// Values are skipped by their declared length, so the walk is essentially
-/// free, and it answers the two questions that matter here. Is `enc` the
+/// free - and reads, of a file, only the dozen bytes at the start of each
+/// element - and it answers the two questions that matter here. Is `enc` the
 /// encoding this data set is actually in - a wrong guess desynchronises
 /// within an element or two and the lengths then run off the end of the
-/// buffer or the tags stop ascending. And where does `stop` begin, so that
+/// data set or the tags stop ascending. And where does `stop` begin, so that
 /// the pixels can be left unread.
 ///
 /// An undefined length (a sequence, or encapsulated pixel data) ends the
 /// walk: following one means parsing items, which is the real parser's job.
-fn walk(bytes: &[u8], enc: Enc, stop: Option<Tag>) -> Walk {
+fn walk(src: &mut impl Bytes, enc: Enc, stop: Option<Tag>) -> Walk {
+    let size = src.size();
     let mut at = 0usize;
     let mut elements = 0usize;
     let mut last: Option<Tag> = None;
 
-    while at + 8 <= bytes.len() {
-        let tag = Tag(enc.u16(&bytes[at..]), enc.u16(&bytes[at + 2..]));
+    while at + 8 <= size {
+        let mut h = [0u8; 8];
+        match src.at(at, 8) {
+            Some(b) => h.copy_from_slice(b),
+            None => break,
+        }
+        let tag = Tag(enc.u16(&h), enc.u16(&h[2..]));
         // Elements are stored in ascending tag order. Anything else means we
         // are no longer looking at element headers.
         if last.is_some_and(|prev| tag <= prev) {
@@ -214,19 +231,22 @@ fn walk(bytes: &[u8], enc: Enc, stop: Option<Tag>) -> Walk {
         }
 
         let (header, len) = if enc.explicit() {
-            let vr = &bytes[at + 4..at + 6];
+            let vr = &h[4..6];
             if LONG_VRS.iter().any(|known| known.as_slice() == vr) {
-                if at + 12 > bytes.len() {
+                if at + 12 > size {
                     break;
                 }
-                (12usize, enc.u32(&bytes[at + 8..]))
+                let Some(len) = src.at(at + 8, 4) else {
+                    break;
+                };
+                (12usize, enc.u32(len))
             } else if vr.iter().all(u8::is_ascii_uppercase) {
-                (8usize, u32::from(enc.u16(&bytes[at + 6..])))
+                (8usize, u32::from(enc.u16(&h[6..])))
             } else {
                 break;
             }
         } else {
-            (8usize, enc.u32(&bytes[at + 4..]))
+            (8usize, enc.u32(&h[4..]))
         };
 
         if len == u32::MAX {
@@ -238,7 +258,7 @@ fn walk(bytes: &[u8], enc: Enc, stop: Option<Tag>) -> Walk {
         else {
             break;
         };
-        if next > bytes.len() {
+        if next > size {
             break;
         }
         at = next;
@@ -263,25 +283,174 @@ const MIN_ELEMENTS: usize = 4;
 /// told apart by whether bytes 4 and 5 spell a VR. Every candidate is
 /// confirmed by [`walk`] rather than by that first guess alone, which is what
 /// keeps a file that is not DICOM at all from being read as one.
-fn sniff(bytes: &[u8]) -> Option<Enc> {
+fn sniff(src: &mut impl Bytes) -> Option<Enc> {
+    // Fewer than 8 bytes are not one element header.
+    let first: [u8; 2] = src.at(0, 8)?.get(..2)?.try_into().ok()?;
     Enc::ALL
         .into_iter()
         .filter(|enc| {
-            bytes.len() >= 8 && {
-                let group = enc.u16(&bytes[0..]);
-                (0x0002..=0x0020).contains(&group) && group % 2 == 0
-            }
+            let group = enc.u16(&first);
+            (0x0002..=0x0020).contains(&group) && group % 2 == 0
         })
-        .map(|enc| (enc, walk(bytes, enc, Some(tags::PIXEL_DATA))))
+        .map(|enc| (enc, walk(src, enc, Some(tags::PIXEL_DATA))))
         .filter(|(_, w)| w.elements >= MIN_ELEMENTS)
         .max_by_key(|(_, w)| w.elements)
         .map(|(enc, _)| enc)
 }
 
+/// Random access to the bytes of a header-less data set, for [`walk`].
+///
+/// [`walk`] looks at a dozen bytes at the start of each element and skips the
+/// value by its declared length, so what it needs of a file is its size and
+/// those few bytes; it never needs the pixels. A byte slice is one source
+/// ([`sniff`] on what is already in memory, the tests); [`FileBytes`] is the
+/// other, reading the file only as far as the walk goes.
+trait Bytes {
+    /// Length of the whole data set, read or not.
+    fn size(&self) -> usize;
+    /// The `n` bytes at `at`; `None` past the end (or when reading failed).
+    fn at(&mut self, at: usize, n: usize) -> Option<&[u8]>;
+}
+
+impl Bytes for &[u8] {
+    fn size(&self) -> usize {
+        self.len()
+    }
+
+    fn at(&mut self, at: usize, n: usize) -> Option<&[u8]> {
+        self.get(at..at.checked_add(n)?)
+    }
+}
+
+/// How much of a header-less file is read before anything is looked at:
+/// the header of a CT or MR slice is a few kilobytes, one with a scanner's
+/// private groups (Siemens' CSA headers) a few tens.
+const HEAD_CHUNK: usize = 64 * 1024;
+
+/// A header-less file read only as far as it is looked at.
+///
+/// The bytes from the start of the file are kept in `head`, which grows (by
+/// doubling, reading on from where it stopped) when the walk asks for bytes
+/// just past it; an element header far past it - after a large value the
+/// walk skipped by its length - is read on its own, without the bytes in
+/// between. The walk therefore sees exactly the bytes a read of the whole
+/// file would have given it, and decides exactly as it would have; only
+/// what it never looks at is never read.
+struct FileBytes {
+    file: std::fs::File,
+    size: usize,
+    /// The first bytes of the file, in order.
+    head: Vec<u8>,
+    /// An element header read past `head`.
+    scratch: [u8; 12],
+    /// Bytes read from the file so far.
+    read: u64,
+    /// The first read that failed; the walk sees the end of the file there,
+    /// and [`FileBytes::check`] turns it into the open's error.
+    error: Option<std::io::Error>,
+}
+
+impl FileBytes {
+    fn open(path: &Path) -> std::io::Result<FileBytes> {
+        let file = std::fs::File::open(path)?;
+        let size = usize::try_from(file.metadata()?.len())
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Unsupported, "file too large"))?;
+        let mut src = FileBytes {
+            file,
+            size,
+            head: Vec::new(),
+            scratch: [0; 12],
+            read: 0,
+            error: None,
+        };
+        src.fill_to(HEAD_CHUNK.min(size));
+        Ok(src)
+    }
+
+    /// Extend `head` to the first `end` bytes of the file.
+    fn fill_to(&mut self, end: usize) {
+        let end = end.min(self.size);
+        if self.error.is_some() || end <= self.head.len() {
+            return;
+        }
+        use std::io::{Seek, SeekFrom};
+        let from = self.head.len();
+        self.head.resize(end, 0);
+        let got = self
+            .file
+            .seek(SeekFrom::Start(from as u64))
+            .and_then(|_| self.file.read_exact(&mut self.head[from..]));
+        match got {
+            Ok(()) => self.read += (end - from) as u64,
+            Err(e) => {
+                self.head.truncate(from);
+                self.error = Some(e);
+            }
+        }
+    }
+
+    /// The read error met on the way, if any.
+    fn check(&mut self) -> std::io::Result<()> {
+        self.error.take().map_or(Ok(()), Err)
+    }
+}
+
+impl Bytes for FileBytes {
+    fn size(&self) -> usize {
+        self.size
+    }
+
+    fn at(&mut self, at: usize, n: usize) -> Option<&[u8]> {
+        let end = at.checked_add(n)?;
+        if end > self.size || self.error.is_some() {
+            return None;
+        }
+        if end > self.head.len() && end <= 2 * self.head.len() {
+            // Just past what is read: read on, the walk is likely to keep
+            // going this way.
+            self.fill_to(2 * self.head.len());
+        }
+        if end <= self.head.len() {
+            return Some(&self.head[at..end]);
+        }
+        use std::io::{Seek, SeekFrom};
+        let buf = self.scratch.get_mut(..n)?;
+        let got = self
+            .file
+            .seek(SeekFrom::Start(at as u64))
+            .and_then(|_| self.file.read_exact(buf));
+        match got {
+            Ok(()) => {
+                self.read += n as u64;
+                Some(&self.scratch[..n])
+            }
+            Err(e) => {
+                self.error = Some(e);
+                None
+            }
+        }
+    }
+}
+
 /// Read a data set that carries no file header of its own.
 fn open_bare(path: &Path, until: Option<Tag>) -> Result<DefaultDicomObject> {
-    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let enc = sniff(&bytes).ok_or_else(|| {
+    read_bare(path, until).map(|(obj, _)| obj)
+}
+
+/// [`open_bare`], and how many bytes of the file it read.
+///
+/// The sniff and the walk to `until` see the file through [`FileBytes`], so
+/// a request that stops before the pixels reads the header and not the
+/// pixels - of an image that is not DICOM at all, the first chunk and no
+/// more. They decide exactly as they would on the whole file read into
+/// memory (which is what this did before), and the parser is handed the
+/// same bytes.
+fn read_bare(path: &Path, until: Option<Tag>) -> Result<(DefaultDicomObject, u64)> {
+    let read = || format!("read {}", path.display());
+    let mut src = FileBytes::open(path).with_context(read)?;
+    let enc = sniff(&mut src);
+    src.check().with_context(read)?;
+    let enc = enc.ok_or_else(|| {
         anyhow!(
             "{} has no DICOM file header and does not begin with a readable data set element",
             path.display()
@@ -291,29 +460,32 @@ fn open_bare(path: &Path, until: Option<Tag>) -> Result<DefaultDicomObject> {
     // Stopping before Pixel Data is what keeps the classification pass from
     // reading whole images. When the offset cannot be established (an
     // undefined-length sequence on the way, or no pixels at all, as in an
-    // RTSTRUCT) the whole file is parsed, which is what the caller asked for
-    // anyway, only slower.
+    // RTSTRUCT) the whole file is read and parsed, which is what the caller
+    // asked for anyway, only slower.
     let end = until
-        .and_then(|tag| walk(&bytes, enc, Some(tag)).stop_at)
-        .unwrap_or(bytes.len());
+        .and_then(|tag| walk(&mut src, enc, Some(tag)).stop_at)
+        .unwrap_or(src.size);
+    src.fill_to(end);
+    src.check().with_context(read)?;
 
     let ts = TransferSyntaxRegistry
         .get(enc.uid())
         .ok_or_else(|| anyhow!("transfer syntax {} is not in the registry", enc.uid()))?;
-    let obj = InMemDicomObject::read_dataset_with_ts(Cursor::new(&bytes[..end]), ts).with_context(
-        || {
+    let obj = InMemDicomObject::read_dataset_with_ts(Cursor::new(&src.head[..end]), ts)
+        .with_context(|| {
             format!(
                 "read {} as a header-less data set ({})",
                 path.display(),
                 enc.uid()
             )
-        },
-    )?;
+        })?;
 
     // `with_meta` fills Media Storage SOP Class / Instance UID from the data
     // set itself, so the synthesised header agrees with its contents.
-    obj.with_meta(FileMetaTableBuilder::new().transfer_syntax(enc.uid()))
-        .with_context(|| format!("build a file meta table for {}", path.display()))
+    let obj = obj
+        .with_meta(FileMetaTableBuilder::new().transfer_syntax(enc.uid()))
+        .with_context(|| format!("build a file meta table for {}", path.display()))?;
+    Ok((obj, src.read))
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +541,11 @@ fn open_repaired(path: &Path, until: Option<Tag>) -> Result<DefaultDicomObject> 
 mod tests {
     use super::*;
 
+    /// [`sniff`] on bytes already in memory.
+    fn sniff_bytes(b: &[u8]) -> Option<Enc> {
+        sniff(&mut &b[..])
+    }
+
     /// Implicit VR little endian element with a short text value.
     fn implicit(tag: Tag, value: &str) -> Vec<u8> {
         let mut v = value.as_bytes().to_vec();
@@ -412,7 +589,7 @@ mod tests {
     #[test]
     fn an_implicit_vr_data_set_is_recognised() {
         let b = implicit_ct_header();
-        assert_eq!(sniff(&b), Some(Enc::ImplicitLe));
+        assert_eq!(sniff_bytes(&b), Some(Enc::ImplicitLe));
     }
 
     #[test]
@@ -427,7 +604,7 @@ mod tests {
         ));
         b.extend(explicit(tags::SOP_INSTANCE_UID, b"UI", "1.2.3.4.5.6"));
         b.extend(explicit(tags::MODALITY, b"CS", "CT"));
-        assert_eq!(sniff(&b), Some(Enc::ExplicitLe));
+        assert_eq!(sniff_bytes(&b), Some(Enc::ExplicitLe));
     }
 
     #[test]
@@ -436,27 +613,27 @@ mod tests {
         let start = b.len();
         // Pixel Data, 8 bytes of it.
         b.extend(implicit(tags::PIXEL_DATA, "abcdefgh"));
-        let w = walk(&b, Enc::ImplicitLe, Some(tags::PIXEL_DATA));
+        let w = walk(&mut b.as_slice(), Enc::ImplicitLe, Some(tags::PIXEL_DATA));
         assert_eq!(w.stop_at, Some(start));
         assert!(w.elements >= MIN_ELEMENTS);
     }
 
     #[test]
     fn data_that_is_not_dicom_is_not_guessed_into_dicom() {
-        assert_eq!(sniff(b"hello"), None);
+        assert_eq!(sniff_bytes(b"hello"), None);
         assert_eq!(
-            sniff(&[0u8; 4096]),
+            sniff_bytes(&[0u8; 4096]),
             None,
             "a run of zeros is not a data set"
         );
         assert_eq!(
-            sniff(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00"),
+            sniff_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00"),
             None
         );
         // Random-looking bytes that happen to start with a small group.
         let mut junk = vec![0x08, 0x00, 0x05, 0x00];
         junk.extend_from_slice(&[0xAB; 64]);
-        assert_eq!(sniff(&junk), None, "one plausible tag is not enough");
+        assert_eq!(sniff_bytes(&junk), None, "one plausible tag is not enough");
     }
 
     #[test]
@@ -578,5 +755,99 @@ mod tests {
             &part10("1.2.840.10008.1.2.1", &seq),
         );
         assert!(open_full(&p).is_ok());
+    }
+
+    /// An implicit VR element with `n` bytes of `fill` as its value.
+    fn implicit_blob(tag: Tag, n: usize, fill: u8) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + n);
+        out.extend_from_slice(&tag.0.to_le_bytes());
+        out.extend_from_slice(&tag.1.to_le_bytes());
+        out.extend_from_slice(&(n as u32).to_le_bytes());
+        out.resize(8 + n, fill);
+        out
+    }
+
+    /// A header-less image with 32 MiB of pixels: asked for its header, the
+    /// station reads the first chunk of the file and not the pixels; asked
+    /// for all of it, all of it.
+    #[test]
+    fn a_bare_header_is_read_without_its_pixels() {
+        let mut b = implicit_ct_header();
+        let pixels = 32 << 20;
+        b.extend(implicit_blob(tags::PIXEL_DATA, pixels, 0x5A));
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test_headerless");
+        std::fs::create_dir_all(&dir).expect("create the folder");
+        let path = dir.join("bare-large.dcm");
+        std::fs::write(&path, &b).expect("write");
+
+        for until in [tags::PIXEL_DATA, Tag(0x3000, 0x0000)] {
+            let (obj, read) = read_bare(&path, Some(until)).expect("the header opens");
+            assert!(read <= HEAD_CHUNK as u64, "{read} bytes read for a header");
+            assert_eq!(
+                crate::loader::str_of(&obj, tags::MODALITY).as_deref(),
+                Some("CT")
+            );
+            assert!(obj.element(tags::PIXEL_DATA).is_err(), "and no pixels");
+            assert_eq!(obj.meta().transfer_syntax(), "1.2.840.10008.1.2");
+        }
+        let (obj, read) = read_bare(&path, None).expect("the whole file opens");
+        assert_eq!(read, b.len() as u64);
+        let px = obj.element(tags::PIXEL_DATA).expect("with its pixels");
+        assert_eq!(px.to_bytes().expect("bytes").len(), pixels);
+    }
+
+    /// The walk over a file sees what it would see over the file in memory,
+    /// also where it has to jump past a large value to the next header (the
+    /// read past the first chunk) and where a length runs past the end.
+    #[test]
+    fn the_walk_over_a_file_is_the_walk_over_its_bytes() {
+        let mut b = implicit_ct_header();
+        b.extend(implicit_blob(Tag(0x0011, 0x1010), 3 * HEAD_CHUNK + 6, 0xAB));
+        b.extend(implicit(tags::SERIES_INSTANCE_UID, "1.2.3"));
+        b.extend(implicit_blob(Tag(0x0029, 0x1010), 100, 0x01));
+        let header = b.len();
+        b.extend(implicit_blob(tags::PIXEL_DATA, 4 << 20, 0x00));
+        let mut truncated = b.clone();
+        truncated.truncate(header + 1000);
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test_headerless");
+        std::fs::create_dir_all(&dir).expect("create the folder");
+        for (name, bytes) in [("jump.dcm", &b), ("jump-truncated.dcm", &truncated)] {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).expect("write");
+            for enc in Enc::ALL {
+                for stop in [
+                    None,
+                    Some(tags::PIXEL_DATA),
+                    Some(Tag(0x0020, 0x0000)),
+                    Some(Tag(0x3000, 0x0000)),
+                ] {
+                    let mut file = FileBytes::open(&path).expect("opens");
+                    let w = walk(&mut file, enc, stop);
+                    let m = walk(&mut bytes.as_slice(), enc, stop);
+                    assert_eq!(
+                        (w.elements, w.stop_at),
+                        (m.elements, m.stop_at),
+                        "{name} {enc:?} {stop:?}"
+                    );
+                    assert!(file.check().is_ok());
+                }
+            }
+            let mut file = FileBytes::open(&path).expect("opens");
+            assert_eq!(sniff(&mut file), sniff_bytes(bytes));
+            let (obj, read) = read_bare(&path, Some(tags::PIXEL_DATA)).expect("opens");
+            // The bytes up to the pixels, which the parser needs, and the
+            // few element headers read past the first chunk on the way.
+            let read = read as usize;
+            assert!(
+                (header..header + 256).contains(&read),
+                "{name}: {read} bytes read for a header of {header}"
+            );
+            assert_eq!(
+                crate::loader::str_of(&obj, tags::SERIES_INSTANCE_UID).as_deref(),
+                Some("1.2.3")
+            );
+        }
     }
 }

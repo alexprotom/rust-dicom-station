@@ -103,13 +103,17 @@ fn the_configuration_rules_are_enforced() {
     });
     let e = fail(&mut other, "open_dataset", json!({"path": folder}));
     assert!(e.contains("outside"), "{e}");
-    // Too many datasets.
+    // Too many datasets. An empty model folder of its own, so the refused
+    // download below does not depend on what this machine has downloaded.
+    let no_models = dir.join("no-models");
+    std::fs::create_dir_all(&no_models).unwrap();
     let mut one = Core::new(Config {
         roots: vec![dir.clone()],
         max_open_datasets: 1,
         phi_policy: PhiPolicy::Redact,
         device: "cpu".into(),
         audit_log: false,
+        models_dir: Some(no_models),
         ..Config::default()
     });
     call(&mut one, "open_dataset", json!({"path": folder}));
@@ -157,13 +161,16 @@ fn the_heart_sequence_runs_on_the_phantom() {
     assert_eq!(d2["dataset"], "ds2");
 
     // The posture model between the two (the same scan twice: the path is
-    // the identity, every structure lands on itself), its files written.
+    // the identity, every structure lands on itself), its files written and
+    // the image at the end exported; every column asked for.
     let pm = call(
         c,
         "build_posture_model",
         json!({"datasets": ["ds1", "ds2"], "anchor": "BODY", "lattice_mm": 12.0,
-               "analysis_mm": 4.0, "write": true}),
+               "analysis_mm": 4.0, "write": true, "export_t": 1.0, "detail": "full"}),
     );
+    assert!(pm["verdict"]["level"].is_string(), "{pm}");
+    assert!(pm["frame"]["images"].as_u64().unwrap() > 0, "{pm}");
     let target = pm["structures"]
         .as_array()
         .unwrap()
@@ -176,9 +183,35 @@ fn the_heart_sequence_runs_on_the_phantom() {
     );
     assert_eq!(pm["model"]["mode"], "diffeomorphic");
     assert_eq!(pm["bodies"][0]["body"], "BODY");
-    assert_eq!(pm["files"].as_array().unwrap().len(), 3, "{pm}");
+    assert_eq!(pm["files"].as_array().unwrap().len(), 4, "{pm}");
+    // The summary, by default: the verdict, the anchor Auto chose (no bone
+    // here: the image) and a line per structure.
+    let sm = call(
+        c,
+        "build_posture_model",
+        json!({"datasets": ["ds1", "ds2"], "lattice_mm": 12.0, "analysis_mm": 4.0}),
+    );
+    assert!(sm["verdict"]["findings"].is_array(), "{sm}");
+    assert!(
+        sm["model"]["anchor"].as_str().unwrap().contains("image"),
+        "{sm}"
+    );
+    let target = sm["structures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["structure"] == "TARGET")
+        .unwrap_or_else(|| panic!("{sm}"));
+    assert!(target["check_dice"].as_f64().unwrap() > 0.9, "{sm}");
+    assert!(target.get("mean_hu").is_none(), "{sm}");
     let e = fail(c, "build_posture_model", json!({"datasets": ["ds1"]}));
     assert!(e.contains("at least two"), "{e}");
+    let e = fail(
+        c,
+        "build_posture_model",
+        json!({"datasets": ["ds1", "ds2"], "export_t": 1.0}),
+    );
+    assert!(e.contains("write"), "{e}");
 
     // 2. The "heart" stands in for by the body outline here.
     let body = call(

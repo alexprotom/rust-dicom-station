@@ -95,6 +95,10 @@ pub struct PostureRequest {
     /// A chain of three or more states: bodies on curves through the
     /// states rather than a constant turn per segment.
     pub smooth_chain: bool,
+    /// Fit and draw each state's patient only ([`patient_only`]): what lies
+    /// outside its EXTERNAL structure - the couch, the chair - set to air.
+    /// A state with no EXTERNAL structure keeps its image as scanned.
+    pub patient_only: bool,
 }
 
 /// The WEPL column's beam, in IEC 61217 angles read in the first state's
@@ -132,6 +136,7 @@ impl Default for PostureRequest {
             samples_per_segment: 10,
             wepl: None,
             smooth_chain: true,
+            patient_only: true,
         }
     }
 }
@@ -225,8 +230,97 @@ pub const MAX_BODY_VOLUME_CHANGE: f64 = 0.25;
 /// A rigid body spans at least this many analysis voxels along every axis.
 pub const MIN_BODY_VOXELS: usize = 3;
 
+/// The anchor [`Anchor::Auto`] takes keeps its contoured volume between
+/// the states within this fraction of the larger: a bone the scans saw in
+/// part is no frame to hold still.
+pub const MAX_ANCHOR_VOLUME_CHANGE: f64 = 0.10;
+
+/// The smallest bone [`Anchor::Auto`] takes, cm3: a vertebral body is
+/// thirty and more, a rib's tip or a coccyx a few.
+pub const MIN_ANCHOR_CM3: f64 = 10.0;
+
+/// One structure as [`auto_anchor`] weighs it.
+#[derive(Clone, Debug)]
+pub struct AnchorCandidate {
+    pub name: String,
+    /// Every scan sees it whole: on no state does it reach the edge of the
+    /// scan, and its contoured volumes agree within
+    /// [`MAX_ANCHOR_VOLUME_CHANGE`].
+    pub whole: bool,
+    /// Its smallest contoured volume over the states, cm3.
+    pub cm3: f64,
+    /// Its centroid's height on the first state (patient z, mm).
+    pub si_mm: f64,
+}
+
+/// The vertebral level of a name (`VB_L5`, `vertebrae_T12`, `L5`) from the
+/// head down: C1 is 1, T1 8, L1 20.
+fn vertebra_level(name: &str) -> Option<usize> {
+    let k = key(name);
+    let k = k
+        .strip_prefix("vertebrae_")
+        .or_else(|| k.strip_prefix("vb_"))
+        .unwrap_or(&k);
+    let (c, num) = k.split_at(1.min(k.len()));
+    let num: usize = num.parse().ok()?;
+    match c {
+        "c" if (1..=7).contains(&num) => Some(num),
+        "t" if (1..=12).contains(&num) => Some(7 + num),
+        "l" if (1..=6).contains(&num) => Some(19 + num),
+        _ => None,
+    }
+}
+
+/// What [`Anchor::Auto`] holds still, by its index in `candidates`: among
+/// the bones ([`fit::is_bone`]) every scan sees whole and of at least
+/// [`MIN_ANCHOR_CM3`], the sacrum; else the middle one, by height, of the
+/// vertebrae; else the largest. `None`: no bone qualifies, and the whole
+/// image is the anchor.
+///
+/// Why this order: the frame every number is read in should be the bone
+/// the anatomy pivots about and the scans agree on. The sacrum is the
+/// pelvis's keystone and the usual reference of a pelvic site; on a
+/// thoraco-abdominal pair it is often cut by one scan (an upright scan
+/// framed on the chest ends at S1), and a cut bone fitted to its whole self
+/// reads a turn of tens of degrees that never happened. A vertebra in the
+/// middle of the ones both scans see keeps every other level's motion small
+/// and both ends of the spine in view.
+pub fn auto_anchor(candidates: &[AnchorCandidate]) -> Option<usize> {
+    let ok: Vec<usize> = (0..candidates.len())
+        .filter(|&i| {
+            let c = &candidates[i];
+            c.whole && c.cm3 >= MIN_ANCHOR_CM3 && fit::is_bone(&c.name)
+        })
+        .collect();
+    if let Some(&i) = ok.iter().find(|&&i| key(&candidates[i].name) == "sacrum") {
+        return Some(i);
+    }
+    let mut vert: Vec<usize> = ok
+        .iter()
+        .copied()
+        .filter(|&i| vertebra_level(&candidates[i].name).is_some())
+        .collect();
+    if !vert.is_empty() {
+        // Head down by height (patient z falls towards the feet).
+        vert.sort_by(|&a, &b| candidates[b].si_mm.total_cmp(&candidates[a].si_mm));
+        return Some(vert[(vert.len() - 1) / 2]);
+    }
+    ok.into_iter()
+        .max_by(|&a, &b| candidates[a].cm3.total_cmp(&candidates[b].cm3))
+}
+
 /// The residual registration a request asks for by default when it wants
-/// one: plastimatch's B-spline at a 30 mm lattice, MSD.
+/// one: plastimatch's B-spline at a 30 mm lattice, by mutual information,
+/// with a bending penalty of one.
+///
+/// Why those: on three supine and upright pairs (pelvis, chest and
+/// abdomen, 2026-11) mean squares drove the lattice into folds wherever the
+/// content changed - a bladder with contrast on one scan and none on the
+/// other, gas in the bowel - and had to be scaled to an eighth to stay
+/// invertible; mutual information with the penalty raised from 0.02 to 1
+/// moved the organs the furthest (model-check Dice of the organs up by
+/// 0.01 to 0.03 over the bones alone) without folding or scaling. A coarser
+/// lattice (50 to 80 mm) or a stiffer one (5) moved them less.
 pub fn default_residual() -> RegParams {
     RegParams {
         method: RegMethod::PlastimatchBSpline,
@@ -234,6 +328,8 @@ pub fn default_residual() -> RegParams {
         iterations: 40,
         grid_spacing_mm: 30.0,
         stride: 2,
+        regularization: 1.0,
+        metric: crate::registration::Metric::MutualInformation,
         ..RegParams::default()
     }
 }
@@ -248,6 +344,10 @@ pub struct PostureOutcome {
     /// (what [`crate::posture::file::write`] keeps).
     pub occupancy: posture::file::Occupancies,
     pub warnings: Vec<String>,
+    /// The states' images as the model was fitted on them and draws them,
+    /// each in its own coordinates: the patient only when the request asked
+    /// and the state has an EXTERNAL structure, else the image as scanned.
+    pub images: Vec<Arc<Volume>>,
 }
 
 fn key(name: &str) -> String {
@@ -265,6 +365,74 @@ fn structure_set(s: &StateInput) -> Option<usize> {
         .iter()
         .position(|ss| uid.is_some_and(|u| ss.referenced_series_uid == u))
         .or_else(|| (!st.structure_sets.is_empty()).then_some(0))
+}
+
+/// How far a state's EXTERNAL structure is grown before what lies outside
+/// it is cleared, mm: the skin stays, and a contour drawn a voxel inside it
+/// does not shave it.
+pub const PATIENT_MARGIN_MM: f64 = 3.0;
+
+/// Whether a structure is the patient's outline: its type says EXTERNAL, or
+/// its name is BODY, EXTERNAL, SKIN or OUTLINE.
+pub fn is_external(roi: &Roi) -> bool {
+    roi.roi_type.eq_ignore_ascii_case("EXTERNAL")
+        || matches!(
+            key(&roi.name).as_str(),
+            "body" | "external" | "skin" | "outline"
+        )
+}
+
+/// A study's image with what is not the patient set to air: every voxel
+/// outside its EXTERNAL structure ([`is_external`], in `structure_set` -
+/// `None` for the set drawn on the displayed series, else the first - grown
+/// by [`PATIENT_MARGIN_MM`]) takes the value of air, -1000 HU, or the
+/// image's lowest value when that is higher (an MR). The couch of a lying
+/// scan and the chair of a seated one are not anatomy: carried along the
+/// path they bend with the tissue around them, and the generated image of
+/// the other position should hold neither. `None` when the study has no
+/// EXTERNAL structure.
+pub fn patient_only(study: &LoadedStudy, structure_set: Option<usize>) -> Option<Volume> {
+    let probe = StateInput {
+        label: String::new(),
+        study,
+        structure_set,
+        posture: None,
+    };
+    let set = &study.structure_sets[self::structure_set(&probe)?];
+    let roi = set
+        .rois
+        .iter()
+        .find(|r| is_external(r) && !r.contours.is_empty())?;
+    let v = &study.volume;
+    let grid = v.grid();
+    let mask = segmentation::rasterize_roi(&grid, roi)?;
+    let mask = crate::morphology::dilate_mm(&mask, grid.dims, grid.spacing, PATIENT_MARGIN_MM);
+    let air = (-1000i16).max(v.min_value);
+    let mut out = (**v).clone();
+    for (x, &m) in out.data.iter_mut().zip(&mask) {
+        if m == 0 {
+            *x = air;
+        }
+    }
+    out.min_value = out.data.iter().copied().min().unwrap_or(air);
+    out.max_value = out.data.iter().copied().max().unwrap_or(air);
+    Some(out)
+}
+
+/// The states' images as a request has the model fit and draw them: each
+/// [`patient_only`] when asked and possible, else the image as scanned.
+pub fn state_images(states: &[StateInput], patient: bool) -> Vec<Arc<Volume>> {
+    use rayon::prelude::*;
+    states
+        .par_iter()
+        .map(|s| {
+            patient
+                .then(|| patient_only(s.study, s.structure_set))
+                .flatten()
+                .map(Arc::new)
+                .unwrap_or_else(|| s.study.volume.clone())
+        })
+        .collect()
 }
 
 /// The volume ROIs of a state by their key.
@@ -302,24 +470,9 @@ pub fn preset_joints(bodies: &[String]) -> Vec<(String, String, String)> {
         }
     }
     // Vertebrae by level, from the head down: C1..C7, T1..T12, L1..L5.
-    let level = |n: &str| -> Option<usize> {
-        let k = key(n);
-        let k = k
-            .strip_prefix("vertebrae_")
-            .or_else(|| k.strip_prefix("vb_"))
-            .unwrap_or(&k);
-        let (c, num) = k.split_at(1.min(k.len()));
-        let num: usize = num.parse().ok()?;
-        match c {
-            "c" if (1..=7).contains(&num) => Some(num),
-            "t" if (1..=12).contains(&num) => Some(7 + num),
-            "l" if (1..=6).contains(&num) => Some(19 + num),
-            _ => None,
-        }
-    };
     let mut vert: Vec<(usize, String)> = bodies
         .iter()
-        .filter_map(|b| level(b).map(|l| (l, b.clone())))
+        .filter_map(|b| vertebra_level(b).map(|l| (l, b.clone())))
         .collect();
     vert.sort();
     for w in vert.windows(2) {
@@ -378,6 +531,10 @@ struct Prepared {
     coverage: Vec<BoxedMask>,
     /// Per structure, per state.
     masks: Vec<Vec<BoxedMask>>,
+    /// The states' images as fitted ([`state_images`]).
+    images: Vec<Arc<Volume>>,
+    /// The anchor as resolved ([`Anchor::Auto`] chosen).
+    anchor: Anchor,
     anchor_idx: Option<usize>,
     to_state: Vec<Rigid>,
     anchor_rms: Vec<Option<f64>>,
@@ -413,6 +570,24 @@ fn prepare(
     let mut warnings = Vec::new();
     let mut provenance = Vec::new();
     let grid0 = states[0].study.volume.grid();
+    let images = state_images(states, req.patient_only);
+    if req.patient_only {
+        let without: Vec<&str> = states
+            .iter()
+            .zip(&images)
+            .filter(|(s, im)| Arc::ptr_eq(&s.study.volume, im))
+            .map(|(s, _)| s.label.as_str())
+            .collect();
+        if without.is_empty() {
+            provenance
+                .push("patient only: outside each state's EXTERNAL structure set to air".into());
+        } else {
+            provenance.push(format!(
+                "patient only: {} without an EXTERNAL structure, kept as scanned (couch and all)",
+                without.join(", ")
+            ));
+        }
+    }
     // ---- 1. the structures every state has ----
     p.report(0.0, "Matching the structures");
     let per_state: Vec<BTreeMap<String, &Roi>> = states.iter().map(rois).collect();
@@ -460,10 +635,10 @@ fn prepare(
     ));
 
     // Each state's image on its own analysis grid (for the anchor fit).
-    let own_vols: Vec<Arc<Volume>> = states
+    let own_vols: Vec<Arc<Volume>> = images
         .iter()
         .zip(&own_grids)
-        .map(|(s, g)| Arc::new(apply::resample(&s.study.volume, g, |x| x)))
+        .map(|(im, g)| Arc::new(apply::resample(im, g, |x| x)))
         .collect();
 
     // Masks on each state's own analysis grid, and the full-grid volumes.
@@ -503,7 +678,62 @@ fn prepare(
 
     // ---- 2. the anchor ----
     p.report(0.1, "Fitting the anchor");
-    let anchor_idx = match &req.anchor {
+    // Every scan sees a structure whole when on no state it reaches the
+    // edge of that state's own grid (the scan's field of view) and its
+    // contoured volumes agree.
+    let whole: Vec<bool> = (0..common.len())
+        .map(|si| {
+            let edge = (0..states.len()).any(|st| {
+                let d = own_grids[st].dims;
+                own_masks[st][si]
+                    .bbox()
+                    .is_none_or(|(lo, hi)| (0..3).any(|a| lo[a] == 0 || hi[a] + 1 >= d[a]))
+            });
+            let v = &own_cm3[si];
+            let (lo, hi) = v
+                .iter()
+                .fold((f64::INFINITY, 0.0f64), |(a, b), &x| (a.min(x), b.max(x)));
+            !edge && hi > 0.0 && (hi - lo) / hi <= MAX_ANCHOR_VOLUME_CHANGE
+        })
+        .collect();
+    let anchor = match &req.anchor {
+        Anchor::Auto => {
+            let candidates: Vec<AnchorCandidate> = (0..common.len())
+                .map(|si| {
+                    let m = &own_masks[0][si];
+                    let mut z = 0.0;
+                    m.for_each_set(|i, j, k| {
+                        z += own_grids[0]
+                            .voxel_to_patient(i as f64, j as f64, k as f64)
+                            .z
+                    });
+                    AnchorCandidate {
+                        name: display[si].clone(),
+                        whole: whole[si],
+                        cm3: own_cm3[si].iter().copied().fold(f64::INFINITY, f64::min),
+                        si_mm: z / m.count().max(1) as f64,
+                    }
+                })
+                .collect();
+            match auto_anchor(&candidates) {
+                Some(i) => {
+                    provenance.push(format!(
+                        "anchor chosen: {} (every scan sees it whole)",
+                        display[i]
+                    ));
+                    Anchor::Structure(display[i].clone())
+                }
+                None => {
+                    provenance.push(
+                        "anchor chosen: the whole image (no bone every scan sees whole)".into(),
+                    );
+                    Anchor::Image
+                }
+            }
+        }
+        a => a.clone(),
+    };
+    let anchor_idx = match &anchor {
         Anchor::Structure(name) => Some(
             common
                 .iter()
@@ -512,6 +742,14 @@ fn prepare(
         ),
         _ => None,
     };
+    if let Some(ai) = anchor_idx.filter(|&ai| !whole[ai] && given.is_none()) {
+        warnings.push(format!(
+            "The anchor '{}' is not seen whole by every scan (it reaches the edge of a scan, or \
+             its contoured volume differs between the states): the frame it gives may be turned. \
+             A bone every scan sees whole is a better anchor (Auto picks one).",
+            display[ai]
+        ));
+    }
     let mut to_state = vec![Rigid::IDENTITY];
     let mut anchor_rms = vec![None];
     for st in 1..states.len() {
@@ -522,7 +760,7 @@ fn prepare(
             anchor_rms.push(None);
             continue;
         }
-        let g = match (&req.anchor, anchor_idx) {
+        let g = match (&anchor, anchor_idx) {
             (Anchor::Structure(_), Some(ai)) => {
                 let body = BodyInput {
                     name: display[ai].clone(),
@@ -584,10 +822,10 @@ fn prepare(
 
     // ---- 3. every state in the anchor frame ----
     p.report(0.2, "Carrying the states into the anchor frame");
-    let vols: Vec<Arc<Volume>> = states
+    let vols: Vec<Arc<Volume>> = images
         .iter()
         .zip(&to_state)
-        .map(|(s, g)| Arc::new(apply::resample(&s.study.volume, &agrid, |y| g.map(y))))
+        .map(|(im, g)| Arc::new(apply::resample(im, &agrid, |y| g.map(y))))
         .collect();
     let coverage: Vec<BoxedMask> = states
         .iter()
@@ -629,10 +867,7 @@ fn prepare(
     let colors = common.iter().map(|k| per_state[0][k].color).collect();
     let external = common
         .iter()
-        .map(|k| {
-            per_state[0][k].roi_type.eq_ignore_ascii_case("EXTERNAL")
-                || matches!(k.as_str(), "body" | "external" | "skin" | "outline")
-        })
+        .map(|k| is_external(per_state[0][k]))
         .collect();
     Ok(Prepared {
         common,
@@ -644,6 +879,8 @@ fn prepare(
         vols,
         coverage,
         masks,
+        images,
+        anchor,
         anchor_idx,
         to_state,
         anchor_rms,
@@ -668,6 +905,8 @@ pub fn build(states: &[StateInput], req: &PostureRequest, p: &Progress) -> Resul
         vols,
         coverage,
         masks,
+        images,
+        anchor,
         anchor_idx,
         to_state,
         anchor_rms,
@@ -777,12 +1016,21 @@ pub fn build(states: &[StateInput], req: &PostureRequest, p: &Progress) -> Resul
             }
             _ => None,
         };
+        // The residual is fitted only where both scans have tissue: the
+        // end scan's coverage, and the patient's outline at the start.
+        let body = external
+            .iter()
+            .position(|&e| e)
+            .map(|i| masks[i][k].clone())
+            .filter(|m| !m.is_empty());
         let opts = FitOptions {
             mode: req.mode,
             reach_mm: req.reach_mm,
             residual: req.residual.clone(),
             linear,
             keep_weights: req.smooth_chain && states.len() >= 3,
+            cover: req.residual.is_some().then(|| coverage[k + 1].clone()),
+            body: body.filter(|_| req.residual.is_some()),
             ..FitOptions::default()
         };
         let seg = fit::fit_segment(
@@ -846,7 +1094,7 @@ pub fn build(states: &[StateInput], req: &PostureRequest, p: &Progress) -> Resul
         lattice,
         grid: grid0,
         analysis: agrid.clone(),
-        anchor: req.anchor.clone(),
+        anchor,
         to_state,
         states: infos,
         segments,
@@ -901,6 +1149,7 @@ pub fn build(states: &[StateInput], req: &PostureRequest, p: &Progress) -> Resul
         structures: display,
         occupancy,
         warnings,
+        images,
     })
 }
 
@@ -994,7 +1243,88 @@ pub fn reopen(
         structures: prep.display,
         occupancy: Vec::new(),
         warnings,
+        images: prep.images,
     })
+}
+
+/// How another image of the first state's position is laid onto the first
+/// state, for [`carry_image`].
+#[derive(Clone)]
+pub enum CarryAlign {
+    /// The two share a frame of reference (a scanner's two series).
+    Scanner,
+    /// A rigid registration by mutual information, on images coarsened to
+    /// the analysis spacing: an MR and a CT of one position.
+    Rigid,
+    /// A transform the station holds: the first state's patient coordinates
+    /// to the image's (a registration with the first state fixed).
+    Given(Arc<Transform3>),
+}
+
+/// Another image taken in the first state's position - an MR, a PET, a
+/// contrast series - put on the first state's grid, so the model carries it
+/// along the path exactly as it carries the first state's own image: the
+/// way to an image of a modality only one position was scanned in (a supine
+/// MR and a supine and an upright CT make an upright MR). Pass the result
+/// in place of the first of the model's images to
+/// [`apply::render`] / [`apply::key_frames`] / [`crate::posture::film`] with
+/// [`apply::Show::StartForward`]. Returns the image and a line saying how it
+/// was laid. Only the geometry is carried: what the other position does to
+/// the grey values (an MR's signal, a filling's contrast) is not modelled.
+pub fn carry_image(
+    first: &Volume,
+    other: &Volume,
+    align: &CarryAlign,
+    analysis_mm: f64,
+    p: &Progress,
+) -> Result<(Volume, String)> {
+    if other.is_empty() {
+        bail!("the image to carry has no voxels");
+    }
+    let grid = first.grid();
+    let (map, line): (
+        Box<dyn Fn(crate::geometry::Vec3) -> crate::geometry::Vec3 + Sync>,
+        String,
+    ) = match align {
+        CarryAlign::Scanner => {
+            if !first.frame_of_reference_uid.is_empty()
+                && !other.frame_of_reference_uid.is_empty()
+                && first.frame_of_reference_uid != other.frame_of_reference_uid
+            {
+                bail!(
+                    "the image to carry is in another frame of reference than the first \
+                         state: register it (rigid) instead"
+                );
+            }
+            (Box::new(|x| x), "laid in the scanner's frame".into())
+        }
+        CarryAlign::Given(t) => {
+            let t = t.clone();
+            (
+                Box::new(move |x| t.map(x)),
+                "laid by the given registration".into(),
+            )
+        }
+        CarryAlign::Rigid => {
+            p.set("Registering the image to carry onto the first state");
+            let a = apply::resample(first, &coarsen(&grid, analysis_mm), |x| x);
+            let b = apply::resample(other, &coarsen(&other.grid(), analysis_mm), |x| x);
+            let params = RegParams {
+                method: RegMethod::ElastixRigid,
+                metric: crate::registration::Metric::MutualInformation,
+                ..RegParams::default()
+            };
+            let r = registration::register(&a, &b, &params, &Progress::default())
+                .context("the rigid registration of the image to carry")?;
+            let line = format!("laid by a rigid registration: {}", r.metric_line());
+            let t = r.transform.clone();
+            (Box::new(move |x| t.map(x)), line)
+        }
+    };
+    p.set("Resampling the image to carry onto the first state");
+    let mut v = apply::resample(other, &grid, map);
+    v.frame_of_reference_uid = first.frame_of_reference_uid.clone();
+    Ok((v, line))
 }
 
 /// The caveat every interpolated export carries, in its series description
@@ -1152,6 +1482,51 @@ pub fn export_registration(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cand(name: &str, whole: bool, cm3: f64, si_mm: f64) -> AnchorCandidate {
+        AnchorCandidate {
+            name: name.into(),
+            whole,
+            cm3,
+            si_mm,
+        }
+    }
+
+    /// The sacrum when every scan sees it whole; cut, the middle vertebra
+    /// of those seen whole, by height; no vertebra, the largest bone; no
+    /// bone (organs, a cut bone, a rib tip under the size), none.
+    #[test]
+    fn the_auto_anchor_prefers_the_sacrum_then_the_middle_vertebra() {
+        let spine = [
+            cand("VB_T12", true, 40.0, 60.0),
+            cand("VB_L1", true, 45.0, 30.0),
+            cand("VB_L2", true, 50.0, 0.0),
+            cand("VB_L3", true, 52.0, -30.0),
+            cand("Liver", true, 1500.0, 80.0),
+            cand("Femur_L", true, 300.0, -250.0),
+        ];
+        let mut c = spine.to_vec();
+        c.push(cand("Sacrum", true, 200.0, -120.0));
+        assert_eq!(auto_anchor(&c).map(|i| c[i].name.as_str()), Some("Sacrum"));
+        c.last_mut().unwrap().whole = false;
+        // Four vertebrae head down: T12, L1, L2, L3; the lower middle is L1.
+        assert_eq!(auto_anchor(&c).map(|i| c[i].name.as_str()), Some("VB_L1"));
+        let bones = [
+            cand("Femur_L", true, 300.0, -250.0),
+            cand("Bone_Pelvic_L", true, 380.0, -150.0),
+            cand("Liver", true, 1500.0, 80.0),
+        ];
+        assert_eq!(
+            auto_anchor(&bones).map(|i| bones[i].name.as_str()),
+            Some("Bone_Pelvic_L")
+        );
+        let none = [
+            cand("Liver", true, 1500.0, 80.0),
+            cand("Femur_L", false, 300.0, -250.0),
+            cand("Rib12_L", true, 3.0, 40.0),
+        ];
+        assert_eq!(auto_anchor(&none), None);
+    }
 
     #[test]
     fn the_names_suggest_the_joints() {

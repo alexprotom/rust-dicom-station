@@ -36,6 +36,7 @@ pub mod post;
 pub mod preprocess;
 pub mod task;
 pub mod tasks;
+pub mod timing;
 pub mod total;
 pub mod v1;
 pub mod weights;
@@ -140,12 +141,9 @@ impl Variant {
     }
 
     /// True for the 1.5 mm variants, whose five sub-models the `parts`
-    /// mask of [`run`] selects.
+    /// mask of [`run`] selects: read off the task, which lists them.
     pub fn has_parts(&self) -> bool {
-        matches!(
-            self,
-            Variant::HighRes15mm | Variant::V3HighRes15mm | Variant::V3Small15mm
-        )
+        self.task().parts.len() > 1
     }
 
     /// The class table this variant's labels index.

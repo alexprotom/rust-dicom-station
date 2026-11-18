@@ -150,18 +150,30 @@ until *Add*:
   models then reads as one.
 
 **Add …** files the checked structures that way and **Discard** drops the
-run; either way the fold goes, until the next run brings it back.
+run; either way the fold goes, until the next run brings it back. The
+masks are extracted and their contours traced in the background (one scan
+of each label map fills every checked structure's mask), under the same
+progress row with its **Cancel**, which files nothing; the interface stays
+live meanwhile, and the result is filed when that work lands. With
+*RT structures* only, the masks are dropped as soon as they are traced -
+on a 4D group one phase at a time - so only the contours are held.
 
 Materialize only what you need: every mask is a full-volume voxel map
 (≈ 35 MB at 512 × 512 × 133). If the workspace is switched or modified
-during a run, the result is discarded with a message rather than applied
-to the wrong volume.
+during a run, or between the run and *Add* landing, the result is
+discarded with a message rather than applied to the wrong volume - checked
+by the series it was made on, its lattice and its frame of reference, so a
+phase of the same size stepped to meanwhile (the 4D player, the tree) is
+not taken for it; a structure set picked for the contours is found again
+by its identity, and a locked one is not written into.
 
 ### Running on every phase of a 4D group
 
 With *Run on ▸ every phase of <group>*, the run visits the phases in
-temporal order - the displayed one from memory, the others loaded from
-their files - and runs the same model on each; the progress row reads
+temporal order - the displayed one from memory, so too every phase the 4D
+player holds (a group just played is segmented with no series read
+again), the others loaded from their files - and runs the same model on
+each; the progress row reads
 `Phase 30% (4/10): ...` and the bar covers the whole group. One *Results*
 fold then lists **every class any phase found**, with its mean volume
 over the phases that have it, and the checked classes are filed **on each
@@ -285,7 +297,8 @@ resolved - as a `PlainConvUNet` or a `ResidualEncoderUNet`.
    a ring buffer along the leading axis, and for models with many classes
    at fine resolution also split into strips across the second axis, so its
    memory stays under 3 GB whatever the scan - or under a quarter of the
-   memory the system has free, when that is less (a tablet: the 3 mm
+   memory the system has free, when that is less (read on Linux, Android
+   and Windows; a tablet, or a busy workstation: the 3 mm
    `total` model then runs in two or three strips, a little slower, with
    the same labels).
 6. **Label merging** of sub-models into the task's table, later sub-models
@@ -390,6 +403,54 @@ Metal, so NVIDIA, AMD, Intel and Apple GPUs, with **no CUDA toolkit or
 vendor SDK**. *Auto* probes for a usable adapter with a self-test and falls
 back to the CPU. The GPU path is optional at build time (`gpu` cargo
 feature, on by default).
+Through the WGSL compiler burn has only its direct convolution (its
+implicit-GEMM kernels need cooperative-matrix instructions WGSL lacks), at
+about 0.9 TFLOPS on an RTX 4070, so the nnU-Net networks do not use it:
+every convolution wider than a voxel runs as im2col and burn's tiled matmul,
+a few output slices at a time so its extra memory stays at a few hundred
+megabytes whatever the patch (a GPU without that room runs out of memory,
+and under *Auto* the run goes on on the CPU), and
+every transposed convolution as one matmul and a permutation
+(`autoseg/gpu.rs`). The products are the direct kernel's, summed in another
+order; the bundled CT's labels are unchanged voxel for voxel at 3 and 1.5 mm.
+`RDS_GPU_CONV=direct` brings burn's kernels back, for comparing. The first
+run of a model on a new GPU, or at a new patch size, autotunes its kernels
+(10 to 15 s more); the choice is cached in the user's cache folder (`cubecl/autotune`
+there: `%LOCALAPPDATA%\cubecl` on Windows; `target/autotune` when run
+through cargo) and later runs start tuned.
+
+### Run times
+
+The bundled phase-0 CT (512 × 512 × 133, 0.98 × 0.98 × 3 mm) on an Intel
+i9-14900K (32 threads) and an NVIDIA RTX 4070 (Vulkan), the model's kernels
+already autotuned, timed with `RDS_AUTOSEG_TIMES` (release 0.12.12 against
+0.12.11; the labels of both are the same, voxel for voxel, on either device):
+
+| model | windows | CPU 0.12.11 | CPU 0.12.12 | GPU 0.12.11 | GPU 0.12.12 |
+|---|---|---|---|---|---|
+| `total_fast` (3 mm, the default) | 8 | 9.6 s | 8.6 s | 11.5 s | 5.5 s |
+| `total_v3_fast` (3 mm) | 8 | 13.0 s | 12.0 s | 11.7 s | 5.5 s |
+| `total` (1.5 mm, five parts) | 240 | 316 s | 298 s | 393 s | 145 s |
+
+The network is over 90 % of every run, its 3 × 3 × 3 convolutions most of
+that (on the CPU 254 of the 298 s at 1.5 mm). Everything around it is small:
+downloading and converting the 135 MB of `total_fast` once 3.5 s (on a
+fast line), loading the series 0.06 s, resampling and mapping back 0.02 s, reading the
+weights from the cache 0.03 to 1.2 s, the weighted accumulation 0.35 s at
+3 mm and 3 s at 1.5 mm, the argmax 0.1 and 0.6 s, the masks 0.05 s. On the
+GPU, reading the logits back (16 classes at a time, a third of the 3 mm
+run) is what is left beside the convolutions.
+
+What was made faster without changing a label: the convolutions on the GPU
+(above); on the CPU the upsampling, written straight into the concatenation
+it feeds and reading its input in place, the skip connections copied on
+every core, the 1 × 1 × 1 head reading its input in place rather than
+through an im2col copy, and the accumulator's finished rows cleared in
+parallel. The window overlap is a trade, not a free gain: TotalSegmentator's
+step of 0.8 patch at 1.5 mm is 48 windows per part on this CT, a step of 1.0
+(no overlap) 27, which takes the GPU run from 145 to 83 s but moves 0.3 % of
+the voxels (mean Dice 0.964 against the default, small vessels and bowel
+0.82 to 0.87), so the step stays upstream's.
 
 ## Validation
 
@@ -490,6 +551,16 @@ cargo run --release --example seg_cli -- <dicom_dir> <out_prefix> \
 cargo run --release --example autoseg_probe -- <dicom_dir> <models_dir> \
     total_3mm <out_prefix>
 ```
+
+With `RDS_AUTOSEG_TIMES=1` set, every nnU-Net run prints where its time
+went to stderr when it ends (`autoseg/timing.rs`): the download check, the
+device, the resampling, the weights, the normalization, and inside the
+sliding window the patch extraction, the network (split into its
+convolutions, norms, upsampling and head on the CPU, its encoder and
+decoder and its head with the readback on the GPU), the accumulation, the
+argmax and the wait for the GPU, then the merge, the post-processing and the
+map back; `seg_cli` adds the series' loading and the masks built from the
+labels. The table under [Run times](#run-times) was measured that way.
 
 `autoseg_cli` is the older name of `seg_cli` and takes the same arguments
 (and the older `--variant fast3|highres|...` names). The MCP server's

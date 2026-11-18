@@ -249,9 +249,91 @@ pub(super) fn item_picker(
         .response
 }
 
+/// One step of a quantity's arrows ([`stepped`]): 1 below 15, 5 from 15 to
+/// 50, 10 above, landing on a multiple of the step, so 12 goes to 13, 14
+/// to 15 and on to 20, 48 to 50 and on to 60; 17 typed by hand goes up to
+/// 20 and down to 15.
+pub(super) fn coarse_step(v: f64, up: bool) -> f64 {
+    if up {
+        if v < 15.0 {
+            v.floor() + 1.0
+        } else if v < 50.0 {
+            ((v / 5.0).floor() + 1.0) * 5.0
+        } else {
+            ((v / 10.0).floor() + 1.0) * 10.0
+        }
+    } else if v <= 15.0 {
+        v.ceil() - 1.0
+    } else if v <= 50.0 {
+        ((v / 5.0).ceil() - 1.0) * 5.0
+    } else {
+        ((v / 10.0).ceil() - 1.0) * 10.0
+    }
+}
+
+/// A number with an arrow either side, ◀ a step down and ▶ a step up
+/// ([`coarse_step`], kept within `range`); `add` draws the number itself
+/// (a `DragValue`, which still drags and takes a typed value). `what` names
+/// the arrows (*Arrow spacing, a step down*). The returned response is the
+/// number's, marked changed when an arrow moved it.
+pub(super) fn stepped<N: egui::emath::Numeric>(
+    ui: &mut egui::Ui,
+    value: &mut N,
+    range: std::ops::RangeInclusive<N>,
+    what: &str,
+    add: impl FnOnce(&mut egui::Ui, &mut N) -> egui::Response,
+) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let down = small_tip_button(
+            ui,
+            "◀",
+            format!("{what}, a step down: 1 below 15, 5 up to 50, 10 above"),
+        );
+        let mut r = add(ui, value);
+        let up = small_tip_button(
+            ui,
+            "▶",
+            format!("{what}, a step up: 1 below 15, 5 up to 50, 10 above"),
+        );
+        if down || up {
+            let (lo, hi) = (range.start().to_f64(), range.end().to_f64());
+            *value = N::from_f64(coarse_step(value.to_f64(), up).clamp(lo, hi));
+            r.mark_changed();
+        }
+        r
+    })
+    .inner
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The arrows' steps: one at a time below 15, fives to 50, tens above,
+    /// always landing on a multiple of the step, both ways.
+    #[test]
+    fn the_arrows_step_by_one_five_and_ten() {
+        let walk = |mut v: f64, up: bool, n: usize| -> Vec<f64> {
+            (0..n)
+                .map(|_| {
+                    v = coarse_step(v, up);
+                    v
+                })
+                .collect()
+        };
+        assert_eq!(
+            walk(12.0, true, 8),
+            [13.0, 14.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0]
+        );
+        assert_eq!(walk(45.0, true, 3), [50.0, 60.0, 70.0]);
+        assert_eq!(walk(60.0, false, 4), [50.0, 45.0, 40.0, 35.0]);
+        assert_eq!(walk(20.0, false, 3), [15.0, 14.0, 13.0]);
+        assert_eq!(coarse_step(17.0, true), 20.0);
+        assert_eq!(coarse_step(17.0, false), 15.0);
+        assert_eq!(coarse_step(6.5, true), 7.0);
+        assert_eq!(coarse_step(6.5, false), 6.0);
+    }
 
     /// The name a tooltip gives: its first sentence, cut at a colon only
     /// when what stands before it is more than a word.

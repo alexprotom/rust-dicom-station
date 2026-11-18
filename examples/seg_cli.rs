@@ -161,16 +161,18 @@ pub fn run(argv: Vec<String>) -> anyhow::Result<()> {
 
     let progress = Progress::default();
     eprintln!("loading {} ...", dir.display());
+    let t_load = std::time::Instant::now();
     let study = loader::load_directory(&dir, &progress)?;
     let vol = &study.volume;
     eprintln!(
-        "volume {}x{}x{} @ {:.3}/{:.3}/{:.3} mm; model {} ({})",
+        "volume {}x{}x{} @ {:.3}/{:.3}/{:.3} mm, loaded in {:.2} s; model {} ({})",
         vol.dims[0],
         vol.dims[1],
         vol.dims[2],
         vol.spacing[0],
         vol.spacing[1],
         vol.spacing[2],
+        t_load.elapsed().as_secs_f64(),
         model.key(),
         model.label()
     );
@@ -236,6 +238,26 @@ pub fn run(argv: Vec<String>) -> anyhow::Result<()> {
     for n in &result.notes {
         eprintln!("note: {n}");
     }
+    // What the viewer does with the labels once the person has chosen the
+    // structures: one mask per class, in one pass over the label map (here
+    // every class found), timed as the last stage of a run.
+    let t_masks = std::time::Instant::now();
+    let classes: Vec<(u8, String, [u8; 3])> = result
+        .organs
+        .iter()
+        .map(|o| (o.label, o.name.to_string(), o.color))
+        .collect();
+    let masks = rust_dicom_station::segmentation::Segmentation::from_label_map_many(
+        vol.dims,
+        &result.labels,
+        &classes,
+    );
+    eprintln!(
+        "{} masks built in {:.2} s",
+        masks.len(),
+        t_masks.elapsed().as_secs_f64()
+    );
+    drop(masks);
 
     std::fs::write(format!("{out_prefix}.bin"), &result.labels)?;
     let mut j = std::fs::File::create(format!("{out_prefix}.json"))?;

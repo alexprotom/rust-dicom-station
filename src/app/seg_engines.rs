@@ -62,6 +62,16 @@ impl OutputKind {
     pub fn structures(self) -> bool {
         matches!(self, OutputKind::Structures | OutputKind::Both)
     }
+    /// The same choice in the words of the headless filing
+    /// ([`workflow::session::OutputKind`]).
+    pub fn filing(self) -> workflow::session::OutputKind {
+        use workflow::session::OutputKind as F;
+        match self {
+            OutputKind::Segments => F::Segments,
+            OutputKind::Structures => F::Structures,
+            OutputKind::Both => F::Both,
+        }
+    }
 }
 
 /// Where a tool's result goes, and how far the run reaches.
@@ -216,7 +226,7 @@ impl<M> KeptModel<M> {
 }
 
 /// One phase an engine ran on: what to load, or the volume already in
-/// memory when it is the displayed one.
+/// memory - the displayed one, or a phase the 4D player holds.
 pub(super) struct PhaseInput {
     pub label: String,
     pub series: SeriesInfo,
@@ -265,10 +275,11 @@ impl PhaseInfo {
 
 /// Run one engine on every phase in turn, on the calling (worker) thread.
 ///
-/// Each phase is loaded unless it is the displayed volume, which came along
-/// in memory; the engine sees a progress handle that believes it owns the
-/// whole bar, mapped onto that phase's slice of it and prefixed with the
-/// phase's name, so its own messages read `Phase 30% (2/10): tile 4/12`.
+/// Each phase is loaded unless it came along in memory (the displayed
+/// volume, a phase the 4D player holds); the engine sees a progress handle
+/// that believes it owns the whole bar, mapped onto that phase's slice of
+/// it and prefixed with the phase's name, so its own messages read
+/// `Phase 30% (2/10): tile 4/12`.
 /// The first error - a cancel included - ends the run; what earlier phases
 /// made is not filed, because a 4D result with phases missing is not one
 /// result.
@@ -485,6 +496,19 @@ impl ViewerApp {
                 .is_some_and(|st| st.volume.dims == dims && st.volume.frame_of_reference_uid == uid)
     }
 
+    /// [`Self::slot_still_shows`] by the image's identity rather than its
+    /// size: the same series, on the same lattice and frame of reference.
+    /// What a result that waited for the user (auto-segmentation's
+    /// *Results*) is held to, since two phases of a 4DCT have the same size
+    /// and frame and only the series tells them apart.
+    pub(super) fn slot_still_shows_image(&self, slot: usize, info: &PhaseInfo) -> bool {
+        self.slots[slot].has_volume()
+            && self.slots[slot]
+                .study
+                .as_ref()
+                .is_some_and(|st| workflow::group::shows_image(st, &info.series_uid, &info.grid))
+    }
+
     /// The colour the next new segmentation gets, from the shared palette.
     pub(super) fn next_seg_color(&mut self) -> [u8; 3] {
         let color = segmentation::SEG_PALETTE[self.seg_counter % segmentation::SEG_PALETTE.len()];
@@ -535,7 +559,11 @@ impl ViewerApp {
     }
 
     /// The phases a run over `slot`'s group visits, in temporal order, with
-    /// the displayed volume carried along in memory rather than re-read.
+    /// the volumes already in memory carried along rather than re-read: the
+    /// displayed one, and every phase the 4D player holds when its cache
+    /// still matches the group ([`Self::phase_cache_ready`]) - a group that
+    /// was just played is segmented with no series decoded again. A phase
+    /// in neither is loaded by the worker, as before.
     pub(super) fn phase_inputs(&self, slot: usize) -> anyhow::Result<(String, Vec<PhaseInput>)> {
         let study = self.slots[slot]
             .study
@@ -550,11 +578,22 @@ impl ViewerApp {
             .find(|g| g.name == name && !g.dissolved)
             .ok_or_else(|| anyhow::anyhow!("the 4D group '{name}' is gone"))?;
         let displayed = study.series.get(study.active_series).map(|s| s.uid.clone());
+        // The player's volumes by series UID, read once; only from a cache
+        // that holds exactly this group's phases now (a group edited, a
+        // cache dropped or a study replaced since leaves none).
+        let cached: std::collections::HashMap<&str, &Arc<Volume>> = self.play.cache[slot]
+            .as_ref()
+            .filter(|_| self.phase_cache_ready(slot))
+            .map(|c| c.uids.iter().map(String::as_str).zip(&c.vols).collect())
+            .unwrap_or_default();
         let phases = workflow::phases_of(group, &study.series)?
             .into_iter()
             .map(|(label, series)| {
-                let preloaded = (displayed.as_deref() == Some(series.uid.as_str()))
-                    .then(|| study.volume.clone());
+                let preloaded = if displayed.as_deref() == Some(series.uid.as_str()) {
+                    Some(study.volume.clone())
+                } else {
+                    cached.get(series.uid.as_str()).copied().cloned()
+                };
                 PhaseInput {
                     label,
                     series,
@@ -689,13 +728,44 @@ impl ViewerApp {
         if masks.is_empty() {
             return 0;
         }
-        let n = masks.len();
         let Some(grid) = self.slots[slot].study.as_ref().map(|st| st.volume.grid()) else {
             return 0;
         };
         // Contours first, from the masks as they are; the masks are moved
         // into the series afterwards, so nothing is cloned.
-        if out.kind.structures() {
+        let rois = if out.kind.structures() {
+            segmentation::masks_to_rois(&masks, &grid, roi_type)
+        } else {
+            Vec::new()
+        };
+        let segs = if out.kind.segments() {
+            masks
+        } else {
+            Vec::new()
+        };
+        self.land_prepared_masks(slot, out, default_label, rois, segs)
+    }
+
+    /// [`Self::land_masks`] with the contours traced already (on a worker,
+    /// from the same masks, on the lattice of the displayed volume - which
+    /// the caller has checked is still the one they were made on): `rois`
+    /// go to the chosen (or a new) structure set when `out` makes
+    /// structures, `segs` are moved into the segmentation series when it
+    /// makes segments. Whether the set is locked is asked here, at the
+    /// moment of filing. Returns how many landed.
+    pub(super) fn land_prepared_masks(
+        &mut self,
+        slot: usize,
+        out: &ToolOutput,
+        default_label: &str,
+        rois: Vec<crate::rtstruct::Roi>,
+        segs: Vec<Segmentation>,
+    ) -> usize {
+        let n = rois.len().max(segs.len());
+        if n == 0 {
+            return 0;
+        }
+        if out.kind.structures() && !rois.is_empty() {
             let set = match out.set {
                 Some(i) if i < self.structure_set_labels(slot).len() => Some(i),
                 _ => {
@@ -726,14 +796,6 @@ impl ViewerApp {
                 self.locked_notice(slot);
                 return 0;
             }
-            let rois: Vec<crate::rtstruct::Roi> = masks
-                .iter()
-                .map(|seg| {
-                    let mut roi = segmentation::mask_to_roi(seg, &grid, 0);
-                    roi.roi_type = roi_type.to_string();
-                    roi
-                })
-                .collect();
             let StudySlot {
                 study,
                 active_structs,
@@ -766,15 +828,15 @@ impl ViewerApp {
                 }
             }
         }
-        if out.kind.segments() {
+        if out.kind.segments() && !segs.is_empty() {
             if self.ensure_seg_series(slot).is_none() {
                 self.settings_gen += 1;
                 return n;
             }
             let s = &mut self.slots[slot];
             let first = s.segs().len();
-            if let Some(segs) = s.segs_mut() {
-                segs.extend(masks);
+            if let Some(series) = s.segs_mut() {
+                series.extend(segs);
             }
             s.active_seg = first;
         }
@@ -787,6 +849,10 @@ impl ViewerApp {
     /// the group and the phase), as contours in the structure set drawn on
     /// that phase (or a new one), or both. Phases whose series are gone
     /// are skipped. Returns how many structures landed in all.
+    ///
+    /// The copies are consumed: each phase's contours are traced from its
+    /// masks as they are, and the masks are then moved into the series (or
+    /// dropped, when only contours are filed), one phase at a time.
     pub(super) fn land_phases(
         &mut self,
         slot: usize,
@@ -795,77 +861,53 @@ impl ViewerApp {
         roi_type: &str,
         phases: Vec<PhaseCopy>,
     ) -> usize {
+        let kind_f = kind.filing();
+        let prepared = phases.into_iter().map(|ph| ph.prepare(kind_f, roi_type));
+        self.land_prepared_phases(slot, group_name, kind, prepared)
+    }
+
+    /// [`Self::land_phases`] for phases made ready to file already
+    /// ([`PhaseCopy::prepare`], on a worker). Each phase is checked as it
+    /// is filed: its image series has to be in the workspace still, and
+    /// when it is the series on screen, on the lattice the result was made
+    /// on.
+    pub(super) fn land_prepared_phases(
+        &mut self,
+        slot: usize,
+        group_name: &str,
+        kind: OutputKind,
+        phases: impl IntoIterator<Item = workflow::group::PreparedPhase>,
+    ) -> usize {
         let mut landed = 0usize;
         let mut notes: Vec<String> = Vec::new();
-        for ph in &phases {
-            notes.extend(ph.notes.iter().cloned());
-            if ph.segs.is_empty() {
+        for mut ph in phases {
+            notes.append(&mut ph.copy.notes);
+            if ph.is_empty() {
                 continue;
             }
             let Some(study) = self.slots[slot].study.as_mut() else {
                 return 0;
             };
-            if !study.series.iter().any(|se| se.uid == ph.series_uid) {
+            if !study.series.iter().any(|se| se.uid == ph.copy.series_uid) {
                 notes.push(format!(
                     "phase {}: its image series is no longer in the workspace",
-                    ph.label
+                    ph.copy.label
                 ));
                 continue;
             }
-            if kind.structures() {
-                let items: Vec<crate::propagate::Propagated> = ph
-                    .segs
-                    .iter()
-                    .map(|seg| crate::propagate::Propagated {
-                        name: seg.name.clone(),
-                        color: seg.color,
-                        mask: seg.mask.clone(),
-                        voxels: seg.count,
-                        source_cm3: 0.0,
-                        result_cm3: 0.0,
-                        mapped_cm3: 0.0,
-                        source_surface_cm3: None,
-                        rigid_residual_mm: None,
-                    })
-                    .collect();
-                if let Some((_, names)) = workflow::group::land_in_structure_set_as(
-                    study,
-                    &ph.series_uid,
-                    &ph.study_uid,
-                    &ph.grid,
-                    &items,
-                    &format!("{group_name} {}", ph.label),
-                    roi_type,
-                ) {
-                    landed += names.len();
-                }
+            let on_screen = study
+                .series
+                .get(study.active_series)
+                .is_some_and(|se| se.uid == ph.copy.series_uid);
+            if on_screen && !workflow::group::shows_image(study, &ph.copy.series_uid, &ph.copy.grid)
+            {
+                notes.push(format!(
+                    "phase {}: its image is no longer the one the result was made on",
+                    ph.copy.label
+                ));
+                continue;
             }
-            if kind.segments() {
-                let existing = study
-                    .seg_series
-                    .iter()
-                    .rposition(|sr| sr.referenced_series_uid == ph.series_uid);
-                match existing {
-                    Some(i) => {
-                        let sr = &mut study.seg_series[i];
-                        for seg in &ph.segs {
-                            let mask = if sr.grid.matches(&ph.grid) {
-                                seg.mask.clone()
-                            } else {
-                                crate::dicomseg::resample_mask(&seg.mask, &ph.grid, &sr.grid)
-                            };
-                            sr.segs.push(Segmentation::from_mask(
-                                seg.name.clone(),
-                                seg.color,
-                                sr.grid.dims,
-                                mask,
-                            ));
-                        }
-                    }
-                    None => study.seg_series.push(ph.seg_series(group_name)),
-                }
-                landed += ph.segs.len();
-            }
+            landed += workflow::group::file_prepared(study, group_name, ph);
         }
         if landed == 0 {
             self.error = Some(if notes.is_empty() {
@@ -910,6 +952,13 @@ impl ViewerApp {
             .autoseg_job
             .as_ref()
             .filter(|_| self.autoseg_slot == slot)
+        {
+            return Some((&AUTOSEG, &job.progress));
+        }
+        if let Some(job) = self
+            .autoseg_apply_job
+            .as_ref()
+            .filter(|_| self.autoseg_apply_slot == slot)
         {
             return Some((&AUTOSEG, &job.progress));
         }

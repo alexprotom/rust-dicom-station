@@ -143,6 +143,125 @@ fn the_pixels_of_a_bare_data_set_are_unchanged() {
     assert_eq!(mismatches, 0, "every voxel is the same");
 }
 
+/// A bare data set with a large pixel payload is discovered like any other.
+///
+/// The scan reads such a file only as far as its header (the bound on the
+/// bytes read is a unit test of `dicomfile`), which must not change what is
+/// found: here a second series of two 2048 × 2048 slices, one written bare
+/// and one with a file header, lies beside the bare phantom study, and the
+/// folder still sorts into the phantom's series and the large one, each
+/// whole, with every voxel of the large one where it was written.
+#[test]
+fn a_large_bare_series_beside_part10_files_is_discovered() {
+    use dicom_core::{DataElement, PrimitiveValue, VR};
+    use dicom_dictionary_std::tags;
+
+    let dir = headerless_study("test_headerless_large", IMPLICIT_VR_LE);
+    let ts = TransferSyntaxRegistry
+        .get(IMPLICIT_VR_LE)
+        .expect("a known transfer syntax");
+    let slice = std::fs::read_dir(&dir)
+        .expect("readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| {
+            rust_dicom_station::dicomfile::open_header(p)
+                .ok()
+                .and_then(|o| loader::str_of(&o, tags::MODALITY))
+                .as_deref()
+                == Some("CT")
+        })
+        .expect("a CT slice of the phantom");
+    let template = rust_dicom_station::dicomfile::open_full(&slice).expect("opens");
+
+    const N: usize = 2048;
+    for (k, (raw, bare)) in [(1000u16, true), (2000u16, false)].into_iter().enumerate() {
+        let mut obj = template.clone().into_inner();
+        let put = |obj: &mut dicom_object::InMemDicomObject, tag, vr, v: &str| {
+            obj.put(DataElement::new(tag, vr, PrimitiveValue::from(v)));
+        };
+        put(
+            &mut obj,
+            tags::SERIES_INSTANCE_UID,
+            VR::UI,
+            "1.2.826.0.1.99.7",
+        );
+        put(
+            &mut obj,
+            tags::SOP_INSTANCE_UID,
+            VR::UI,
+            &format!("1.2.826.0.1.99.7.{k}"),
+        );
+        put(&mut obj, tags::SERIES_DESCRIPTION, VR::LO, "LARGE");
+        put(&mut obj, tags::SERIES_NUMBER, VR::IS, "77");
+        put(
+            &mut obj,
+            tags::IMAGE_POSITION_PATIENT,
+            VR::DS,
+            &format!("0\\0\\{}", 3 * k),
+        );
+        for tag in [tags::ROWS, tags::COLUMNS] {
+            obj.put(DataElement::new(
+                tag,
+                VR::US,
+                PrimitiveValue::from(N as u16),
+            ));
+        }
+        obj.put(DataElement::new(
+            tags::PIXEL_DATA,
+            VR::OW,
+            PrimitiveValue::U16(vec![raw; N * N].into()),
+        ));
+        let path = dir.join(format!("LARGE_{k}.dcm"));
+        if bare {
+            let out = std::fs::File::create(&path).expect("create the bare file");
+            obj.write_dataset_with_ts(std::io::BufWriter::new(out), ts)
+                .expect("write the bare data set");
+        } else {
+            obj.with_meta(
+                dicom_object::FileMetaTableBuilder::new().transfer_syntax(IMPLICIT_VR_LE),
+            )
+            .expect("a file meta table")
+            .write_to_file(&path)
+            .expect("write the file with a header");
+        }
+    }
+
+    let study = loader::load_directory(&dir, &Progress::default()).expect("loads");
+    assert_eq!(study.series.len(), 2, "the phantom and the large series");
+    assert!(
+        !study
+            .warnings
+            .iter()
+            .any(|w| w.contains("not readable as DICOM")),
+        "nothing was skipped: {:?}",
+        study.warnings
+    );
+    assert_eq!(study.structure_sets.len(), 1, "the structure set came too");
+    assert_eq!(study.doses.len(), 1, "and the dose");
+    assert_eq!(study.plans.len(), 1, "and the plan");
+    let phantom = study
+        .series
+        .iter()
+        .find(|s| s.description != "LARGE")
+        .expect("the phantom series");
+    assert_eq!(phantom.files.len(), 40, "the phantom's slices, all of them");
+    let large = study
+        .series
+        .iter()
+        .find(|s| s.description == "LARGE")
+        .expect("the large series");
+    assert_eq!(large.files.len(), 2, "bare and with a header, one series");
+
+    let (vol, _, warnings) =
+        loader::load_series_volume(large, &Progress::default()).expect("the large one loads");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(vol.dims, [N, N, 2]);
+    let (a, b) = vol.data.split_at(N * N);
+    assert!(a.iter().all(|&v| v == a[0]) && b.iter().all(|&v| v == b[0]));
+    assert_eq!(b[0] - a[0], 1000, "the slices in position order");
+}
+
 /// A folder of files that are not DICOM is still not a study, and no
 /// encoding is guessed into existence for them.
 #[test]

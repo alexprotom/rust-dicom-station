@@ -706,14 +706,154 @@ fn a_structure_copied_onto_every_phase_stays_where_it_is() {
     let copies = group::copy_to_phases(&[target], &phases, &Progress::default()).unwrap();
     assert_eq!(copies.len(), 3);
     let c0 = centroid_mm(&copies[0].segs[0].mask, &copies[0].grid).unwrap();
-    for c in &copies {
+    for c in copies {
         assert_eq!(c.segs.len(), 1, "{}: {:?}", c.label, c.notes);
         assert_eq!(c.segs[0].name, "TARGET");
         // A copy, not a propagation: the same place on every phase.
         let ci = centroid_mm(&c.segs[0].mask, &c.grid).unwrap();
         assert!((ci - c0).length() < 0.5, "{}: {ci:?} vs {c0:?}", c.label);
+        let uid = c.series_uid.clone();
         let series = c.seg_series("4D");
-        assert_eq!(series.referenced_series_uid, c.series_uid);
+        assert_eq!(series.referenced_series_uid, uid);
         assert!(series.label.starts_with("4D "));
+        assert_eq!(series.segs.len(), 1, "the segment moved into the series");
     }
+}
+
+/// A result waits for the user (auto-segmentation's *Results*) while the
+/// 4D player steps to the next phase: same matrix, same frame of
+/// reference, same lattice. The check a result is filed under has to tell
+/// the two apart by the series, or the organs found on one phase land on
+/// the other.
+#[test]
+fn a_result_never_lands_on_a_same_sized_other_phase() {
+    use std::sync::Arc;
+
+    let dir = common::target_dir("test_workflow_same_sized_phase");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let mut study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let phases = workflow::phases_of(&study.fourd_groups[0], &study.series).unwrap();
+    let made_on = study.series[study.active_series].uid.clone();
+    let grid = study.volume.grid();
+    assert!(group::shows_image(&study, &made_on, &grid));
+
+    // Step to another phase the way the player does: its volume, its series.
+    let (_, other) = phases.iter().find(|(_, s)| s.uid != made_on).unwrap();
+    let (vol, _, _) = loader::load_series_volume(other, &Progress::default()).unwrap();
+    // The trap: everything but the series is the same.
+    assert_eq!(vol.dims, study.volume.dims);
+    assert_eq!(
+        vol.frame_of_reference_uid,
+        study.volume.frame_of_reference_uid
+    );
+    assert!(vol.grid().matches(&grid), "the phases share one lattice");
+    let back = study.active_series;
+    study.volume = Arc::new(vol);
+    study.active_series = study
+        .series
+        .iter()
+        .position(|s| s.uid == other.uid)
+        .unwrap();
+    assert!(
+        !group::shows_image(&study, &made_on, &grid),
+        "a result made on one phase does not belong to the phase stepped to"
+    );
+    assert!(group::shows_image(&study, &other.uid, &grid));
+    // An empty workspace shows nothing a result could belong to.
+    study.active_series = back;
+    study.volume = Arc::new(rust_dicom_station::volume::Volume::empty());
+    assert!(!group::shows_image(&study, &made_on, &grid));
+}
+
+/// What an engine made on each phase, made ready on a worker
+/// (`PhaseCopy::prepare`) and filed by value (`file_prepared`): contours in
+/// each phase's own set under the engine's interpreted type, a name taken
+/// getting a counter, a locked set left alone, and segments moved into the
+/// phase's own segmentation series.
+#[test]
+fn prepared_phases_file_on_their_own_phase() {
+    use rust_dicom_station::segmentation::Segmentation;
+    use rust_dicom_station::workflow::session::OutputKind;
+
+    let dir = common::target_dir("test_workflow_prepared_phases");
+    let folder = common::fourd_folder(&dir, SHIFTS);
+    let mut study = loader::load_directory(&folder, &Progress::default()).unwrap();
+    let phases = workflow::phases_of(&study.fourd_groups[0], &study.series).unwrap();
+    let copy = |label: &str, series: &loader::SeriesInfo| {
+        let grid = loader::series_grid(series).unwrap();
+        let [nx, ny, nz] = grid.dims;
+        let mut mask = vec![0u8; nx * ny * nz];
+        for k in nz / 3..nz / 2 {
+            for j in ny / 3..ny / 2 {
+                for i in nx / 3..nx / 2 {
+                    mask[(k * ny + j) * nx + i] = 1;
+                }
+            }
+        }
+        let seg = Segmentation::from_mask("liver".into(), [200, 100, 50], grid.dims, mask);
+        group::PhaseCopy {
+            label: label.to_string(),
+            series_uid: series.uid.clone(),
+            study_uid: series.study_uid.clone(),
+            grid,
+            segs: vec![seg],
+            notes: Vec::new(),
+        }
+    };
+    let own_set = |study: &loader::LoadedStudy, uid: &str| {
+        study
+            .structure_sets
+            .iter()
+            .rposition(|s| s.referenced_series_uid == uid)
+    };
+
+    for round in 0..2 {
+        for (label, series) in &phases {
+            let ph = copy(label, series).prepare(OutputKind::Structures, "ORGAN");
+            assert!(ph.copy.segs.is_empty(), "contours only: the masks went");
+            assert_eq!(ph.rois.len(), 1);
+            assert_eq!(group::file_prepared(&mut study, "4D", ph), 1);
+            let ss = &study.structure_sets[own_set(&study, &series.uid).unwrap()];
+            let want = if round == 0 { "liver" } else { "liver (2)" };
+            let roi = ss.rois.iter().find(|r| r.name == want).unwrap();
+            assert_eq!(roi.roi_type, "ORGAN", "{label}");
+            assert!(!roi.contours.is_empty());
+        }
+    }
+    // Nothing reached a phase it was not made on.
+    for (_, series) in &phases {
+        let ss = &study.structure_sets[own_set(&study, &series.uid).unwrap()];
+        assert_eq!(
+            ss.rois
+                .iter()
+                .filter(|r| r.name.starts_with("liver"))
+                .count(),
+            2
+        );
+    }
+
+    // A locked set is not written into: a new one beside it is.
+    let (label, series) = &phases[0];
+    let locked = own_set(&study, &series.uid).unwrap();
+    study.structure_sets[locked].locked = true;
+    let before = study.structure_sets[locked].rois.len();
+    let ph = copy(label, series).prepare(OutputKind::Structures, "ORGAN");
+    assert_eq!(group::file_prepared(&mut study, "4D", ph), 1);
+    assert_eq!(study.structure_sets[locked].rois.len(), before);
+    assert!(own_set(&study, &series.uid).unwrap() > locked);
+
+    // Segments: moved into the phase's own series, voxels and all.
+    let (label, series) = &phases[1];
+    let made = copy(label, series);
+    let voxels = made.segs[0].count;
+    let ph = made.prepare(OutputKind::Segments, "ORGAN");
+    assert!(ph.rois.is_empty(), "segments only: no contours traced");
+    assert_eq!(group::file_prepared(&mut study, "4D", ph), 1);
+    let sr = study
+        .seg_series
+        .iter()
+        .find(|s| s.referenced_series_uid == series.uid)
+        .unwrap();
+    assert_eq!(sr.segs.len(), 1);
+    assert_eq!(sr.segs[0].count, voxels);
 }

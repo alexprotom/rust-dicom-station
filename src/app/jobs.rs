@@ -55,6 +55,23 @@ impl<T> Job<T> {
     }
 }
 
+/// Read one series' volume on a new thread, landing as `land` - a series
+/// switch ([`LoadResult::Volume`]) or a phase step ([`LoadResult::Phase`]).
+/// Whether to start it, queue it or drop it while another load runs is the
+/// caller's policy, not this function's.
+fn series_load(
+    series: loader::SeriesInfo,
+    slot: usize,
+    idx: usize,
+    land: fn(Box<anyhow::Result<LoadedVolume>>, usize, usize) -> LoadResult,
+) -> Job<LoadResult> {
+    Job::spawn(Arc::new(Progress::default()), move |p| {
+        let res = loader::load_series_volume(&series, p)
+            .map(|(vol, window, warnings)| (Arc::new(vol), window, warnings));
+        land(Box::new(res), slot, idx)
+    })
+}
+
 /// Ask a running job to stop when its window's Cancel button was pressed;
 /// nothing happens without a job.
 pub(super) fn cancel_if<T>(cancel: bool, job: &Option<Job<T>>) {
@@ -170,18 +187,14 @@ impl ViewerApp {
         // Into an open workspace it is a merge, which keeps the workspace's
         // own volume: no point decoding the folder's.
         let merge = self.slots[slot].study.is_some();
-        let progress = Arc::new(Progress::default());
-        let (tx, rx) = mpsc::channel();
-        let p2 = progress.clone();
-        std::thread::spawn(move || {
+        self.loading = Some(Job::spawn(Arc::new(Progress::default()), move |p| {
             let res = if merge {
-                loader::load_directory_to_merge(&path, &p2)
+                loader::load_directory_to_merge(&path, p)
             } else {
-                loader::load_directory(&path, &p2)
+                loader::load_directory(&path, p)
             };
-            let _ = tx.send(LoadResult::Study(Box::new(res), slot));
-        });
-        self.loading = Some(Job { progress, rx });
+            LoadResult::Study(Box::new(res), slot)
+        }));
     }
 
     /// *File ▶ Add DICOM file(s)*: load an explicit selection of files.
@@ -220,21 +233,17 @@ impl ViewerApp {
         // Files of this station's PACS: what was decided there about their
         // 4D sets comes with them.
         let pacs = sources.is_some().then(|| self.station_pacs());
-        let progress = Arc::new(Progress::default());
-        let (tx, rx) = mpsc::channel();
-        let p2 = progress.clone();
-        std::thread::spawn(move || {
+        self.loading = Some(Job::spawn(Arc::new(Progress::default()), move |p| {
             let mut res = if merge {
-                loader::load_files_to_merge(&paths, &origin, &p2)
+                loader::load_files_to_merge(&paths, &origin, p)
             } else {
-                loader::load_files(&paths, &origin, &p2)
+                loader::load_files(&paths, &origin, p)
             };
             if let (Ok(st), Some(ar)) = (res.as_mut(), pacs.as_ref()) {
                 crate::archive::fourd::apply_to_study(ar, st);
             }
-            let _ = tx.send(LoadResult::Study(Box::new(res), slot));
-        });
-        self.loading = Some(Job { progress, rx });
+            LoadResult::Study(Box::new(res), slot)
+        }));
     }
 
     /// *Restore last session*, one workspace: every source it was loaded
@@ -254,18 +263,14 @@ impl ViewerApp {
             1 => sources[0].display().to_string(),
             n => format!("the {n} sources of the last session"),
         };
-        let progress = Arc::new(Progress::default());
-        let (tx, rx) = mpsc::channel();
-        let p2 = progress.clone();
-        std::thread::spawn(move || {
+        self.loading = Some(Job::spawn(Arc::new(Progress::default()), move |p| {
             let res = if merge {
-                loader::load_sources_to_merge(&sources, &origin, &p2)
+                loader::load_sources_to_merge(&sources, &origin, p)
             } else {
-                loader::load_sources(&sources, &origin, &p2)
+                loader::load_sources(&sources, &origin, p)
             };
-            let _ = tx.send(LoadResult::Study(Box::new(res), slot));
-        });
-        self.loading = Some(Job { progress, rx });
+            LoadResult::Study(Box::new(res), slot)
+        }));
     }
 
     /// Read series `idx` of `slot` off the disk and put it on display.
@@ -285,15 +290,7 @@ impl ViewerApp {
             self.pending_switch = Some((slot, series.uid.clone()));
             return;
         }
-        let progress = Arc::new(Progress::default());
-        let (tx, rx) = mpsc::channel();
-        let p2 = progress.clone();
-        std::thread::spawn(move || {
-            let res = loader::load_series_volume(&series, &p2)
-                .map(|(vol, window, warnings)| (Arc::new(vol), window, warnings));
-            let _ = tx.send(LoadResult::Volume(Box::new(res), slot, idx));
-        });
-        self.loading = Some(Job { progress, rx });
+        self.loading = Some(series_load(series, slot, idx, LoadResult::Volume));
     }
 
     /// Step to one phase of a 4D group off the disk.
@@ -311,15 +308,7 @@ impl ViewerApp {
         let Some(series) = study.series.get(idx).cloned() else {
             return;
         };
-        let progress = Arc::new(Progress::default());
-        let (tx, rx) = mpsc::channel();
-        let p2 = progress.clone();
-        std::thread::spawn(move || {
-            let res = loader::load_series_volume(&series, &p2)
-                .map(|(vol, window, warnings)| (Arc::new(vol), window, warnings));
-            let _ = tx.send(LoadResult::Phase(Box::new(res), slot, idx));
-        });
-        self.loading = Some(Job { progress, rx });
+        self.loading = Some(series_load(series, slot, idx, LoadResult::Phase));
     }
 
     /// What the 4D group calls the phase this series is, for the dose match.
@@ -709,8 +698,11 @@ impl ViewerApp {
             return;
         };
         let over_phases = first.group.is_some();
+        // The size and frame alone would take a same-sized phase stepped to
+        // meanwhile for the one the run was on: the series has to be it.
         if !over_phases
-            && !self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid)
+            && (!self.slot_still_shows(slot, result.volume_dims, &result.frame_of_reference_uid)
+                || !self.slot_still_shows_image(slot, first))
         {
             self.error = Some(stale_result(&AUTOSEG));
             return;
@@ -965,6 +957,14 @@ impl ViewerApp {
             poll_tool_job(&mut self.autoseg_job, ctx, AUTOSEG.name, &mut self.error)
         {
             self.on_autoseg_done(slot, result);
+        }
+        if let Some((slot, applied)) = poll_tool_job(
+            &mut self.autoseg_apply_job,
+            ctx,
+            AUTOSEG.name,
+            &mut self.error,
+        ) {
+            self.on_autoseg_applied(slot, applied);
         }
         if let Some((slot, result)) =
             poll_tool_job(&mut self.medsam2_job, ctx, SLICE_PROP.name, &mut self.error)

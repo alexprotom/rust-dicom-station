@@ -443,19 +443,13 @@ pub fn file_items(
     if let Some(Some(i)) = seg_idx {
         taken.extend(study.seg_series[i].segs.iter().map(|s| s.name.clone()));
     }
-    let mut names: Vec<Option<String>> = Vec::with_capacity(items.len());
-    for it in items {
-        if it.voxels == 0 {
-            names.push(None);
-            continue;
-        }
-        let name = match f.clash {
-            None => it.name.clone(),
-            Some(c) => chosen_name(&it.name, c, &taken),
-        };
-        taken.insert(name.clone());
-        names.push(Some(name));
-    }
+    let names = pick_names(
+        items
+            .iter()
+            .map(|it| (it.voxels > 0).then_some(it.name.as_str())),
+        f.clash,
+        &mut taken,
+    );
     let replace = f.clash == Some(NameClash::Replace);
 
     if f.kind.structures() {
@@ -468,18 +462,15 @@ pub fn file_items(
             let Some(name) = &names[k] else {
                 continue;
             };
-            let seg = Segmentation::from_label_map(name.clone(), it.color, grid.dims, &it.mask, 1);
-            let mut roi = crate::segmentation::mask_to_roi(&seg, grid, 0);
+            // Traced from the item's own mask: no segmentation is made of
+            // it only to be traced.
+            let mut roi = crate::segmentation::roi_from_mask(name, it.color, &it.mask, grid, 0);
             if roi.contours.is_empty() {
                 continue;
             }
             roi.roi_type = roi_types.get(k).cloned().unwrap_or_default();
-            if replace {
-                ss.rois.retain(|r| r.name != *name);
-            }
-            roi.number = ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1;
+            push_roi(ss, roi, replace);
             filed.names[k] = Some(name.clone());
-            ss.rois.push(roi);
         }
         filed.set = Some(idx);
     }
@@ -522,6 +513,91 @@ pub fn file_items(
         filed.seg_series = Some(idx);
     }
     Ok(filed)
+}
+
+/// [`file_items`] for contours traced already - an engine's result made
+/// ready to file on a worker, so the filing itself is a matter of names and
+/// numbers: structures only (`f.kind` is not read). Each ROI keeps its
+/// colour, contours and RT ROI Interpreted Type, takes its name under
+/// `f.clash` and the next number of the set; one without contours files
+/// nothing (`None` in [`Filed::names`]).
+pub fn file_rois(
+    study: &mut LoadedStudy,
+    series: &SeriesInfo,
+    grid: &Grid,
+    rois: Vec<crate::rtstruct::Roi>,
+    f: &Filing,
+) -> Result<Filed> {
+    let set_idx = own_set(study, &series.uid, f.set);
+    if let Some(i) = set_idx {
+        let ss = &study.structure_sets[i];
+        if ss.locked {
+            bail!(
+                "the structure set '{}' is locked (approved); file into a new set instead",
+                ss.label
+            );
+        }
+    }
+    let mut taken: BTreeSet<String> = f.taken.cloned().unwrap_or_default();
+    if let Some(i) = set_idx {
+        taken.extend(study.structure_sets[i].rois.iter().map(|r| r.name.clone()));
+    }
+    let names = pick_names(
+        rois.iter()
+            .map(|r| (!r.contours.is_empty()).then_some(r.name.as_str())),
+        f.clash,
+        &mut taken,
+    );
+    let replace = f.clash == Some(NameClash::Replace);
+    let idx = match set_idx {
+        Some(i) => i,
+        None => new_structure_set(study, series, grid, f.set_label, StructureSet::MADE_HERE[2]),
+    };
+    let ss = &mut study.structure_sets[idx];
+    for (mut roi, name) in rois.into_iter().zip(&names) {
+        let Some(name) = name else {
+            continue;
+        };
+        roi.name = name.clone();
+        push_roi(ss, roi, replace);
+    }
+    Ok(Filed {
+        names,
+        set: Some(idx),
+        seg_series: None,
+    })
+}
+
+/// The names items are filed under, in item order: `None` for an item that
+/// files nothing (`base` is `None`), else its own name under `clash` -
+/// each one taken as it is chosen, so two items of one name become `x` and
+/// `x (2)`.
+fn pick_names<'a>(
+    bases: impl Iterator<Item = Option<&'a str>>,
+    clash: Option<NameClash>,
+    taken: &mut BTreeSet<String>,
+) -> Vec<Option<String>> {
+    bases
+        .map(|base| {
+            let base = base?;
+            let name = match clash {
+                None => base.to_string(),
+                Some(c) => chosen_name(base, c, taken),
+            };
+            taken.insert(name.clone());
+            Some(name)
+        })
+        .collect()
+}
+
+/// Append `roi` to `ss` under the next free number, in place of the one of
+/// its name when `replace`.
+fn push_roi(ss: &mut StructureSet, mut roi: crate::rtstruct::Roi, replace: bool) {
+    if replace {
+        ss.rois.retain(|r| r.name != roi.name);
+    }
+    roi.number = ss.rois.iter().map(|r| r.number).max().unwrap_or(0) + 1;
+    ss.rois.push(roi);
 }
 
 /// A mask as something [`file_items`] files.

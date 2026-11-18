@@ -881,9 +881,11 @@ fn a_set_saved_twice_updates_its_series_rather_than_adding_one() {
 
 /// *Tools ▸ Posture model* on the articulated phantom (two bones on a
 /// hinge, `gen_test_data::articulated_pair`): the window opens, the anchor
-/// is picked, the model builds, its tables name the bodies and the joint,
-/// stepping to the end reads the hinge's angle, playing moves the time,
-/// and nothing in the window is unnamed.
+/// is picked (it is Auto until then), the model builds, its verdict heads
+/// the side, its tables name the bodies and the joint, the *Display* menu
+/// holds the live slices and the wash, stepping to the end reads the
+/// hinge's angle, playing moves the time, and nothing in the window is
+/// unnamed.
 #[test]
 fn the_posture_window_builds_steps_and_plays_the_phantom() {
     let _turn = turn();
@@ -918,7 +920,8 @@ fn the_posture_window_builds_steps_and_plays_the_phantom() {
     if !ui.has(&Target::containing("Posture model").role("window")) {
         fail(&ui, "no posture window");
     }
-    ui.click(&Target::containing("(pick a structure)")).unwrap();
+    // The anchor is Auto until one is picked: here the upper bone.
+    ui.click(&Target::label("Auto")).unwrap();
     ui.settle(SETTLE);
     ui.click(&Target::label("BONE_UPPER")).unwrap();
     ui.settle(SETTLE);
@@ -926,6 +929,10 @@ fn the_posture_window_builds_steps_and_plays_the_phantom() {
         .unwrap();
     if !ui.settle(SETTLE) {
         fail(&ui, "the model did not build");
+    }
+    // The verdict heads the side; the rest of the options wait in menus.
+    if !ui.has(&Target::containing(" model").role("label")) {
+        fail(&ui, "no verdict");
     }
     for name in [
         "States",
@@ -941,16 +948,25 @@ fn the_posture_window_builds_steps_and_plays_the_phantom() {
     assert!(ui.has_label("t 0.00"));
     // The model's workspace is the window's, not a row of the main screen.
     assert!(!ui.has_label("Workspace C"), "{}", ui.tree_text());
-    // Live slices by default, the WEPL column along the default beam, and
-    // the Jacobian wash a tick away.
-    for name in ["Live slices", "WEPL mm", "dWEPL mm"] {
+    // The WEPL column along the default beam; under Display, live slices
+    // by default and the Jacobian wash a tick away.
+    for name in ["WEPL mm", "dWEPL mm"] {
         if !ui.has(&Target::containing(name)) {
             fail(&ui, &format!("no {name}"));
         }
     }
+    ui.click(&Target::label("Display").role("button"))
+        .unwrap_or_else(|e| fail(&ui, &format!("{e:#}")));
+    ui.settle(SETTLE);
+    if !ui.has(&Target::containing("Live slices")) {
+        fail(&ui, "no Live slices");
+    }
     ui.click(&Target::label("Jacobian wash"))
         .unwrap_or_else(|e| fail(&ui, &format!("{e:#}")));
     assert!(ui.settle(SETTLE), "the wash did not land");
+    assert_all_named(&ui, "the posture window's Display menu");
+    ui.key("Escape").unwrap();
+    ui.settle(SETTLE);
 
     // At the end, the lower bone has turned through the hinge's 40 degrees.
     ui.click(&Target::label("To the last state")).unwrap();
@@ -1486,15 +1502,17 @@ fn restoring_radiographs_listed_one_by_one_is_one_load() {
 }
 
 /// *Save GIF* in the posture window: once the model is built the button is
-/// on the bar, and its menu lists the five views - *All views* (the
-/// default), *Axial*, *Sagittal*, *Coronal*, *3D* - with the pane last
-/// clicked chosen (a click in the axial pane makes it *Axial*) and any
-/// other picked in the list; the *Vector field* option, the width and the
-/// way back. The arrow spacing is on the window's bar, and in the main
-/// viewer's *Settings ▸ Viewer*; nothing in either is unnamed. (The file
-/// dialog is the operating system's and is not opened.)
+/// on the bottom bar, on the row of the time slider, where a recorder
+/// button used to be (there is none now), and its menu lists the five
+/// views - *All views* (the default), *Axial*, *Sagittal*, *Coronal*, *3D* -
+/// any of them picked in the list; the *Vector field* option, the width and
+/// the way back. What it saves is what its menu says: a click in a pane
+/// (here the axial one) leaves *All views* as it was. The arrow spacing is
+/// under the window's *Display* menu, and in the main viewer's *Settings ▸
+/// Viewer*; nothing in either is unnamed. (The file dialog is the operating
+/// system's and is not opened.)
 #[test]
-fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
+fn the_posture_window_saves_a_gif_of_all_views_or_the_one_picked() {
     let _turn = turn();
     let [a, b] = rust_dicom_station::gen_test_data::generate_articulated(
         &common::target_dir("ui-test-posture-gif"),
@@ -1531,7 +1549,7 @@ fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
     ui.settle(SETTLE);
     let gif = Target::label("Save GIF").role("button");
     assert!(!ui.has(&gif), "a GIF before there is a model");
-    ui.click(&Target::containing("(pick a structure)")).unwrap();
+    ui.click(&Target::label("Auto")).unwrap();
     ui.settle(SETTLE);
     ui.click(&Target::label("BONE_UPPER")).unwrap();
     ui.settle(SETTLE);
@@ -1539,18 +1557,45 @@ fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
         .unwrap();
     assert!(ui.settle(SETTLE), "the model did not build");
     assert!(ui.has(&gif), "no Save GIF:\n{}", ui.tree_text());
+    // On the bar, beside the time slider, and the only way to film the run.
+    let bar = ui
+        .find(&Target::label("Time along the path"))
+        .unwrap_or_else(|_| panic!("no time slider:\n{}", ui.tree_text()));
+    let button = ui.find(&gif).unwrap();
+    assert!(
+        (button.rect.center().y - bar.rect.center().y).abs() < bar.rect.height().max(12.0),
+        "Save GIF at {:?} is not on the bar of the time slider at {:?}",
+        button.rect,
+        bar.rect
+    );
+    let win = ui
+        .find(&Target::containing("Posture model").role("window"))
+        .unwrap()
+        .rect;
+    assert!(
+        !["Record", "recording", "⏺"].iter().any(|w| ui
+            .find_all(&Target::containing(w).role("button"))
+            .iter()
+            .any(|h| win.contains(h.rect.center()))),
+        "a recorder beside Save GIF:\n{}",
+        ui.tree_text()
+    );
 
-    // The window's own arrow spacing, on its bar.
+    // The window's own arrow spacing, under its Display menu.
     let window = ui
         .find(&Target::containing("Posture model").role("window"))
         .unwrap();
+    ui.click(&Target::label("Display").role("button")).unwrap();
+    ui.settle(SETTLE);
     assert!(
         ui.find_all(&Target::label("Arrow spacing"))
             .iter()
             .any(|h| window.rect.contains(h.rect.center())),
-        "no arrow spacing on the posture window's bar:\n{}",
+        "no arrow spacing in the posture window's Display menu:\n{}",
         ui.tree_text()
     );
+    ui.key("Escape").unwrap();
+    ui.settle(SETTLE);
 
     let views = ["All views", "Axial", "Sagittal", "Coronal", "3D"];
     let radio = |name: &str| Target::label(name).role("radiobutton");
@@ -1594,13 +1639,17 @@ fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
             .checked,
         Some(true)
     );
+    // And back to all of them: the radio lies over a pane, which takes no
+    // part in the choice.
+    ui.click(&radio("All views")).unwrap();
+    ui.settle(SETTLE);
     assert_all_named(&ui, "the posture window's Save GIF menu");
     ui.key("Escape").unwrap();
     ui.settle(SETTLE);
 
     // The axial pane of the window is above its slice slider (the main
     // screen's, behind the window, start right of the data tree): a click
-    // in it selects it, and the menu offers it.
+    // in it does not change what the GIF takes.
     let slider = ui
         .find_all(&Target::label("Axial slice"))
         .into_iter()
@@ -1619,7 +1668,7 @@ fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
         let checked = ui.find(&radio(choice)).unwrap().checked;
         assert_eq!(
             checked,
-            Some(choice == "Axial"),
+            Some(choice == "All views"),
             "{choice} after a click in the axial pane:\n{}",
             ui.tree_text()
         );

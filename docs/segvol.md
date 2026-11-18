@@ -91,6 +91,13 @@ resample to a target spacing**. Intensities are normalized from the
 volume's own statistics - threshold at the mean, take the 0.05/99.95
 percentiles and the mean and standard deviation of the voxels above it,
 clip and z-score - then min-max to [0,1] and crop the resulting zero rim.
+The statistics come from a histogram of the `i16` voxels, and the three
+value steps are one table over the 65536 values applied while the crop is
+written, so nothing volume-sized is allocated but the crop (bit-identical
+to doing each step as a pass over a float copy, which the unit tests keep).
+The prepared image depends on the scan alone, so the section keeps it for
+the next prompt on the same volume (up to 512 MiB; a run over the phases
+of a 4D group keeps none).
 
 | | |
 |---|---|

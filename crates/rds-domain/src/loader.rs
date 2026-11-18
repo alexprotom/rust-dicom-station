@@ -1673,17 +1673,33 @@ pub fn load_series_volume(
 
     let slice_spacing = stack_slices(&mut slices, |s| &s.geom, &mut warnings);
     let nz = slices.len();
-    let (nx, ny) = (slices[0].geom.cols, slices[0].geom.rows);
+
+    // The slices go into the volume by value, each pixel buffer freed as
+    // soon as it has been copied, so the decoded slices and the contiguous
+    // volume are never both whole at once (at 512 × 512 × 300 that would be
+    // two 150 MiB copies). Of the slices only the first one's header
+    // outlives the loop: the grid and the window are read from it.
+    let mut slices = slices.into_iter();
+    let Some(SliceRec {
+        geom: first,
+        data: first_data,
+        min: mut min_v,
+        max: mut max_v,
+    }) = slices.next()
+    else {
+        bail!("No slices of the series could be decoded");
+    };
+    let (nx, ny) = (first.cols, first.rows);
     let mut data = Vec::with_capacity(nx * ny * nz);
-    let mut min_v = i16::MAX;
-    let mut max_v = i16::MIN;
-    for s in &slices {
+    data.extend_from_slice(&first_data);
+    drop(first_data);
+    for s in slices {
         min_v = min_v.min(s.min);
         max_v = max_v.max(s.max);
         data.extend_from_slice(&s.data);
+        // `s` ends here, and its pixels with it.
     }
 
-    let first = &slices[0].geom;
     let volume = Volume {
         data,
         dims: [nx, ny, nz],
@@ -1692,7 +1708,7 @@ pub fn load_series_volume(
         row_dir: first.row_dir,
         col_dir: first.col_dir,
         normal: first.row_dir.cross(first.col_dir).normalized(),
-        frame_of_reference_uid: first.for_uid.clone(),
+        frame_of_reference_uid: first.for_uid,
         min_value: min_v,
         max_value: max_v,
     };

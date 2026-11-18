@@ -23,12 +23,14 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::kept::{self, NetKey, Nets, PartNets};
+use super::timing::{self, Stage};
 use super::weights::{self, ModelSpec};
 use super::{cpu, infer, net, post, preprocess};
 use crate::nn::device::DevicePref;
 use crate::progress::{Progress, ProgressSink, CANCELLED};
 use crate::volume::{paste_labels, Volume};
 pub use crate::zoo::{Licence, Modality};
+use std::time::Instant;
 
 /// One network of a task.
 #[derive(Clone, Copy, Debug)]
@@ -674,6 +676,7 @@ fn run_parts(
     window: (f32, f32),
     progress: &Progress,
 ) -> Result<(Vec<u8>, String)> {
+    let t_run = Instant::now();
     let n_models = parts.len();
     let (base, span) = window;
     let phase = |p: &Progress, at: f32, len: f32| p.set_phase(base + span * at, span * len);
@@ -685,6 +688,7 @@ fn run_parts(
         FoldUse::All => u8::MAX,
         FoldUse::First => 1,
     };
+    let t = Instant::now();
     let mut configs = Vec::with_capacity(n_models);
     for (i, part) in parts.iter().enumerate() {
         phase(progress, i as f32 * dl_span, dl_span);
@@ -695,6 +699,7 @@ fn run_parts(
         }
         configs.push(config);
     }
+    timing::add(Stage::Prepare, t);
     let spacing = configs[0].spacing;
     let axes = parts[0].spec.axes;
     for (c, part) in configs.iter().zip(parts) {
@@ -704,7 +709,9 @@ fn run_parts(
     }
 
     progress.set("Choosing the compute device");
+    let t = Instant::now();
     let mut gpu = device.resolve()?;
+    timing::add(Stage::Device, t);
     let mut device_desc = gpu
         .as_ref()
         .map(|ctx| ctx.describe())
@@ -726,8 +733,10 @@ fn run_parts(
             }
         ),
     );
+    let t = Instant::now();
     let map = preprocess::SarMap::with_axes(volume, spacing, axes);
     let vol_model = preprocess::resample_to_model(volume, &map);
+    timing::add(Stage::Resample, t);
     if progress.cancelled() {
         bail!(CANCELLED);
     }
@@ -741,7 +750,9 @@ fn run_parts(
         // this returns, whatever it returns.
         let run_part =
             |gpu: Option<&crate::nn::device::GpuContext>, device_desc: &str| -> Result<Vec<u8>> {
+                let t = Instant::now();
                 let nets = part_nets(part, &dir, max_folds, config, gpu, device_desc, progress)?;
+                timing::add(Stage::Weights, t);
                 // A z-score model normalizes against this image, so its constants
                 // are only knowable now, with the resampled volume in hand; the
                 // networks themselves do not depend on them.
@@ -791,6 +802,7 @@ fn run_parts(
             crate::nn::device::memory::release_all();
         }
         // Merge: the network's labels through its table; later parts win.
+        let t = Instant::now();
         for (g, l) in global.iter_mut().zip(local.iter()) {
             if *l != 0 {
                 if let Some(&t) = part.lut.get(*l as usize) {
@@ -800,9 +812,11 @@ fn run_parts(
                 }
             }
         }
+        timing::add(Stage::Merge, t);
     }
 
     phase(progress, 0.95, 0.05);
+    let t = Instant::now();
     match task.post {
         Post::None | Post::NnUnetV1 | Post::RemoveOutside { .. } => {}
         Post::Body => {
@@ -815,8 +829,12 @@ fn run_parts(
             post::vertebrae_pp(&mut global, map.model_dims, spacing, s_axis, task.classes);
         }
     }
+    timing::add(Stage::Post, t);
     progress.report(0.0, "Mapping labels back to the scan grid");
+    let t = Instant::now();
     let mut labels = preprocess::labels_to_volume_grid(&global, &map, volume);
+    timing::add(Stage::BackMap, t);
+    let t = Instant::now();
     if task.post == Post::NnUnetV1 {
         let dir = weights::spec_dir(root, &parts[0].spec);
         let rules = super::v1::load_post(&dir)?;
@@ -825,6 +843,8 @@ fn run_parts(
             super::v1::apply_post(&mut labels, volume.dims, volume.spacing, &rules);
         }
     }
+    timing::add(Stage::Post, t);
+    timing::report(task.key, t_run);
     Ok((labels, shown_desc))
 }
 

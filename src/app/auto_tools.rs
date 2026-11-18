@@ -49,8 +49,10 @@ impl ViewerApp {
             .series
             .get(study.active_series)
             .map(|se| se.uid.as_str());
+        // By the series, for a run on the displayed series too: a phase of
+        // the same size stepped to meanwhile is not the one it was made on.
         let phase = p.phases.iter().position(|(info, r)| {
-            r.dims == study.volume.dims && (p.phases.len() == 1 || shown == Some(&info.series_uid))
+            r.dims == study.volume.dims && shown.unwrap_or("") == info.series_uid
         })?;
         let mut colors: Box<[Option<Color32>; 256]> = Box::new([None; 256]);
         let mut key = mix(0x0A07_05E6, phase as u64);

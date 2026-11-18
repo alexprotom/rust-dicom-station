@@ -38,9 +38,19 @@ is held still. So the model has an **anchor**:
 
 | Anchor | How the states are laid onto the first |
 |---|---|
+| *Auto* (the default) | a structure chosen when the model is built (`workflow::posture::auto_anchor`), then as below: among the bones of at least 10 cm3 that every scan sees **whole** - on no state reaching the edge of the scan, their contoured volumes within 10 % - the sacrum; else the middle one, by height, of the vertebrae; else the largest; none, the whole image. The model records what was chosen ("anchor chosen: ..." in its provenance, and the anchor name in the tables and the file) |
 | a structure on every state (the sacrum, a vertebra, the target) | the rigid surface fit of that structure (`registration::shape`, distance maps, no grey values), with the principal-axes start below |
 | *Whole image* | a rigid intensity registration (elastix rigid) |
 | *Scanner frame* | nothing: for scans that share a frame of reference |
+
+Why *Auto* takes those: the frame every number is read in should be a
+bone the anatomy pivots about and the scans agree on. A bone one scan cut
+is fitted to its whole self and reads a turn that never happened - on a
+supine and upright pair framed on the chest, an upright scan ending at S1
+made a sacrum anchor read 47 degrees and the whole spine bend 49 (2026-11,
+three supine and upright pairs); the middle vertebra both scans see keeps
+every other level's motion small. A structure anchor picked by hand that a
+scan does not see whole is warned about.
 
 Every state's image and structures are carried into the first state's
 patient coordinates (LPS millimetres) - the **anchor frame** - on the first
@@ -99,6 +109,20 @@ layers:
    faded to nothing inside the bodies (`1 - rho`, `rho` one inside a body
    at the start and falling over two lattice steps), and turned into a
    stationary velocity field `u` by the logarithm of a displacement field.
+   Two scans of two positions rarely cover the same part of the patient,
+   and what lies outside the end scan is its lowest value: left to itself
+   the registration drags the tissue at one scan's edge onto the empty
+   space beyond the other's and folds it. So it is fitted only where both
+   scans have tissue (`fit::residual_region`: the start voxels whose
+   blended position the end scan covers, inside the EXTERNAL structure
+   grown by 15 mm, the edge shrunk by a lattice step), faded to nothing
+   outside that region over a lattice step, and halved until its flow
+   keeps the Jacobian at 0.2 or more (the provenance says by how much). Its
+   defaults are mutual information, a 30 mm lattice and a bending penalty
+   of 1 (`workflow::posture::default_residual`): on the supine and upright
+   pairs mean squares folded wherever the content changed (a bladder with
+   contrast on one scan only, gas) and mutual information with the stiffer
+   lattice moved the organs the furthest without folding.
 
 ### The path
 
@@ -169,6 +193,44 @@ logarithms, a mean posture) is not built: one patient's imaging gives two
 to a handful of states, too few for any mode, and modes across patients
 need them all in one anatomy first, an atlas registration the station does
 not make.
+
+### The patient only
+
+*Patient only* (on by default, `PostureRequest::patient_only`): each
+state's image with what lies outside its EXTERNAL structure (the type, or
+the names BODY, EXTERNAL, SKIN, OUTLINE), grown by 3 mm, set to air - -1000
+HU, or the image's lowest value when that is higher (an MR)
+(`workflow::posture::patient_only`). The couch of a lying scan and the
+chair of a seated one are not anatomy: carried along the path they bend
+with the tissue around them, and the image of the other position should
+hold neither. The model is fitted on these images (an image anchor no
+longer sees the couch) and draws them; a state without an EXTERNAL
+structure is kept as scanned, and the provenance says which.
+
+### Carrying another image
+
+Another image taken in the first state's position - an MR, a PET, a
+contrast series - is put on the first state's grid
+(`workflow::posture::carry_image`: in the scanner's frame, by a rigid
+registration by mutual information, or through a transform the station
+holds) and given to the renderer in place of the first state's own image,
+so *A moving forward* carries it along the path: a supine MR with a supine
+and an upright CT gives an upright MR. Only the geometry is carried; what
+the other position does to the grey values is not modelled. In this
+version the CLI does it (`--carry`, frames and GIF); the window and the MCP
+tool are to follow, with a derived-series writer of the image's own
+modality.
+
+### How far to trust it
+
+`measure::Tables::verdict` reads the model's checks into a word - *good*,
+*check*, *poor* - and its findings, the worst first: a path that folds
+(poor); the way back missing the way there by more than 1 mm at the 95th
+percentile; an anchor that fits a state only to more than 2.5 mm RMS (cut
+by a scan?); bones fitting looser than 2.5 mm; organs whose model check is
+under a Dice of 0.6 (they moved on their own - gravity, filling - which the
+bones do not carry); scans overlapping on under half of the first. The
+window heads its side with it, the MCP tool and the CLI print it.
 
 ### What it cannot represent
 
@@ -256,15 +318,20 @@ parameter; a click on the chart moves the slider there.
 
 ## The window
 
-- **Top bar**: the states (workspaces holding an image) each with its
-  posture parameter, ➕ for a chain; the anchor; the mode; *Rigid* (the
-  bodies, ticked from the structures every state has); *Residual*; the
-  lattice and the reach; *Smooth chain* (three states or more); *WEPL* and
-  its gantry and couch angles; *▶ Build* (a background job with progress
-  and Cancel) and *Open model*. Under it, the caveat, and for each state
-  that lacks structures another has, which ones - with *Contour B with
-  ...* when an automatic model of the registry makes some of them (the one
-  that makes the most, the smaller on a tie,
+One line makes a model, one card says how far to trust it, and the rest
+is a click away in a menu.
+
+- **Top bar**, one line: the states (workspaces holding an image), → between
+  them, ➕ for a chain; *Anchor* (*Auto* until one is picked, reading
+  *Auto: Sacrum* once built); *▶ Build* (a background job with progress
+  and Cancel); *⚙ Options*: the mode, *Rigid* (the bodies, ticked from the
+  structures every state has), *Residual*, the lattice and the reach,
+  *Smooth chain* (three states or more), *Patient only*, each state's
+  posture parameter, *WEPL* and its gantry and couch angles, and *Open
+  model...*. Under the bar, only when there is one: for each state that
+  lacks structures another has, which ones - with *Contour B with ...*
+  when an automatic model of the registry makes some of them (the one that
+  makes the most, the smaller on a tie,
   `workflow::posture::model_for_missing`). The button runs it on that
   workspace through the *Structure auto tools* module, whose *Results*
   fold then lists what it found; add them there and press *Build* again.
@@ -273,12 +340,21 @@ parameter; a click on the chart moves the slider there.
   crosshair, zoom, window, structure visibility and the 3D camera are the
   ordinary ones.
 - **Bottom bar**: ⏮ ▶/⏸ ⏭, the time slider with a tick at each state, the
-  time (and the parameter), frames a second, the end mode (loop, bounce,
-  once: the *Image playback* module's), what is shown, the overlay and its
+  time (and the parameter), what is shown, *Display* - the overlay and its
   arrow spacing, *Jacobian wash*, *Dose (display only)* when the first
   state has a dose, *Live slices* or *Key frames* and the number of steps,
-  the recorder (the selected view, ⏺ / ⏹).
-- **Right**: the exports, *Save GIF* and the table.
+  frames a second, the end mode (loop, bounce, once: the *Image playback*
+  module's) - and *Save GIF* (below). Inside the
+  *Display* and *Options* menus every choice is one click (a row of
+  buttons, not a drop-down: a drop-down in a menu is a popup in a popup,
+  and the outer one takes the click), and every number - arrow spacing,
+  steps, frames a second, lattice, reach - has ◀ ▶ arrows a step either
+  side: 1 below 15, 5 from 15 to 50, 10 above, landing on a multiple of the
+  step.
+- **Right**: the verdict (a coloured dot, *Good model*, *Model to check* or
+  *Poor model*, and its findings), the build's warnings folded as
+  *Notes*, the caveat, *📤 Export* (the tables as CSV, the model file, the
+  DICOM REG, the image at t), and the tables.
 
 **What is shown**: *A moving forward* (the segment's first state carried to
 `t`), *B moving back*, *Cross-fade* (`(1 - s) A + s B`, exactly each scan at
@@ -346,19 +422,19 @@ freed.
 | 💾 Model | `.rdsposture` (JSON): the lattice, grids, anchor transforms, states, per segment its bodies (motion, fit, the lattice nodes they cover) and the residual and linear fields; the blend is rebuilt on reading. *Open model* reads it back onto the same states and recomputes the tables, nothing refitted |
 | 📤 REG | the whole path, first state to last, as a DICOM Deformable Spatial Registration from the first state's frame into the last state's own coordinates |
 | 📤 Image at t | the image at the slider's time as a derived CT series of the first state's study (on its grid, Image Type DERIVED, the time and the caveat in the series description and derivation) and the first state's structures carried to that time as an RT Structure Set on it, each ROI's description saying it was interpolated |
-| ⏺ | the film of a pane as GIF or PNG frames, one cycle of the run, taken from the screen |
-| Save GIF | the path as an animated GIF rendered from the model: all views (the three planes and the 3D scene) or any one of them, with the vector field if asked (below) |
+| Save GIF (on the bottom bar) | the path as an animated GIF rendered from the model: all views (the three planes and the 3D scene) or any one of them, with the vector field if asked (below) |
 
 **Save GIF** (`posture::film`). A menu. **View**: *All views* (the
 default) - axial, sagittal and coronal side by side in cells of the panes'
 shape and the 3D scene under them across the whole width, as the window
-lays them out - or *Axial*, *Sagittal*, *Coronal* or *3D* alone. A click
-in a pane (any button), or the selected-view list beside ⏺, picks that
-pane here too; any view can be picked in the menu without one. *3D* is
-greyed out when no structure of the first state has a surface. **Vector
+lays them out - or *Axial*, *Sagittal*, *Coronal* or *3D* alone. The
+GIF takes what is picked here and nothing else: a click in a pane does
+not change it (it once did, and a GIF of one pane came out of a click
+meant for something else). *3D* is greyed out when no structure of the
+first state has a surface. **Vector
 field**: the displacement over the planes as the views draw it - arrows,
-or the deformed grid while the overlay list says so (arrows when the
-overlay is off) - at the bar's arrow spacing, in the views' colours and
+or the deformed grid while *Display*'s field says so (arrows when the
+field is off) - at *Display*'s arrow spacing, in the views' colours and
 proportions. Then *Width* (800 px by default; the height follows the
 panes' shape) and *There and back* (the way back added without repeating
 an end, for a smooth loop). *Save...* asks for the file and writes it on a
@@ -402,7 +478,8 @@ anti-aliased edges are not in it. The other way - stepping the window
 through the times and cutting each frame out of a screenshot of it - was
 not taken: it would film exactly the screen, but only while the window is
 on screen and drawn, a frame per repaint, and not in the CLI or the
-headless tests; ⏺ remains for filming the screen as it is.
+headless tests. The window had such a recorder too (⏺, one pane cut out
+of the screen), and it went: *Save GIF* does the same better.
 
 One palette for the whole film (the GIF's global table), no dithering, so
 no frame is quantized on its own and nothing flickers: greys (192; 177
@@ -439,10 +516,10 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
 | `posture/film.rs` | *Save GIF*: the run's times, the layout, the palette, the outlines, the wash and the field over the planes, the 3D scene drawn as the pane draws it, written as an animated GIF |
 | `crates/rds-domain/src/workflow/posture.rs` | `build`, `reopen`, `export_frame`, `export_registration`, preset joints, `lacking` and `model_for_missing` |
 | `crates/rds-domain/src/gen_test_data.rs` | `articulated_pair` / `generate_articulated`: the articulated phantom |
-| `src/app/posture_win.rs`, `posture_table.rs` | the window, its workspace, playback and recording; the table and chart |
+| `src/app/posture_win.rs`, `posture_table.rs` | the window, its workspace, playback and *Save GIF*; the table and chart |
 | `crates/rds-domain/src/mcp/tools/posture.rs` | `build_posture_model` |
 | `crates/rds-domain/src/workflow/graph/nodes/posture.rs` | the *Posture model* step |
-| `examples/posture_cli.rs` | headless: folders (or `--phantom`, or `--simulate` on one CT) in, tables, model file, REG, key frames and the image at a time out; `--wepl GANTRY[,COUCH]`, `--no-smooth`, `--bench-slices N` (live steps timed on the CPU and the GPU, and how far apart they are), `--gif FILE` (the film; `--gif-view` all, axial, sagittal, coronal or 3d, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`, `--wash`, `--gif-field` arrows or grid, `--arrow-spacing`, `--arrow-scale`) |
+| `examples/posture_cli.rs` | headless: folders (or `--phantom`, or `--simulate` on one CT) in, tables, the verdict, model file, REG, key frames and the image at a time out; `--anchor auto` by default, `--whole-scan`, `--residual-grid` / `--residual-reg` / `--residual-metric`, `--carry DIR` with `--carry-align rigid\|scanner` (another image of the first position carried), `--wepl GANTRY[,COUCH]`, `--no-smooth`, `--bench-slices N` (live steps timed on the CPU and the GPU, and how far apart they are), `--gif FILE` (the film; `--gif-view` all, axial, sagittal, coronal or 3d, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`, `--wash`, `--gif-field` arrows or grid, `--arrow-spacing`, `--arrow-scale`) |
 
 ## Verification
 
@@ -479,9 +556,10 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
   slices are the default, the wash ticks on, the end reads the hinge's
   angle, playing moves the time, every widget has a name; a state lacking
   a structure (*liver*) is named and offered the model that makes it;
-  *Save GIF* lists the five views (all views the default, a click in a
-  pane choosing it, any picked from the list) and *Vector field*, and the
-  arrow spacing is on the window's bar and in *Settings ▸ Viewer*.
+  *Save GIF* is on the bottom bar with no recorder beside it, lists the
+  five views (all views the default, any picked from the list, a click in
+  a pane changing nothing) and *Vector field*, and the arrow spacing is
+  under the window's *Display* and in *Settings ▸ Viewer*.
 - **The film** (`tests/posture.rs`, unit tests in `posture/film.rs`): the
   GIF decodes back to one frame per time at the size its layout gives -
   the three planes, the planes with the scene under them, a plane alone,
@@ -493,7 +571,15 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
   a body translucent over what is inside; the palette makes room for the
   arrows and the scene from the greys, the arrow ramp is the views' colour
   map, the median cut keeps the colours it can.
-- **The step and the tool**: `tests/workflow_steps.rs`, `tests/mcp_tools.rs`,
+- **Iteration of 2026-11** (`tests/posture.rs`): *Auto* holds one of the
+  phantom's bones and the joint reads the hinge; the residual neither folds
+  nor stretches the bones and leaves the organ no worse; *patient only*
+  clears a couch under the phantom and keeps the patient; an image of the
+  first position carried in the scanner's frame renders as the first
+  state's own. The rule of *Auto* (sacrum, middle vertebra, largest bone,
+  none) is a unit test of `workflow::posture`.
+- **The step and the tool**: `tests/workflow_steps.rs`, `tests/mcp_tools.rs`
+  (the summary and the full answer, the verdict, the image at `export_t`),
   `tests/mcp_phi.rs` (the tool returns tables and handles only).
 - **Known transforms on real anatomy** (`#[ignore]`d, needs `data-test/` or
   `RDS_POSTURE_DATA`): the simulator's rigid motion of the bundled 4DCT
@@ -522,8 +608,8 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
 The plan left these open; the window starts from:
 
 1. **Name**: *Posture model*.
-2. **Anchor**: picked by the user; the default when none is picked is the
-   whole image (rigid). A structure is the better anchor when there is one.
+2. **Anchor**: *Auto* (above) until the user picks one; the CLI and the MCP
+   tool default to it too.
 3. **Rigid bodies**: every bone the states share, editable under *Rigid*.
 4. **Structures on both states**: matched by name. A state lacking some is
    offered the automatic model of the registry that makes the most of them

@@ -574,7 +574,16 @@ impl ViewerApp {
     /// Materialize the chosen organs the way the results window says: as
     /// segments, as contours in a structure set, or both - on the displayed
     /// series, or on every phase the run covered.
+    ///
+    /// The masks are extracted and their contours traced on a worker
+    /// ([`prepare_autoseg`]), which takes the run's label maps by value and
+    /// lets each go once its phase is done; what it made is filed by
+    /// [`Self::on_autoseg_applied`] once it lands, after the workspace has
+    /// been checked again. Cancelling it files nothing.
     pub(super) fn apply_autoseg_selection(&mut self) {
+        if self.autoseg_apply_job.is_some() {
+            return;
+        }
         let Some(p) = self.autoseg_pending.take() else {
             return;
         };
@@ -596,38 +605,188 @@ impl ViewerApp {
         if classes.is_empty() {
             return;
         }
-        let group = p.phases.first().and_then(|(info, _)| info.group.clone());
-        if let Some(group) = group {
-            // One pass over each phase's label map for every chosen class;
-            // a class a phase did not find lands nowhere on that phase.
-            let copies: Vec<_> = p
-                .phases
-                .iter()
-                .map(|(info, r)| {
-                    let mine: Vec<(u8, String, [u8; 3])> = classes
-                        .iter()
-                        .filter(|(label, _, _)| r.organs.iter().any(|o| o.label == *label))
-                        .cloned()
-                        .collect();
-                    let segs = Segmentation::from_label_map_many(r.dims, &r.labels, &mine);
-                    info.copy(segs, Vec::new())
-                })
-                .collect();
-            self.land_phases(slot, &group, p.output.kind, "ORGAN", copies);
-            return;
-        }
-        let Some((_, result)) = p.phases.first() else {
+        let Some((first, _)) = p.phases.first() else {
             return;
         };
-        let Some(study) = self.slots[slot].study.as_ref() else {
-            return;
-        };
-        if study.volume.dims != result.volume_dims {
+        let group = first.group.clone();
+        let mut output = p.output.clone();
+        if group.is_none() && !self.slot_still_shows_image(slot, first) {
             self.error = Some("Workspace changed - auto-segmentation result discarded.".into());
             return;
         }
-        // One pass over the label map for every chosen structure.
-        let made = Segmentation::from_label_map_many(result.dims, &result.labels, &classes);
-        self.land_masks(slot, &p.output, "ORGAN", "Auto-segmentation", made);
+        // The structure set chosen for the contours, by identity: the sets
+        // are indexed, and the index may name another set by the time the
+        // worker is done. One that is not there now means a new set, as it
+        // did when the contours were filed at once.
+        let set_uid = match (group.is_none() && output.kind.structures(), output.set) {
+            (true, Some(i)) => self.slots[slot]
+                .study
+                .as_ref()
+                .and_then(|st| st.structure_sets.get(i))
+                .map(|ss| ss.sop_instance_uid.clone()),
+            _ => None,
+        };
+        if set_uid.is_none() {
+            output.set = None;
+        }
+        let kind = output.kind;
+        let phases = p.phases;
+        let progress = Arc::new(Progress::default());
+        progress.set("Adding the structures");
+        self.autoseg_apply_slot = slot;
+        self.autoseg_apply_job = Some(Job::spawn(progress, move |pr| {
+            let made = prepare_autoseg(phases, &classes, group, kind, pr);
+            (
+                slot,
+                made.map(|made| AutosegApply {
+                    output,
+                    set_uid,
+                    made,
+                }),
+            )
+        }));
     }
+
+    /// File what [`Self::apply_autoseg_selection`]'s worker made, if the
+    /// workspace still holds what it was made for: on a run over the
+    /// phases, each phase that is still in the workspace (and, if it is on
+    /// screen, on the same lattice); on the displayed series, that same
+    /// series on that same lattice - a same-sized phase stepped to
+    /// meanwhile is not it - and the structure set chosen, wherever it now
+    /// sits in the list and only if it is not locked.
+    pub(super) fn on_autoseg_applied(&mut self, slot: usize, applied: AutosegApply) {
+        let AutosegApply {
+            mut output,
+            set_uid,
+            made,
+        } = applied;
+        match made {
+            AutosegMade::Phases { group, phases } => {
+                self.land_prepared_phases(slot, &group, output.kind, phases);
+            }
+            AutosegMade::Displayed { info, rois, segs } => {
+                if !self.slot_still_shows_image(slot, &info) {
+                    self.error =
+                        Some("Workspace changed - auto-segmentation result discarded.".into());
+                    return;
+                }
+                if let Some(uid) = set_uid {
+                    let at = self.slots[slot].study.as_ref().and_then(|st| {
+                        st.structure_sets
+                            .iter()
+                            .position(|ss| ss.sop_instance_uid == uid)
+                    });
+                    match at {
+                        Some(i) => output.set = Some(i),
+                        None => {
+                            self.error = Some(
+                                "The structure set chosen for the auto-segmentation result \
+                                 is gone - the result was discarded."
+                                    .into(),
+                            );
+                            return;
+                        }
+                    }
+                }
+                self.land_prepared_masks(slot, &output, "Auto-segmentation", rois, segs);
+            }
+        }
+    }
+}
+
+/// What *Add* of the auto-segmentation results made on its worker, filed
+/// by [`ViewerApp::on_autoseg_applied`] once checked.
+pub(super) struct AutosegApply {
+    output: ToolOutput,
+    /// The SOP Instance UID of the structure set `output.set` named when
+    /// *Add* was clicked; `None` for a new set (or no contours).
+    set_uid: Option<String>,
+    made: AutosegMade,
+}
+
+/// The masks and contours made from a run's label maps.
+pub(super) enum AutosegMade {
+    /// A run on the displayed series: the contours (when structures are
+    /// filed), traced on the lattice of `info`, and the segments (when
+    /// segments are).
+    Displayed {
+        /// Boxed, so the two variants are of one size.
+        info: Box<PhaseInfo>,
+        rois: Vec<crate::rtstruct::Roi>,
+        segs: Vec<Segmentation>,
+    },
+    /// A run over the phases of `group`, in temporal order.
+    Phases {
+        group: String,
+        phases: Vec<workflow::group::PreparedPhase>,
+    },
+}
+
+/// Extract the chosen classes from each label map of a run and trace their
+/// contours, on the calling (worker) thread. The results are consumed one
+/// at a time and each label map goes as soon as its masks exist; when only
+/// contours are filed, a phase's masks go too once traced, so a run over
+/// ten phases holds one phase's masks at a time rather than all of them.
+/// Every structure gets the RT ROI Interpreted Type `ORGAN`.
+fn prepare_autoseg(
+    phases: Vec<(PhaseInfo, autoseg::AutosegResult)>,
+    classes: &[(u8, String, [u8; 3])],
+    group: Option<String>,
+    kind: OutputKind,
+    p: &Progress,
+) -> anyhow::Result<AutosegMade> {
+    let n = phases.len().max(1);
+    let Some(group) = group else {
+        let (info, result) = phases
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("the run left no result"))?;
+        p.set("Extracting the structures");
+        // One scan of the label map fills the masks of all the chosen
+        // structures.
+        let segs = Segmentation::from_label_map_many(result.dims, &result.labels, classes);
+        drop(result);
+        if p.cancelled() {
+            anyhow::bail!(crate::progress::CANCELLED);
+        }
+        let rois = if kind.structures() {
+            p.set("Tracing the contours");
+            segmentation::masks_to_rois(&segs, &info.grid, "ORGAN")
+        } else {
+            Vec::new()
+        };
+        let segs = if kind.segments() { segs } else { Vec::new() };
+        return Ok(AutosegMade::Displayed {
+            info: Box::new(info),
+            rois,
+            segs,
+        });
+    };
+    let mut out = Vec::with_capacity(phases.len());
+    for (i, (info, result)) in phases.into_iter().enumerate() {
+        if p.cancelled() {
+            anyhow::bail!(crate::progress::CANCELLED);
+        }
+        p.set_phase(i as f32 / n as f32, 1.0 / n as f32);
+        p.set(format!(
+            "Phase {} ({}/{n}): adding the structures",
+            info.label,
+            i + 1
+        ));
+        // One scan of each phase's label map fills the masks of all the
+        // chosen classes; a class a phase did not find lands nowhere on
+        // that phase.
+        let mine: Vec<(u8, String, [u8; 3])> = classes
+            .iter()
+            .filter(|(label, _, _)| result.organs.iter().any(|o| o.label == *label))
+            .cloned()
+            .collect();
+        let segs = Segmentation::from_label_map_many(result.dims, &result.labels, &mine);
+        drop(result);
+        out.push(info.copy(segs, Vec::new()).prepare(kind.filing(), "ORGAN"));
+    }
+    if p.cancelled() {
+        anyhow::bail!(crate::progress::CANCELLED);
+    }
+    Ok(AutosegMade::Phases { group, phases: out })
 }

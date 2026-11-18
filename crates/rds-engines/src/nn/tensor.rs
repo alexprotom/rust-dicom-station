@@ -215,12 +215,12 @@ impl Arena {
 
 /// Transposed 3-D convolution with `kernel = stride`, for any stride.
 ///
-/// The 2× case has its own hand-tuned routine below; this is the general
-/// one, used by the models whose decoder upsamples anisotropically (the MR
-/// body model halves two axes at a time and leaves the third alone). Since
-/// kernel equals stride the output tiles are disjoint - no overlap-add,
-/// just a GEMM that expands every input voxel into its `s0·s1·s2` outputs
-/// and a scatter.
+/// Since kernel equals stride the output tiles are disjoint - no
+/// overlap-add, just a GEMM that expands every input voxel into its
+/// `s0·s1·s2` outputs and a scatter. The 2× case (every nnU-Net decoder,
+/// SegVol's) and the anisotropic ones (the MR body model halves two axes at
+/// a time and leaves the third alone) are the one routine,
+/// [`conv_transpose3d_stride_into_slice`].
 pub fn conv_transpose3d_stride(
     x: &Act,
     weight: &[f32],
@@ -242,16 +242,47 @@ pub fn conv_transpose3d_stride_into(
     stride: [usize; 3],
     mut out: Act,
 ) -> Act {
-    let [s0, s1, s2] = stride;
+    debug_assert_eq!(
+        (out.d, out.h, out.w),
+        (x.d * stride[0], x.h * stride[1], x.w * stride[2])
+    );
     let cout = out.c;
-    if stride == [2, 2, 2] {
-        return conv_transpose3d_2x_into(x, weight, bias, out);
-    }
+    conv_transpose3d_stride_into_slice(x, weight, bias, stride, cout, &mut out.data);
+    out
+}
+
+thread_local! {
+    /// Per-thread GEMM output of one input slice (`[cout * taps, h * w]`),
+    /// reused from slice to slice and layer to layer rather than allocated
+    /// - and page-faulted in - for every slice.
+    static UP_TMP: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// [`conv_transpose3d_stride`] into `out`, the `cout * d*s0 * h*s1 * w*s2`
+/// values of the output in `[cout, d*s0, h*s1, w*s2]` order: the front of
+/// a larger buffer, say, whose other channels a concatenation fills, so the
+/// upsampled channels are never copied. Every element is written.
+///
+/// One input slice `z` writes the output slices `z*s0 .. z*s0+s0`,
+/// disjoint across the parallel loop. Its GEMM, `[cout*taps, cin] x
+/// [cin, h*w]`, reads the slice straight out of the input (row stride: one
+/// channel, `d*h*w`) rather than from a gathered copy; the GEMM packs its
+/// operands itself, so the products and their sums are the ones the copy
+/// gave, to the bit.
+pub fn conv_transpose3d_stride_into_slice(
+    x: &Act,
+    weight: &[f32],
+    bias: &[f32],
+    stride: [usize; 3],
+    cout: usize,
+    out: &mut [f32],
+) {
+    let [s0, s1, s2] = stride;
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
     let ks = s0 * s1 * s2;
     debug_assert_eq!(weight.len(), cin * cout * ks);
     let (od, oh, ow) = (d * s0, h * s1, w * s2);
-    debug_assert_eq!((out.d, out.h, out.w), (od, oh, ow));
+    assert_eq!(out.len(), cout * od * oh * ow, "output size");
     // Repack the weight as [cout*ks, cin] for a row-major GEMM.
     let mut wt = vec![0f32; cout * ks * cin];
     for ci in 0..cin {
@@ -263,161 +294,193 @@ pub fn conv_transpose3d_stride_into(
     }
     let hw = h * w;
     let ohw = oh * ow;
-    let out_ptr = SendPtr(out.data.as_mut_ptr());
-    let od_stride = od * ohw;
-    // Input slice z writes output slices z*s0 .. z*s0+s0, disjoint across z.
+    let out_ptr = SendPtr(out.as_mut_ptr());
+    let od_stride = od * ohw; // per-channel stride in the output
     (0..d).into_par_iter().for_each(|z| {
-        let mut xin = vec![0f32; cin * hw];
-        for c in 0..cin {
-            let src = &x.data[c * d * hw + z * hw..c * d * hw + (z + 1) * hw];
-            xin[c * hw..(c + 1) * hw].copy_from_slice(src);
-        }
-        let mut tmp = vec![0f32; cout * ks * hw];
-        unsafe {
-            gemm::gemm(
-                cout * ks,
-                hw,
-                cin,
-                tmp.as_mut_ptr(),
-                1,
-                hw as isize,
-                false,
-                wt.as_ptr(),
-                1,
-                cin as isize,
-                xin.as_ptr(),
-                1,
-                hw as isize,
-                0.0f32,
-                1.0f32,
-                false,
-                false,
-                false,
-                gemm::Parallelism::None,
-            );
-        }
-        for co in 0..cout {
-            let bv = bias[co];
-            for dz in 0..s0 {
-                let obase = co * od_stride + (z * s0 + dz) * ohw;
-                for dy in 0..s1 {
-                    for dx in 0..s2 {
-                        let t = (dz * s1 + dy) * s2 + dx;
-                        let src = &tmp[(co * ks + t) * hw..(co * ks + t + 1) * hw];
-                        for y in 0..h {
-                            let orow = obase + (y * s1 + dy) * ow + dx;
-                            let dst = unsafe {
-                                std::slice::from_raw_parts_mut(
-                                    out_ptr.get().add(orow),
-                                    (w - 1) * s2 + 1,
-                                )
-                            };
-                            let srow = &src[y * w..(y + 1) * w];
-                            for (xi, sv) in srow.iter().enumerate() {
-                                dst[xi * s2] = sv + bv;
+        UP_TMP.with_borrow_mut(|tmp| {
+            // Every element is written by the GEMM (beta 1, alpha 0).
+            tmp.resize(cout * ks * hw, 0.0);
+            unsafe {
+                gemm::gemm(
+                    cout * ks,
+                    hw,
+                    cin,
+                    tmp.as_mut_ptr(),
+                    1,
+                    hw as isize,
+                    false,
+                    wt.as_ptr(),
+                    1,
+                    cin as isize,
+                    x.data.as_ptr().add(z * hw),
+                    1,
+                    (d * hw) as isize,
+                    0.0f32,
+                    1.0f32,
+                    false,
+                    false,
+                    false,
+                    gemm::Parallelism::None,
+                );
+            }
+            // scatter: tmp[(co*ks + t) * hw + y*w + x]
+            //   -> out[co][z*s0+dz][y*s1+dy][x*s2+dx], plus the bias
+            for co in 0..cout {
+                let bv = bias[co];
+                for dz in 0..s0 {
+                    let obase = co * od_stride + (z * s0 + dz) * ohw;
+                    for dy in 0..s1 {
+                        for dx in 0..s2 {
+                            let t = (dz * s1 + dy) * s2 + dx;
+                            let src = &tmp[(co * ks + t) * hw..(co * ks + t + 1) * hw];
+                            for y in 0..h {
+                                let orow = obase + (y * s1 + dy) * ow + dx;
+                                // SAFETY: input slice z owns output slices
+                                // z*s0..z*s0+s0 of every channel.
+                                let dst = unsafe {
+                                    std::slice::from_raw_parts_mut(
+                                        out_ptr.get().add(orow),
+                                        (w - 1) * s2 + 1,
+                                    )
+                                };
+                                let srow = &src[y * w..(y + 1) * w];
+                                for (xi, sv) in srow.iter().enumerate() {
+                                    dst[xi * s2] = sv + bv;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
+        });
     });
-    out
 }
 
 /// Transposed 3D convolution with kernel = stride = 2: every input voxel
 /// projects to a disjoint 2x2x2 output block. `weight`: `[cin, cout, 2, 2, 2]` -
 /// PyTorch's `ConvTranspose3d` layout.
 pub fn conv_transpose3d_2x(x: &Act, weight: &[f32], bias: &[f32], cout: usize) -> Act {
-    let out = Act::zeros(cout, x.d * 2, x.h * 2, x.w * 2);
-    conv_transpose3d_2x_into(x, weight, bias, out)
+    conv_transpose3d_stride(x, weight, bias, cout, [2, 2, 2])
 }
 
-/// [`conv_transpose3d_2x`] into `out`, already shaped `[cout, 2d, 2h, 2w]`;
-/// every element is written.
-fn conv_transpose3d_2x_into(x: &Act, weight: &[f32], bias: &[f32], mut out: Act) -> Act {
-    let cout = out.c;
-    let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
-    debug_assert_eq!(weight.len(), cin * cout * 8);
-    let (od, oh, ow) = (d * 2, h * 2, w * 2);
-    debug_assert_eq!((out.d, out.h, out.w), (od, oh, ow));
-    // Repack weight as [cout*8, cin] for a row-major GEMM.
-    let mut wt = vec![0f32; cout * 8 * cin];
-    for ci in 0..cin {
-        for co in 0..cout {
-            for t in 0..8 {
-                wt[(co * 8 + t) * cin + ci] = weight[(ci * cout + co) * 8 + t];
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The transposed convolution as it was before it read its input in
+    /// place: the input slice gathered into a copy, the GEMM's output in a
+    /// fresh buffer. The routine that replaced it must give the same bits.
+    fn conv_transpose_gathered(
+        x: &Act,
+        weight: &[f32],
+        bias: &[f32],
+        cout: usize,
+        stride: [usize; 3],
+    ) -> Vec<f32> {
+        let [s0, s1, s2] = stride;
+        let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
+        let ks = s0 * s1 * s2;
+        let (od, oh, ow) = (d * s0, h * s1, w * s2);
+        let mut wt = vec![0f32; cout * ks * cin];
+        for ci in 0..cin {
+            for co in 0..cout {
+                for t in 0..ks {
+                    wt[(co * ks + t) * cin + ci] = weight[(ci * cout + co) * ks + t];
+                }
             }
         }
-    }
-    let hw = h * w;
-    let ohw = oh * ow;
-    let out_ptr = SendPtr(out.data.as_mut_ptr());
-    let od_stride = od * ohw; // per-channel stride in the output
-                              // one input slice z -> output slices 2z, 2z+1 (disjoint across the loop)
-    (0..d).into_par_iter().for_each(|z| {
-        // gather input slice as [cin, hw]
-        let mut xin = vec![0f32; cin * hw];
-        for c in 0..cin {
-            let src = &x.data[c * d * hw + z * hw..c * d * hw + (z + 1) * hw];
-            xin[c * hw..(c + 1) * hw].copy_from_slice(src);
-        }
-        // GEMM: [cout*8, cin] x [cin, hw] -> [cout*8, hw]
-        let mut tmp = vec![0f32; cout * 8 * hw];
-        unsafe {
-            gemm::gemm(
-                cout * 8,
-                hw,
-                cin,
-                tmp.as_mut_ptr(),
-                1,
-                hw as isize,
-                false,
-                wt.as_ptr(),
-                1,
-                cin as isize,
-                xin.as_ptr(),
-                1,
-                hw as isize,
-                0.0f32,
-                1.0f32,
-                false,
-                false,
-                false,
-                gemm::Parallelism::None,
-            );
-        }
-        // scatter: tmp[(co*8 + (dz*4+dy*2+dx)) * hw + y*w + x]
-        //   -> out[co][2z+dz][2y+dy][2x+dx]
-        for co in 0..cout {
-            let bv = bias[co];
-            for dz in 0..2usize {
-                let obase = co * od_stride + (2 * z + dz) * ohw;
-                for dy in 0..2usize {
-                    for dx in 0..2usize {
-                        let t = dz * 4 + dy * 2 + dx;
-                        let src = &tmp[(co * 8 + t) * hw..(co * 8 + t + 1) * hw];
-                        for y in 0..h {
-                            let orow = obase + (2 * y + dy) * ow + dx;
-                            let dst = unsafe {
-                                std::slice::from_raw_parts_mut(out_ptr.get().add(orow), 2 * w - 1)
-                            };
-                            let srow = &src[y * w..(y + 1) * w];
-                            for (xi, sv) in srow.iter().enumerate() {
-                                dst[2 * xi] = sv + bv;
+        let hw = h * w;
+        let ohw = oh * ow;
+        let mut out = vec![f32::NAN; cout * od * ohw];
+        for z in 0..d {
+            let mut xin = vec![0f32; cin * hw];
+            for c in 0..cin {
+                xin[c * hw..(c + 1) * hw]
+                    .copy_from_slice(&x.data[c * d * hw + z * hw..c * d * hw + (z + 1) * hw]);
+            }
+            let mut tmp = vec![0f32; cout * ks * hw];
+            unsafe {
+                gemm::gemm(
+                    cout * ks,
+                    hw,
+                    cin,
+                    tmp.as_mut_ptr(),
+                    1,
+                    hw as isize,
+                    false,
+                    wt.as_ptr(),
+                    1,
+                    cin as isize,
+                    xin.as_ptr(),
+                    1,
+                    hw as isize,
+                    0.0f32,
+                    1.0f32,
+                    false,
+                    false,
+                    false,
+                    gemm::Parallelism::None,
+                );
+            }
+            for co in 0..cout {
+                for dz in 0..s0 {
+                    for dy in 0..s1 {
+                        for dx in 0..s2 {
+                            let t = (dz * s1 + dy) * s2 + dx;
+                            for y in 0..h {
+                                for xi in 0..w {
+                                    let o = co * od * ohw
+                                        + (z * s0 + dz) * ohw
+                                        + (y * s1 + dy) * ow
+                                        + xi * s2
+                                        + dx;
+                                    out[o] = tmp[(co * ks + t) * hw + y * w + xi] + bias[co];
+                                }
                             }
                         }
                     }
                 }
             }
         }
-    });
-    out
-}
+        out
+    }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    #[test]
+    fn transposed_conv_in_place_is_bit_identical_to_the_gathered_one() {
+        let mut seed = 0x5eed_u64;
+        for (cin, cout, dims, stride) in [
+            (64usize, 32usize, [7usize, 9usize, 11usize], [2usize, 2, 2]),
+            (320, 256, [3, 4, 5], [2, 2, 2]),
+            (16, 8, [5, 6, 3], [1, 2, 2]),
+            (3, 5, [2, 3, 4], [2, 1, 3]),
+        ] {
+            let mut x = Act::zeros(cin, dims[0], dims[1], dims[2]);
+            for v in &mut x.data {
+                *v = rngf(&mut seed);
+            }
+            let ks = stride.iter().product::<usize>();
+            let weight: Vec<f32> = (0..cin * cout * ks).map(|_| rngf(&mut seed)).collect();
+            let bias: Vec<f32> = (0..cout).map(|_| rngf(&mut seed)).collect();
+            let want = conv_transpose_gathered(&x, &weight, &bias, cout, stride);
+            // Stale contents in the output must not matter.
+            let mut out = Act::zeros(
+                cout,
+                dims[0] * stride[0],
+                dims[1] * stride[1],
+                dims[2] * stride[2],
+            );
+            out.data.fill(f32::NAN);
+            let got = conv_transpose3d_stride_into(&x, &weight, &bias, stride, out);
+            assert_eq!(got.data.len(), want.len());
+            for (i, (a, b)) in got.data.iter().zip(&want).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "{cin}->{cout} {stride:?}: element {i}"
+                );
+            }
+        }
+    }
 
     fn rngf(seed: &mut u64) -> f32 {
         *seed ^= *seed << 13;

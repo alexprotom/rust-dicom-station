@@ -92,14 +92,26 @@ impl Segmentation {
     /// another lattice, a propagated structure. The count and bounding box
     /// are recomputed in one pass; no undo history is carried, because the
     /// voxels it would refer to were never edited here.
-    pub fn from_mask(name: String, color: [u8; 3], dims: [usize; 3], mask: Vec<u8>) -> Self {
-        let mut seg = Segmentation::new(name, color, dims);
+    ///
+    /// The mask is adopted as it is, padded with zeros (or cut) to the
+    /// volume's length: no zero-filled mask of that size is made first only
+    /// to be replaced, which on a DICOM SEG import or a resampling would be
+    /// a second volume-sized allocation per segment.
+    pub fn from_mask(name: String, color: [u8; 3], dims: [usize; 3], mut mask: Vec<u8>) -> Self {
         let (bbox, count) = crate::morphology::mask_extent(&mask, dims);
-        seg.mask = mask;
-        seg.mask.resize(dims[0] * dims[1] * dims[2], 0);
-        seg.count = count;
-        seg.bbox = bbox;
-        seg
+        mask.resize(dims[0] * dims[1] * dims[2], 0);
+        Segmentation {
+            name,
+            color,
+            visible: true,
+            mask,
+            dims,
+            count,
+            gen: next_gen(),
+            bbox,
+            undo: Vec::new(),
+            pending: Vec::new(),
+        }
     }
 
     /// Builder form of [`Segmentation::visible`], for the rebind path.
@@ -131,7 +143,10 @@ impl Segmentation {
 
     /// Build one segmentation per requested class of a multi-label voxel
     /// map in a single pass over it - what an auto-segmentation run with a
-    /// hundred structures needs, rather than a hundred passes.
+    /// hundred structures needs, rather than a hundred passes. Each class
+    /// still gets a whole-volume mask of its own: the caller that only
+    /// wants contours traces them and drops the masks (one phase at a time,
+    /// on a 4D group), rather than holding them all.
     pub fn from_label_map_many(
         dims: [usize; 3],
         labels: &[u8],
@@ -1269,16 +1284,64 @@ fn fill_slice(plane: &mut [u8], polys: &[Vec<[f64; 2]>], nx: usize, ny: usize) -
 /// target carried onto a 1.2 mm lattice as a cloud of single voxels lost a
 /// tenth of its planimetric volume that way.
 pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
-    let [nx, ny, _] = seg.dims;
+    Roi {
+        number,
+        name: seg.name.clone(),
+        color: seg.color,
+        roi_type: "ORGAN".into(),
+        description: String::new(),
+        contours: trace_mask(&seg.mask, seg.dims, seg.bbox, grid),
+    }
+}
+
+/// [`mask_to_roi`] for a bare mask on `grid` (one byte per voxel, nonzero
+/// = inside): the extent is found in one pass over it, and no
+/// [`Segmentation`] - a second copy of the mask - is made only to be
+/// traced.
+pub fn roi_from_mask(name: &str, color: [u8; 3], mask: &[u8], grid: &Grid, number: i32) -> Roi {
+    let (bbox, _) = crate::morphology::mask_extent(mask, grid.dims);
+    Roi {
+        number,
+        name: name.to_string(),
+        color,
+        roi_type: "ORGAN".into(),
+        description: String::new(),
+        contours: trace_mask(mask, grid.dims, bbox, grid),
+    }
+}
+
+/// [`mask_to_roi`] for many segmentations at once, each ROI with the RT
+/// ROI Interpreted Type `roi_type` and number 0 (the set it is filed into
+/// numbers it). The masks are traced in parallel, each on its own, and come
+/// back in the order given: the same ROIs a loop would make.
+pub fn masks_to_rois(segs: &[Segmentation], grid: &Grid, roi_type: &str) -> Vec<Roi> {
+    segs.par_iter()
+        .map(|seg| {
+            let mut roi = mask_to_roi(seg, grid, 0);
+            roi.roi_type = roi_type.to_string();
+            roi
+        })
+        .collect()
+}
+
+/// The voxel outlines of `mask` within `bbox`, slice by slice, in patient
+/// coordinates: the contours of [`mask_to_roi`].
+fn trace_mask(
+    mask: &[u8],
+    dims: [usize; 3],
+    bbox: Option<([usize; 3], [usize; 3])>,
+    grid: &Grid,
+) -> Vec<Contour> {
+    let [nx, ny, _] = dims;
     let mut contours = Vec::new();
-    if let Some((lo, hi)) = seg.bbox {
+    if let Some((lo, hi)) = bbox {
         let mut field = crate::contours::PaddedField::new(nx, ny);
         for k in lo[2]..=hi[2] {
             field.clear();
             let base = k * nx * ny;
             for j in lo[1]..=hi[1] {
                 for i in lo[0]..=hi[0] {
-                    if seg.mask[base + j * nx + i] != 0 {
+                    if mask[base + j * nx + i] != 0 {
                         field.set(i, j);
                     }
                 }
@@ -1295,14 +1358,7 @@ pub fn mask_to_roi(seg: &Segmentation, grid: &Grid, number: i32) -> Roi {
             }
         }
     }
-    Roi {
-        number,
-        name: seg.name.clone(),
-        color: seg.color,
-        roi_type: "ORGAN".into(),
-        description: String::new(),
-        contours,
-    }
+    contours
 }
 
 #[cfg(test)]
