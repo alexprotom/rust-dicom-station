@@ -3,13 +3,17 @@
 //!
 //! The states are open datasets, each by its handle, in order; each stands
 //! for its displayed series and the structure set drawn on it. What comes
-//! back is the four tables of the posture window (states, structures,
-//! bones and joints, the model and its checks) as numbers, every name
-//! through [`clean_text`] and the whole answer through the redactor like
-//! every other tool's; the states are named by their handles. With `write`,
-//! the tables (CSV), the model (`.rdsposture`) and the whole path as a
-//! DICOM Deformable Spatial Registration go into a folder of the session's
-//! output folder.
+//! back is the model's verdict ([`crate::posture::measure::Tables::verdict`])
+//! and the four tables of the posture window (states, structures, bones and
+//! joints, the model and its checks) as numbers - by default a summary of
+//! them (`detail: "full"` for every column), every name through
+//! [`clean_text`] and the whole answer through the redactor like every other
+//! tool's; the states are named by their handles. With `write`, the tables
+//! (CSV), the model (`.rdsposture`) and the whole path as a DICOM Deformable
+//! Spatial Registration go into a folder of the session's output folder,
+//! and with `export_t` the image and structures at that time as a derived
+//! CT series and an RT Structure Set of the first state's study: at the
+//! last state, the first state's image in the last one's position.
 
 use anyhow::{bail, Result};
 use schemars::JsonSchema;
@@ -29,9 +33,12 @@ pub struct PostureArgs {
     /// The states, in order: dataset handles (each its displayed series
     /// and the structure set drawn on it). Two or more; more make a chain.
     pub datasets: Vec<String>,
-    /// What is held still: a structure contoured on every state (its
-    /// name), `image` (a rigid registration of the images, the default) or
-    /// `scanner` (nothing: for scans that share a frame of reference).
+    /// What is held still: `auto` (the default: the sacrum when every
+    /// scan sees all of it, else the middle vertebra every scan sees whole,
+    /// else the largest such bone, else the image), a structure contoured
+    /// on every state (its name), `image` (a rigid registration of the
+    /// images) or `scanner` (nothing: for scans that share a frame of
+    /// reference).
     #[serde(default)]
     pub anchor: Option<String>,
     /// The rigid bodies by name. Omitted: the bones every state has (and
@@ -77,9 +84,25 @@ pub struct PostureArgs {
     /// segment (false).
     #[serde(default)]
     pub smooth_chain: Option<bool>,
+    /// Fit and draw the scans as they are, couch and chair included. By
+    /// default each state is its patient only: outside its EXTERNAL
+    /// structure set to air, when it has one.
+    #[serde(default)]
+    pub whole_scan: bool,
+    /// `summary` (the default: the verdict, the bones, the joints, the
+    /// checks and a line per structure) or `full` (every column of the four
+    /// tables).
+    #[serde(default)]
+    pub detail: Option<String>,
     /// Also write tables.csv, the model file and the deformation as DICOM.
     #[serde(default)]
     pub write: bool,
+    /// With `write`: the image at this time (0 to the number of states
+    /// less one; the last state's for the first image in the last
+    /// position) as a derived CT series and the first state's structures
+    /// carried to it, in `frame/` of the folder.
+    #[serde(default)]
+    pub export_t: Option<f64>,
     /// Folder under the session's output folder for `write`.
     #[serde(default)]
     pub folder: Option<String>,
@@ -99,7 +122,7 @@ pub fn build_posture_model(core: &mut Core, a: PostureArgs, p: &Progress) -> Res
             .anchor
             .as_deref()
             .map(Anchor::parse)
-            .unwrap_or(Anchor::Image),
+            .unwrap_or(Anchor::Auto),
         bodies: match &a.bodies {
             None => Bodies::Bones,
             Some(v) if v.is_empty() => Bodies::None,
@@ -121,7 +144,13 @@ pub fn build_posture_model(core: &mut Core, a: PostureArgs, p: &Progress) -> Res
             hlut: None,
         }),
         smooth_chain: a.smooth_chain.unwrap_or(true),
+        patient_only: !a.whole_scan,
         ..PostureRequest::default()
+    };
+    let full = match a.detail.as_deref() {
+        None | Some("summary") => false,
+        Some("full") => true,
+        Some(d) => bail!("detail must be summary or full (got '{d}')"),
     };
     let outcome = {
         let mut states = Vec::with_capacity(a.datasets.len());
@@ -137,7 +166,61 @@ pub fn build_posture_model(core: &mut Core, a: PostureArgs, p: &Progress) -> Res
         wp::build(&states, &req, p)?
     };
     let t = &outcome.tables;
-    let mut out = json!({
+    let verdict = t.verdict();
+    let verdict_json = json!({
+        "level": verdict.level.label(),
+        "findings": verdict
+            .lines
+            .iter()
+            .map(|(l, line)| json!({"level": l.label(), "text": clean_text(line)}))
+            .collect::<Vec<_>>(),
+    });
+    let mut out = if !full {
+        json!({
+            "verdict": verdict_json,
+            "states": t.states.iter().map(|s| json!({
+                "dataset": s.label,
+                "posture": s.posture,
+                "into_anchor": {
+                    "translation_mm": vec3(s.to_anchor.translation),
+                    "rotation_deg": s.to_anchor.rotation_deg.map(round2),
+                    "anchor_fit_rms_mm": round2(s.to_anchor.residual_mm),
+                },
+            })).collect::<Vec<_>>(),
+            "bodies": t.bodies.iter().filter(|b| !b.anchor).map(|b| json!({
+                "body": clean_text(&b.name),
+                "angle_deg": round2(b.screw.angle_deg),
+                "fit_mean_mm": round2(b.fit_mean_mm),
+                "stretch_p95": round3(b.stretch_p95),
+            })).collect::<Vec<_>>(),
+            "joints": t.joints.iter().map(|j| json!({
+                "joint": clean_text(&j.name),
+                "angles_deg_rl_ap_si": j.at.last().copied().unwrap_or_default().map(round2),
+            })).collect::<Vec<_>>(),
+            "structures": t.structures.iter().map(|s| json!({
+                "structure": clean_text(&s.name),
+                "used_in_fit": s.used,
+                "cut_by_a_scan": s.is_cut(),
+                "check_dice": s.check.map(|d| round3(d.dice)),
+                "check_centroid_mm": s.check.map(|d| round2(d.centroid_mm)),
+                "contoured_shift_mm": s.contoured_shift().map(vec3),
+            })).collect::<Vec<_>>(),
+            "model": {
+                "mode": t.model.mode.key(),
+                "anchor": clean_text(&t.model.anchor),
+                "jacobian_min": round3(t.model.jacobian_min),
+                "folded_fraction": t.model.folded_fraction,
+                "inverse_consistency_end_p95_mm": round3(t.model.inverse_mm[1][1]),
+                "check_dice_used": t.model.check_used_dice.map(round3),
+                "check_dice_not_used": t.model.check_unused_dice.map(round3),
+                "overlap_fraction": round3(t.model.overlap_fraction),
+            },
+            "warnings": outcome.warnings.iter().map(|w| clean_text(w)).collect::<Vec<_>>(),
+            "caveat": wp::CAVEAT,
+        })
+    } else {
+        json!({
+        "verdict": verdict_json,
         "states": t.states.iter().map(|s| json!({
             "dataset": s.label,
             "posture": s.posture,
@@ -215,7 +298,11 @@ pub fn build_posture_model(core: &mut Core, a: PostureArgs, p: &Progress) -> Res
         },
         "warnings": outcome.warnings.iter().map(|w| clean_text(w)).collect::<Vec<_>>(),
         "caveat": wp::CAVEAT,
-    });
+        })
+    };
+    if a.export_t.is_some() && !a.write {
+        bail!("export_t writes the image at that time: ask for write too");
+    }
     if a.write {
         let name = a
             .folder
@@ -243,12 +330,36 @@ pub fn build_posture_model(core: &mut Core, a: PostureArgs, p: &Progress) -> Res
             &last_for,
             &dir.join("posture_reg.dcm"),
         )?;
-        out["folder"] = json!(dir.to_string_lossy());
-        out["files"] = json!([
-            "tables.csv",
+        let mut files = vec![
+            "tables.csv".to_string(),
             format!("model.{}", pfile::EXTENSION),
-            "posture_reg.dcm"
-        ]);
+            "posture_reg.dcm".to_string(),
+        ];
+        if let Some(at) = a.export_t {
+            let span = outcome.model.span();
+            if !(0.0..=span).contains(&at) {
+                bail!("export_t must be within 0 to {span}");
+            }
+            let e = wp::export_frame(
+                &outcome.model,
+                &outcome.images,
+                &first.study,
+                None,
+                at,
+                crate::posture::apply::Show::StartForward,
+                &dir.join("frame"),
+                p,
+            )?;
+            out["frame"] = json!({
+                "t": at,
+                "images": e.image_files.len(),
+                "structure_sets": e.structure_files.len(),
+                "series_description_says": "interpolated by the posture model, not a scan",
+            });
+            files.push("frame/".into());
+        }
+        out["folder"] = json!(dir.to_string_lossy());
+        out["files"] = json!(files);
     }
     Ok(out)
 }

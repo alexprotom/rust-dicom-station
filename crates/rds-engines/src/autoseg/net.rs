@@ -34,10 +34,12 @@ use std::collections::HashMap;
 
 use super::config::{Arch, ModelConfig};
 use super::cpu::{
-    add_lrelu, avg_pool3d_in, concat_in, conv3d_in, conv_transpose3d_stride_into, instance_norm,
-    instance_norm_lrelu, Act, Arena,
+    add_lrelu, avg_pool3d_in, conv3d_in, conv_transpose3d_stride_into_slice, copy_par,
+    instance_norm, instance_norm_lrelu, Act, Arena,
 };
+use super::timing::{self, Stage as T};
 use crate::nn::cache::WTensor;
+use std::time::Instant;
 
 /// One Conv3d → InstanceNorm block; the LeakyReLU after it is the
 /// caller's choice (every plain block has it, a residual block's second
@@ -311,23 +313,31 @@ impl UNet {
         }
         let mut cur = skips.pop().unwrap();
         for (t, tc) in self.transp.iter().enumerate() {
-            let up_shape = arena.act(
-                tc.cout,
+            let t_up = Instant::now();
+            // The upsampled channels are computed straight into the front
+            // of the concatenation `[up, skip]`, and the skip copied in
+            // behind them: one buffer and one copy fewer than upsampling
+            // and then concatenating, the same values.
+            let skip = skips.pop().unwrap();
+            let (od, oh, ow) = (
                 cur.d * tc.stride[0],
                 cur.h * tc.stride[1],
                 cur.w * tc.stride[2],
             );
-            let up = conv_transpose3d_stride_into(&cur, &tc.w, &tc.b, tc.stride, up_shape);
-            arena.give(cur.data);
-            let skip = skips.pop().unwrap();
-            cur = concat_in(&up, &skip, arena);
-            arena.give(up.data);
+            debug_assert_eq!((skip.d, skip.h, skip.w), (od, oh, ow));
+            let mut cat = arena.act(tc.cout + skip.c, od, oh, ow);
+            let (up, behind) = cat.data.split_at_mut(tc.cout * od * oh * ow);
+            conv_transpose3d_stride_into_slice(&cur, &tc.w, &tc.b, tc.stride, tc.cout, up);
+            copy_par(behind, &skip.data);
+            arena.give(std::mem::replace(&mut cur, cat).data);
             arena.give(skip.data);
+            timing::add(T::CpuUp, t_up);
             for blk in &self.dec[t] {
                 let next = run_block(blk, &cur, arena);
                 arena.give(std::mem::replace(&mut cur, next).data);
             }
         }
+        let t_head = Instant::now();
         let logits = conv3d_in(
             &cur,
             &self.head.w,
@@ -338,6 +348,7 @@ impl UNet {
             arena,
         );
         arena.give(cur.data);
+        timing::add(T::CpuHead, t_head);
         logits
     }
 }
@@ -451,8 +462,12 @@ fn cfg_features0(head_shape: &[usize]) -> usize {
 
 /// Conv → InstanceNorm → LeakyReLU.
 fn run_block(blk: &ConvBlock, x: &Act, arena: &mut Arena) -> Act {
+    let t = Instant::now();
     let mut y = conv3d_in(x, &blk.w, &blk.b, blk.cout, blk.kernel, blk.stride, arena);
+    timing::add(T::CpuConv, t);
+    let t = Instant::now();
     instance_norm_lrelu(&mut y, &blk.gamma, &blk.beta);
+    timing::add(T::CpuNorm, t);
     y
 }
 
@@ -460,6 +475,7 @@ fn run_block(blk: &ConvBlock, x: &Act, arena: &mut Arena) -> Act {
 /// skip path added, LeakyReLU.
 fn run_res_block(blk: &ResBlock, x: &Act, arena: &mut Arena) -> Act {
     let h = run_block(&blk.conv1, x, arena);
+    let t = Instant::now();
     let mut y = conv3d_in(
         &h,
         &blk.conv2.w,
@@ -470,7 +486,10 @@ fn run_res_block(blk: &ResBlock, x: &Act, arena: &mut Arena) -> Act {
         arena,
     );
     arena.give(h.data);
+    timing::add(T::CpuConv, t);
+    let t = Instant::now();
     instance_norm(&mut y, &blk.conv2.gamma, &blk.conv2.beta);
+    timing::add(T::CpuNorm, t);
     let residual: Option<Act> = match &blk.skip {
         Skip::Identity => None,
         Skip::Pool { kernel } => Some(avg_pool3d_in(x, *kernel, arena)),

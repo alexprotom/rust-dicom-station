@@ -36,6 +36,7 @@ pub mod post;
 pub mod preprocess;
 pub mod task;
 pub mod tasks;
+pub mod timing;
 pub mod total;
 pub mod v1;
 pub mod weights;

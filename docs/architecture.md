@@ -990,10 +990,12 @@ crates/            the workspace's library crates; lib.rs re-exports their
                         padding, transposed convs, norms)
       net.rs            PlainConvUNet / ResidualEncoderUNet assembly (any input
                         channel count) + CPU forward
-      gpu.rs            wgpu forward via burn (cargo feature `gpu`)
+      gpu.rs            wgpu forward via burn (cargo feature `gpu`); the
+                        convolutions as im2col + matmul, not burn's direct kernel
       preprocess.rs     resampling to the model grid and back (scipy conventions)
       infer.rs          nnU-Net and MONAI sliding windows, streaming argmax in
                         strips under a memory budget
+      timing.rs         RDS_AUTOSEG_TIMES: wall time per stage of a run, on stderr
 
     unet2d/           lungmask: 2-D U-Net (burn, and a burn-free CPU path),
                       body crop and slice preparation, 3-D clean-up             Seg

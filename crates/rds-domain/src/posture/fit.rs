@@ -30,6 +30,19 @@
 //! into a velocity field by [`super::svf::log`]. The path is then
 //! `exp(t v) o exp(t u)`.
 //!
+//! Two scans of two positions rarely cover the same part of the patient,
+//! and what lies outside the end scan is filled with its lowest value: a
+//! registration left to itself drags the tissue at the edge of one scan
+//! onto the empty space beyond the other's, folds it, and the logarithm of
+//! a folded field is no velocity at all. So the residual is fitted and kept
+//! only where it has two images to compare ([`residual_region`]): the
+//! start state's voxels whose blended position the end scan covers, inside
+//! the patient grown by [`BODY_MARGIN_MM`] when the states have an EXTERNAL
+//! structure, the edge shrunk by a lattice step; its displacement is faded
+//! to nothing outside that region over a lattice step. Should its flow still
+//! fold, it is halved until its Jacobian stays above
+//! [`MIN_RESIDUAL_JACOBIAN`], and the note says by how much.
+//!
 //! **Linear mode** walks a given end-to-end transform (`d = T(x) - x` on
 //! the lattice) or, with none given, the diffeomorphic model's own `Phi_1`,
 //! so the two modes share their end points and differ only in the path.
@@ -67,6 +80,14 @@ pub const POOR_FIT_MM: f64 = 3.0;
 /// curved bone (a rib) laid on itself backwards still lies within a couple
 /// of millimetres of its own surface, but no longer overlaps it.
 pub const POOR_FIT_DICE: f64 = 0.6;
+
+/// The residual's region: the patient grown by this, mm, so the skin's
+/// own change of shape is in it.
+pub const BODY_MARGIN_MM: f64 = 15.0;
+
+/// The residual's flow keeps its Jacobian at least this; a residual that
+/// would compress tissue further is halved until it does not.
+pub const MIN_RESIDUAL_JACOBIAN: f64 = 0.2;
 
 /// The structures taken for bones when nothing else is said: the names
 /// TotalSegmentator gives the skeleton, and any name with *bone*, *femur*,
@@ -167,6 +188,14 @@ pub struct FitOptions {
     /// Keep the blend's weights, so a chain can put the bodies on curves
     /// through its states ([`super::chain`]).
     pub keep_weights: bool,
+    /// Where the end state's scan has an image, on the segment's grid (the
+    /// anchor frame): the residual is fitted and kept only there. `None`:
+    /// everywhere.
+    pub cover: Option<BoxedMask>,
+    /// The patient at the start state on the segment's grid (its EXTERNAL
+    /// structure): the residual is fitted inside it, grown by
+    /// [`BODY_MARGIN_MM`]. `None`: wherever the scans overlap.
+    pub body: Option<BoxedMask>,
 }
 
 impl Default for FitOptions {
@@ -178,8 +207,77 @@ impl Default for FitOptions {
             linear: None,
             points_per_structure: shape::POINTS_PER_STRUCTURE,
             keep_weights: false,
+            cover: None,
+            body: None,
         }
     }
+}
+
+/// Where the residual has two images to compare, on the segment's `grid`:
+/// the voxels whose position under the blend `blend` the end scan covers
+/// (`cover`), inside `body` grown by [`BODY_MARGIN_MM`], the whole shrunk
+/// by `shrink_mm`. `None` when neither is known (the whole grid).
+pub fn residual_region(
+    grid: &Grid,
+    blend: &Field,
+    cover: Option<&BoxedMask>,
+    body: Option<&BoxedMask>,
+    shrink_mm: f64,
+) -> Option<Vec<u8>> {
+    use rayon::prelude::*;
+    if cover.is_none() && body.is_none() {
+        return None;
+    }
+    let [nx, ny, nz] = grid.dims;
+    let body = body
+        .map(|b| crate::morphology::dilate_mm(&b.mask(), grid.dims, grid.spacing, BODY_MARGIN_MM));
+    let mask: Vec<u8> = (0..nx * ny * nz)
+        .into_par_iter()
+        .map(|n| {
+            if body.as_ref().is_some_and(|b| b[n] == 0) {
+                return 0;
+            }
+            let Some(c) = cover else {
+                return 1;
+            };
+            let (i, j, k) = (n % nx, (n / nx) % ny, n / (nx * ny));
+            let q = blend.map(grid.voxel_to_patient(i as f64, j as f64, k as f64));
+            let v = grid.patient_to_voxel(q);
+            let idx: Option<[usize; 3]> = (0..3)
+                .map(|a| {
+                    let r = v[a].round();
+                    (r >= 0.0 && (r as usize) < grid.dims[a]).then_some(r as usize)
+                })
+                .collect::<Option<Vec<usize>>>()
+                .map(|x| [x[0], x[1], x[2]]);
+            u8::from(idx.is_some_and(|[a, b, cc]| c.get(a, b, cc)))
+        })
+        .collect();
+    let shrunk = crate::morphology::erode_mm(&mask, grid.dims, grid.spacing, shrink_mm);
+    (crate::morphology::count_set(&shrunk) > 0).then_some(shrunk)
+}
+
+/// Fade the displacement `d` to nothing outside `region` (on `grid`) over
+/// `width_mm`: each lattice node keeps the share of the region a Gaussian
+/// of that width about it holds.
+fn fade_outside(d: &mut Field, grid: &Grid, region: &[u8], width_mm: f64) {
+    use rayon::prelude::*;
+    let f: Vec<f32> = region.iter().map(|&v| f32::from(v.min(1))).collect();
+    let w = crate::morphology::blur_mm(&f, grid.dims, grid.spacing, width_mm);
+    let lattice = d.lattice.clone();
+    let [nx, ny, _] = grid.dims;
+    d.d.par_iter_mut().enumerate().for_each(|(n, v)| {
+        let c = grid.patient_to_voxel(lattice.node(n));
+        let inside = (0..3).all(|a| c[a] >= -0.5 && c[a] <= grid.dims[a] as f64 - 0.5);
+        let k = if inside {
+            let [i, j, kk] =
+                [0, 1, 2].map(|a| (c[a].round().max(0.0) as usize).min(grid.dims[a] - 1));
+            w[(kk * ny + j) * nx + i] as f64
+        } else {
+            0.0
+        };
+        *v = *v * k.clamp(0.0, 1.0);
+    });
 }
 
 /// Centroid and covariance of a mask's voxels, patient mm, in scan order.
@@ -452,25 +550,65 @@ pub fn fit_segment(
         p.report(0.7, "Residual deformation");
         let blend_fwd = velocity.exp(1.0);
         let pulled = super::apply::resample(moving, &grid, |x| blend_fwd.map(x));
+        let step = lattice.min_spacing();
+        let region = residual_region(
+            &grid,
+            &blend_fwd,
+            opts.cover.as_ref(),
+            opts.body.as_ref(),
+            step,
+        );
         let mut rp = params.clone();
         rp.init = registration::Init::Identity;
         rp.start = None;
-        rp.region = None;
+        rp.region = region.as_ref().and_then(|m| {
+            registration::RegionMask::from_mask(fixed, m, "the part both scans cover".into(), 0.0)
+                .map(Arc::new)
+        });
         p.set_phase(0.7, 0.25);
         let res =
             registration::register(fixed, &pulled, &rp, p).context("the residual registration")?;
         p.set_phase(0.0, 1.0);
         let t = res.transform.clone();
         let mut d = Field::from_map(lattice, |x| t.map(x));
+        if let Some(m) = &region {
+            fade_outside(&mut d, &grid, m, step);
+        }
         let rho = polyrigid::rigidity(lattice, &on_lattice);
         polyrigid::fade(&mut d.d, &rho);
-        let (u, fit) = svf::log(&d, 12);
+        let (mut u, fit) = svf::log(&d, 12);
+        // A residual that folds is no velocity of tissue: halve it until
+        // its flow keeps every node's volume above the floor.
+        let mut scale = 1.0;
+        for _ in 0..6 {
+            let jmin = u
+                .exp(1.0)
+                .jacobians()
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
+            // No node (NaN) or none too compressed: nothing to halve.
+            if jmin.is_nan() || jmin >= MIN_RESIDUAL_JACOBIAN {
+                break;
+            }
+            u = u.scaled(0.5);
+            scale *= 0.5;
+        }
         notes.push(format!(
-            "residual: {} ({}), logarithm {} rounds, {:.3} mm",
+            "residual: {} ({}){}, logarithm {} rounds, {:.3} mm{}",
             rp.method.label(),
             res.metric_line(),
+            if region.is_some() {
+                ", within the part both scans cover"
+            } else {
+                ""
+            },
             fit.rounds,
-            fit.residual_mm
+            fit.residual_mm,
+            if scale < 1.0 {
+                format!(", scaled by {scale} so it does not fold")
+            } else {
+                String::new()
+            }
         ));
         residual = (!u.is_zero()).then_some(u);
     }

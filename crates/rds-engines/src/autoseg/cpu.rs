@@ -16,7 +16,8 @@ use rayon::prelude::*;
 // is where the nnU-Net code has always reached for them.
 use crate::nn::tensor::SendPtr;
 pub use crate::nn::tensor::{
-    conv_transpose3d_2x, conv_transpose3d_stride, conv_transpose3d_stride_into, Act, Arena,
+    conv_transpose3d_2x, conv_transpose3d_stride, conv_transpose3d_stride_into,
+    conv_transpose3d_stride_into_slice, Act, Arena,
 };
 
 #[inline]
@@ -135,7 +136,29 @@ fn conv3d_padded_into(
     kernel: [usize; 3],
     stride: [usize; 3],
     pad: [usize; 3],
+    out: Act,
+) -> Act {
+    conv3d_padded_into_impl(x, weight, bias, kernel, stride, pad, out, true)
+}
+
+/// [`conv3d_padded_into`]; `in_place_1x1` lets a 1×1×1 convolution with
+/// stride 1 and no padding (a segmentation head, a residual projection)
+/// skip its im2col. Such a convolution's im2col block is the input itself -
+/// channel `c`'s rows `y0..y1` of slice `oz` are contiguous in it, one
+/// channel `d*h*w` from the next - so the GEMM reads the input in place
+/// instead of a copy (a head's input at full resolution is two hundred
+/// megabytes per patch). The GEMM packs its operands itself, so the result
+/// is the copy's to the bit (`a_1x1_convolution_reads_its_input_in_place`).
+#[allow(clippy::too_many_arguments)]
+fn conv3d_padded_into_impl(
+    x: &Act,
+    weight: &[f32],
+    bias: &[f32],
+    kernel: [usize; 3],
+    stride: [usize; 3],
+    pad: [usize; 3],
     mut out: Act,
+    in_place_1x1: bool,
 ) -> Act {
     let (cin, d, h, w) = (x.c, x.d, x.h, x.w);
     let cout = out.c;
@@ -164,11 +187,42 @@ fn conv3d_padded_into(
             .clamp(1, oh)
     };
     let tiles_per_slice = oh.div_ceil(rows_per_tile);
+    let in_place = in_place_1x1 && kernel == [1, 1, 1] && stride == [1, 1, 1] && pad == [0, 0, 0];
     (0..od * tiles_per_slice).into_par_iter().for_each(|t| {
         let oz = t / tiles_per_slice;
         let y0 = (t % tiles_per_slice) * rows_per_tile;
         let y1 = (y0 + rows_per_tile).min(oh);
         let n = (y1 - y0) * ow;
+        let dst0 = oz * ohw + y0 * ow;
+        if in_place {
+            // [cout, cin] x the input's [cin, n] at its own channel stride.
+            // SAFETY: as below; the input is only read.
+            unsafe {
+                gemm::gemm(
+                    cout,
+                    n,
+                    k,
+                    out_ptr.get().add(dst0),
+                    1,
+                    od_stride as isize,
+                    false,
+                    weight.as_ptr(),
+                    1,
+                    k as isize,
+                    x.data.as_ptr().add(dst0),
+                    1,
+                    (d * h * w) as isize,
+                    0.0f32,
+                    1.0f32,
+                    false,
+                    false,
+                    false,
+                    gemm::Parallelism::None,
+                );
+            }
+            add_bias(&out_ptr, bias, cout, od_stride, dst0, n);
+            return;
+        }
         COL.with_borrow_mut(|col| {
             // im2col for output rows y0..y1 of slice oz: [k, n]. Zeroed
             // first: what the loops below skip is the padding.
@@ -228,7 +282,6 @@ fn conv3d_padded_into(
             // row c of the product is channel c's rows y0..y1 of slice oz.
             // Tiles cover disjoint output ranges, so the parallel writes
             // never meet.
-            let dst0 = oz * ohw + y0 * ow;
             unsafe {
                 gemm::gemm(
                     cout,
@@ -252,17 +305,23 @@ fn conv3d_padded_into(
                     gemm::Parallelism::None,
                 );
             }
-            for (c, &bv) in bias.iter().enumerate().take(cout) {
-                let dst = unsafe {
-                    std::slice::from_raw_parts_mut(out_ptr.get().add(c * od_stride + dst0), n)
-                };
-                for v in dst.iter_mut() {
-                    *v += bv;
-                }
-            }
+            add_bias(&out_ptr, bias, cout, od_stride, dst0, n);
         });
     });
     out
+}
+
+/// Add each channel's bias to the `n` outputs of a tile, from `dst0` in
+/// every channel (`od_stride` apart).
+fn add_bias(out_ptr: &SendPtr, bias: &[f32], cout: usize, od_stride: usize, dst0: usize, n: usize) {
+    for (c, &bv) in bias.iter().enumerate().take(cout) {
+        // SAFETY: the tile's own outputs, disjoint from every other tile's.
+        let dst =
+            unsafe { std::slice::from_raw_parts_mut(out_ptr.get().add(c * od_stride + dst0), n) };
+        for v in dst.iter_mut() {
+            *v += bv;
+        }
+    }
 }
 
 /// `ConvTranspose3d(kernel 3, stride 2, padding 1, output_padding 1)` -
@@ -437,14 +496,50 @@ pub fn concat_in(a: &Act, b: &Act, arena: &mut Arena) -> Act {
     debug_assert!(a.d == b.d && a.h == b.h && a.w == b.w);
     let mut out = arena.act(a.c + b.c, a.d, a.h, a.w);
     let (sa, sb) = (a.c * a.spatial(), b.c * b.spatial());
-    out.data[..sa].copy_from_slice(&a.data);
-    out.data[sa..sa + sb].copy_from_slice(&b.data);
+    copy_par(&mut out.data[..sa], &a.data);
+    copy_par(&mut out.data[sa..sa + sb], &b.data);
     out
+}
+
+/// `dst.copy_from_slice(src)` on every core: a full-resolution skip
+/// connection is hundreds of megabytes, which one core copies at a fraction
+/// of the memory's bandwidth.
+pub fn copy_par(dst: &mut [f32], src: &[f32]) {
+    assert_eq!(dst.len(), src.len(), "copy_par lengths");
+    const CHUNK: usize = 1 << 16;
+    dst.par_chunks_mut(CHUNK)
+        .zip(src.par_chunks(CHUNK))
+        .for_each(|(d, s)| d.copy_from_slice(s));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_1x1_convolution_reads_its_input_in_place() {
+        // Bit for bit what the im2col copy gave, untiled and tiled (a head
+        // at full resolution has 32 channels of 112 x 128 rows a slice).
+        for (cin, cout, dims) in [
+            (32usize, 118usize, [3usize, 112usize, 128usize]),
+            (32, 16, [2, 7, 9]),
+            (320, 40, [2, 30, 40]),
+            // 96 x 112 x 128 values a slice: above the untiled limit.
+            (96, 40, [2, 112, 128]),
+        ] {
+            let x = rand_act(cin, dims[0], dims[1], dims[2], 7 + cin as u64);
+            let mut seed = 99u64;
+            let w: Vec<f32> = (0..cout * cin).map(|_| rngf(&mut seed)).collect();
+            let b: Vec<f32> = (0..cout).map(|_| rngf(&mut seed)).collect();
+            let shape = || Act::zeros(cout, dims[0], dims[1], dims[2]);
+            let one = [1, 1, 1];
+            let copied = conv3d_padded_into_impl(&x, &w, &b, one, one, [0, 0, 0], shape(), false);
+            let in_place = conv3d_padded_into_impl(&x, &w, &b, one, one, [0, 0, 0], shape(), true);
+            for (i, (a, c)) in in_place.data.iter().zip(&copied.data).enumerate() {
+                assert_eq!(a.to_bits(), c.to_bits(), "{cin}->{cout}: element {i}");
+            }
+        }
+    }
 
     /// Direct (naive) conv3d for verification.
     fn conv3d_naive(

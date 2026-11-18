@@ -99,7 +99,7 @@ use super::*;
 use crate::posture::apply::{self as papply, Extras, FrameExtras, KeyFrame, Plane, Show};
 use crate::posture::film as pfilm;
 use crate::posture::gpu::{self as pgpu, GpuSlicer};
-use crate::posture::measure::Tables;
+use crate::posture::measure::{Level, Tables};
 use crate::posture::svf::Field;
 use crate::posture::{self, file as pfile, Anchor, Mode, PostureModel};
 use crate::registration::FieldStyle;
@@ -110,8 +110,10 @@ use crate::workflow::posture as wp;
 /// What the anchor picker holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(super) enum AnchorKind {
-    /// A structure on every state (the name beside it).
+    /// Chosen when built ([`crate::posture::Anchor::Auto`]).
     #[default]
+    Auto,
+    /// A structure on every state (the name beside it).
     Structure,
     Image,
     Scanner,
@@ -267,6 +269,9 @@ pub(super) struct PostureWin {
     pub(super) couch_deg: f32,
     /// Bodies on curves through a chain's states.
     pub(super) smooth: bool,
+    /// Fit and draw each state's patient only (outside its EXTERNAL
+    /// structure set to air).
+    pub(super) patient_only: bool,
     /// What the missing-structures line offers, for the states as they are
     /// (the key: every state's names).
     pub(super) offer_key: String,
@@ -279,7 +284,7 @@ impl Default for PostureWin {
             open: false,
             states: vec![0, 1],
             posture_text: vec![String::new(); 2],
-            anchor_kind: AnchorKind::Structure,
+            anchor_kind: AnchorKind::Auto,
             anchor_name: String::new(),
             mode: Mode::Diffeomorphic,
             bodies: None,
@@ -333,6 +338,7 @@ impl Default for PostureWin {
             gantry_deg: 90.0,
             couch_deg: 0.0,
             smooth: true,
+            patient_only: true,
             offer_key: String::new(),
             offers: Vec::new(),
         }
@@ -519,7 +525,8 @@ impl ViewerApp {
             AnchorKind::Structure if !st.anchor_name.trim().is_empty() => {
                 Anchor::Structure(st.anchor_name.trim().to_string())
             }
-            AnchorKind::Structure | AnchorKind::Image => Anchor::Image,
+            AnchorKind::Auto | AnchorKind::Structure => Anchor::Auto,
+            AnchorKind::Image => Anchor::Image,
             AnchorKind::Scanner => Anchor::Scanner,
         };
         // With two states and a registration between exactly their
@@ -549,6 +556,7 @@ impl ViewerApp {
                 hlut: None,
             }),
             smooth_chain: st.smooth,
+            patient_only: st.patient_only,
             ..wp::PostureRequest::default()
         }
     }
@@ -632,13 +640,15 @@ impl ViewerApp {
                 .map(|ss| mesh3d::build_meshes(ss, &Progress::default()))
                 .unwrap_or_default();
             p.set("Uploading the states for the live slices");
-            let images: Vec<Arc<Volume>> = studies.iter().map(|(_, s)| s.volume.clone()).collect();
+            // The states as the model was fitted on them: each its patient
+            // only when asked (the couch and the chair set to air).
+            let images: Vec<Arc<Volume>> = o.images.clone();
             let (slicer, slicer_note) = make_slicer(&images);
             Ok(Built {
                 model: Arc::new(o.model),
                 tables: o.tables,
                 occupancy: o.occupancy,
-                images: studies.iter().map(|(_, s)| s.volume.clone()).collect(),
+                images,
                 last_for: studies
                     .last()
                     .map(|(_, s)| s.volume.frame_of_reference_uid.clone())
@@ -1282,9 +1292,14 @@ impl ViewerApp {
     fn posture_body(&mut self, ui: &mut egui::Ui) {
         let full = ui.available_rect_before_wrap();
         ui.expand_to_include_rect(full);
-        let top_h = 64.0;
+        // The top bar is one line, two with a missing-structures offer.
+        let top_h = if self.posture.offers.is_empty() {
+            34.0
+        } else {
+            58.0
+        };
         let bottom_h = 40.0;
-        let right_w = (full.width() * 0.34).clamp(320.0, 520.0);
+        let right_w = (full.width() * 0.3).clamp(300.0, 480.0);
         let top = Rect::from_min_max(full.min, Pos2::new(full.right(), full.top() + top_h));
         let bottom = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - bottom_h), full.max);
         let right = Rect::from_min_max(
@@ -1307,7 +1322,8 @@ impl ViewerApp {
         self.posture_panes(ui, centre);
     }
 
-    /// States, anchor, mode, bodies, Build.
+    /// The one line a model is made from: the states, the anchor, *Build*;
+    /// everything else that shapes it is under *Options*.
     fn posture_top_bar(&mut self, ui: &mut egui::Ui) {
         let busy = self.posture.job.is_some();
         let vols: Vec<usize> = self
@@ -1330,12 +1346,17 @@ impl ViewerApp {
         let mut build = false;
         let mut open_file = false;
         let mut cancel = false;
+        let ready = self.posture.states.len() >= 2
+            && self.posture.states.iter().all(|s| vols.contains(s))
+            && self.posture.states.windows(2).all(|w| w[0] != w[1]);
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(!busy, |ui| {
-                ui.label("States:");
                 let n = self.posture.states.len();
                 self.posture.posture_text.resize(n, String::new());
                 for i in 0..n {
+                    if i > 0 {
+                        ui.label("→");
+                    }
                     let cur = self.posture.states[i];
                     let text = summaries
                         .iter()
@@ -1345,7 +1366,7 @@ impl ViewerApp {
                     let label = ["Start", "Next", "Then", "Then"][i.min(3)];
                     egui::ComboBox::from_id_salt(("posture_state", i))
                         .selected_text(text)
-                        .width(180.0)
+                        .width(170.0)
                         .show_ui(ui, |ui| {
                             for (s, t) in &summaries {
                                 ui.selectable_value(&mut self.posture.states[i], *s, t);
@@ -1353,12 +1374,6 @@ impl ViewerApp {
                         })
                         .response
                         .on_hover_text(format!("{label} state: the workspace whose displayed series and structures it is"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.posture.posture_text[i])
-                            .desired_width(44.0)
-                            .hint_text("param"),
-                    )
-                    .tip("Posture parameter of this state (an angle, a day, a filling): the time axis reads in it when every state has one");
                     if n > 2 && small_tip_button(ui, "✖", "Remove this state") {
                         remove = Some(i);
                     }
@@ -1367,8 +1382,19 @@ impl ViewerApp {
                     add = true;
                 }
                 ui.separator();
-                ui.label("Anchor:");
+                ui.label("Anchor");
+                // What Auto chose, once a model is built.
+                let chosen = self
+                    .posture
+                    .built
+                    .as_ref()
+                    .map(|b| b.tables.model.anchor.clone())
+                    .filter(|_| self.posture.anchor_kind == AnchorKind::Auto);
                 let anchor_text = match self.posture.anchor_kind {
+                    AnchorKind::Auto => match &chosen {
+                        Some(a) => format!("Auto: {a}"),
+                        None => "Auto".into(),
+                    },
                     AnchorKind::Structure if !self.posture.anchor_name.is_empty() => self.posture.anchor_name.clone(),
                     AnchorKind::Structure => "(pick a structure)".into(),
                     AnchorKind::Image => "Whole image".into(),
@@ -1378,6 +1404,12 @@ impl ViewerApp {
                     .selected_text(anchor_text)
                     .width(140.0)
                     .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.posture.anchor_kind, AnchorKind::Auto, "Auto")
+                            .on_hover_text(
+                                "The sacrum when every scan sees all of it, else the middle vertebra every \
+                                 scan sees whole, else the largest such bone, else the whole image",
+                            );
+                        ui.separator();
                         for name in &common {
                             let on = self.posture.anchor_kind == AnchorKind::Structure
                                 && self.posture.anchor_name.eq_ignore_ascii_case(name);
@@ -1394,67 +1426,6 @@ impl ViewerApp {
                     })
                     .response
                     .on_hover_text("What is held still: every number is in its frame, and the animation shows it standing still");
-                ui.label("Mode:");
-                egui::ComboBox::from_id_salt("posture_mode")
-                    .selected_text(self.posture.mode.label())
-                    .show_ui(ui, |ui| {
-                        for m in Mode::ALL {
-                            ui.selectable_value(&mut self.posture.mode, m, m.label())
-                                .on_hover_text(m.hint());
-                        }
-                    })
-                    .response
-                    .on_hover_text(self.posture.mode.hint());
-                let bodies_text = match &self.posture.bodies {
-                    None => "Rigid: the bones".to_string(),
-                    Some(v) if v.is_empty() => "Rigid: none".to_string(),
-                    Some(v) => format!("Rigid: {}", v.len()),
-                };
-                ui.menu_button(bodies_text, |ui| {
-                    ui.weak("Structures moved as rigid bodies");
-                    let mut picked: Vec<String> = match &self.posture.bodies {
-                        Some(v) => v.clone(),
-                        None => common.iter().filter(|n| posture::fit::is_bone(n)).cloned().collect(),
-                    };
-                    let mut changed = false;
-                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                        for name in &common {
-                            let mut on = picked.iter().any(|p| p.eq_ignore_ascii_case(name));
-                            if ui.checkbox(&mut on, name).changed() {
-                                changed = true;
-                                if on {
-                                    picked.push(name.clone());
-                                } else {
-                                    picked.retain(|p| !p.eq_ignore_ascii_case(name));
-                                }
-                            }
-                        }
-                    });
-                    if changed {
-                        self.posture.bodies = Some(picked);
-                    }
-                    if ui.button("The bones (default)").clicked() {
-                        self.posture.bodies = None;
-                    }
-                });
-                ui.checkbox(&mut self.posture.residual, "Residual")
-                    .on_hover_text("A B-spline registration on top of the bodies, for what they leave: organ filling, soft tissue");
-                ui.add(egui::DragValue::new(&mut self.posture.lattice_mm).range(2.0..=20.0).suffix(" mm"))
-                    .tip("Lattice of the velocity fields");
-                ui.add(egui::DragValue::new(&mut self.posture.reach_mm).range(5.0..=150.0).suffix(" mm"))
-                    .tip("Reach of a rigid body's influence on the tissue around it");
-                if self.posture.states.len() >= 3 {
-                    ui.checkbox(&mut self.posture.smooth, "Smooth chain")
-                        .on_hover_text("Every rigid body on a curve through the states, its velocity continuous at each, rather than a constant turn per pair");
-                }
-                ui.checkbox(&mut self.posture.wepl, "WEPL")
-                    .on_hover_text("The water-equivalent path length to each structure's centroid along a beam, in the tables");
-                if self.posture.wepl {
-                    ui.add(egui::DragValue::new(&mut self.posture.gantry_deg).range(-360.0..=360.0).suffix(" deg"))
-                        .tip("Gantry angle of the WEPL beam (IEC 61217, in the first state's patient position)");
-                    ui.add(egui::DragValue::new(&mut self.posture.couch_deg).range(-360.0..=360.0).suffix(" deg"))
-                        .tip("Patient support angle of the WEPL beam");
-                }
             });
             ui.separator();
             if busy {
@@ -1466,22 +1437,13 @@ impl ViewerApp {
                 if ui.button("Cancel").clicked() {
                     cancel = true;
                 }
-            } else {
-                let ready = self.posture.states.len() >= 2
-                    && self.posture.states.iter().all(|s| vols.contains(s))
-                    && self.posture.states.windows(2).all(|w| w[0] != w[1]);
-                if enabled_tip_button(ui, ready, "▶ Build", "Fit the model between the states") {
-                    build = true;
-                }
-                if enabled_tip_button(ui, ready, "📂 Open model", "Read a saved model back onto these states, nothing fitted again") {
-                    open_file = true;
-                }
+            } else if enabled_tip_button(ui, ready, "▶ Build", "Fit the model between the states") {
+                build = true;
             }
+            ui.add_enabled_ui(!busy, |ui| {
+                self.posture_options_menu(ui, ready, &common, &mut open_file);
+            });
         });
-        ui.weak(
-            "An interpolation between what was scanned: for looking at and measuring along the \
-             path, not for planning a treatment on.",
-        );
         if !busy {
             self.posture_offers_ui(ui);
         }
@@ -1516,6 +1478,126 @@ impl ViewerApp {
         }
     }
 
+    /// *Options*: how the model is built (mode, rigid bodies, residual,
+    /// lattice, reach, a chain's curves, the patient only), the states'
+    /// posture parameters, the WEPL beam of the tables, and a saved model.
+    fn posture_options_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        ready: bool,
+        common: &[String],
+        open_file: &mut bool,
+    ) {
+        let (menu, _) = egui::containers::menu::MenuButton::new("⚙ Options")
+            .config(
+                egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            )
+            .ui(ui, |ui| {
+                ui.strong("The model");
+                ui.horizontal(|ui| {
+                    ui.label("Mode");
+                    egui::ComboBox::from_id_salt("posture_mode")
+                        .selected_text(self.posture.mode.label())
+                        .show_ui(ui, |ui| {
+                            for m in Mode::ALL {
+                                ui.selectable_value(&mut self.posture.mode, m, m.label())
+                                    .on_hover_text(m.hint());
+                            }
+                        })
+                        .response
+                        .on_hover_text(self.posture.mode.hint());
+                });
+                let bodies_text = match &self.posture.bodies {
+                    None => "Rigid: the bones".to_string(),
+                    Some(v) if v.is_empty() => "Rigid: none".to_string(),
+                    Some(v) => format!("Rigid: {}", v.len()),
+                };
+                ui.menu_button(bodies_text, |ui| {
+                    ui.weak("Structures moved as rigid bodies");
+                    let mut picked: Vec<String> = match &self.posture.bodies {
+                        Some(v) => v.clone(),
+                        None => common.iter().filter(|n| posture::fit::is_bone(n)).cloned().collect(),
+                    };
+                    let mut changed = false;
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        for name in common {
+                            let mut on = picked.iter().any(|p| p.eq_ignore_ascii_case(name));
+                            if ui.checkbox(&mut on, name).changed() {
+                                changed = true;
+                                if on {
+                                    picked.push(name.clone());
+                                } else {
+                                    picked.retain(|p| !p.eq_ignore_ascii_case(name));
+                                }
+                            }
+                        }
+                    });
+                    if changed {
+                        self.posture.bodies = Some(picked);
+                    }
+                    if ui.button("The bones (default)").clicked() {
+                        self.posture.bodies = None;
+                    }
+                });
+                ui.checkbox(&mut self.posture.residual, "Residual").on_hover_text(
+                    "A B-spline registration on top of the bodies, for what they leave: organs that \
+                     sank or filled, soft tissue. Fitted only where both scans have tissue, and \
+                     scaled down where it would fold",
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Lattice");
+                    ui.add(egui::DragValue::new(&mut self.posture.lattice_mm).range(2.0..=20.0).suffix(" mm"))
+                        .tip("Lattice of the velocity fields (6 mm: finer folds near joints, coarser misses the way back)");
+                    ui.label("Reach");
+                    ui.add(egui::DragValue::new(&mut self.posture.reach_mm).range(5.0..=150.0).suffix(" mm"))
+                        .tip("Reach of a rigid body's influence on the tissue around it");
+                });
+                if self.posture.states.len() >= 3 {
+                    ui.checkbox(&mut self.posture.smooth, "Smooth chain")
+                        .on_hover_text("Every rigid body on a curve through the states, its velocity continuous at each, rather than a constant turn per pair");
+                }
+                ui.checkbox(&mut self.posture.patient_only, "Patient only").on_hover_text(
+                    "Fit and draw each state's patient alone: outside its EXTERNAL structure (BODY) \
+                     set to air, so the couch and the chair do not bend with the tissue. A state \
+                     without one is kept as scanned",
+                );
+                ui.separator();
+                ui.strong("Posture parameters");
+                ui.weak("An angle, a day, a filling: the time reads in it when every state has one");
+                for (i, &s) in self.posture.states.clone().iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(SLOT_NAMES[s.min(MAX_WORKSPACES - 1)]);
+                        if let Some(text) = self.posture.posture_text.get_mut(i) {
+                            ui.add(egui::TextEdit::singleline(text).desired_width(60.0).hint_text("param"))
+                                .tip("Posture parameter of this state");
+                        }
+                    });
+                }
+                ui.separator();
+                ui.strong("Tables");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.posture.wepl, "WEPL")
+                        .on_hover_text("The water-equivalent path length to each structure's centroid along a beam, in the tables");
+                    ui.add_enabled_ui(self.posture.wepl, |ui| {
+                        ui.add(egui::DragValue::new(&mut self.posture.gantry_deg).range(-360.0..=360.0).suffix(" deg"))
+                            .tip("Gantry angle of the WEPL beam (IEC 61217, in the first state's patient position)");
+                        ui.add(egui::DragValue::new(&mut self.posture.couch_deg).range(-360.0..=360.0).suffix(" deg"))
+                            .tip("Patient support angle of the WEPL beam");
+                    });
+                });
+                ui.separator();
+                if enabled_tip_button(ui, ready, "📂 Open model...", "Read a saved model back onto these states, nothing fitted again") {
+                    *open_file = true;
+                    ui.close();
+                }
+            });
+        menu.on_hover_text(
+            "How the model is built (mode, rigid bodies, residual, lattice, patient only), the \
+             posture parameters, the WEPL beam, and a saved model to open",
+        );
+    }
+
     /// The three planes, the 3D scene and the chart of the model workspace.
     fn posture_panes(&mut self, ui: &mut egui::Ui, area: Rect) {
         let painter = ui.painter_at(area);
@@ -1524,8 +1606,8 @@ impl ViewerApp {
             let msg = if self.posture.job.is_some() {
                 "Building the model..."
             } else {
-                "Pick the states (workspaces with an image of the same patient in two positions), \
-                 the anchor and the mode, and press Build."
+                "Pick the states - workspaces with an image of the same patient in two positions - \
+                 and press Build."
             };
             painter.text(
                 area.center(),
@@ -1597,7 +1679,8 @@ impl ViewerApp {
         self.posture_record_tick(ui, film);
     }
 
-    /// Transport, time, show, overlay, recording.
+    /// Transport, time and what is shown; how it is drawn and played under
+    /// *Display*; the recorder.
     fn posture_bottom_bar(&mut self, ui: &mut egui::Ui) {
         let Some((span, ticks, param)) = self.posture.built.as_ref().map(|b| {
             (
@@ -1631,7 +1714,7 @@ impl ViewerApp {
         }
         let mut t = self.posture.t;
         let saved = ui.spacing().slider_width;
-        ui.spacing_mut().slider_width = (ui.available_width() - 640.0).max(160.0);
+        ui.spacing_mut().slider_width = (ui.available_width() - 380.0).max(160.0);
         let resp = ui
             .add(egui::Slider::new(&mut t, 0.0..=span).show_value(false))
             .named("Time along the path");
@@ -1659,24 +1742,6 @@ impl ViewerApp {
             Some(p) => format!("t {:.2} ({p:.1})", self.posture.t),
             None => format!("t {:.2}", self.posture.t),
         });
-        ui.add(
-            egui::DragValue::new(&mut self.posture.fps)
-                .range(0.5..=30.0)
-                .speed(0.1)
-                .suffix(" fps"),
-        )
-        .tip("Key frames a second");
-        egui::ComboBox::from_id_salt("posture_end")
-            .selected_text(self.play.mode.label())
-            .width(70.0)
-            .show_ui(ui, |ui| {
-                for m in play::PlayMode::ALL {
-                    ui.selectable_value(&mut self.play.mode, m, m.label())
-                        .on_hover_text(m.hint());
-                }
-            })
-            .response
-            .on_hover_text("What a run does at the end");
         let before = self.posture.show;
         egui::ComboBox::from_id_salt("posture_show")
             .selected_text(self.posture.show.label())
@@ -1696,155 +1761,14 @@ impl ViewerApp {
             }
             self.posture.moved_at = now;
         }
-        let before = self.posture.overlay;
-        egui::ComboBox::from_id_salt("posture_overlay")
-            .selected_text(match self.posture.overlay {
-                FieldStyle::None => "No overlay",
-                FieldStyle::Arrows => "Arrows",
-                FieldStyle::Grid => "Deformed grid",
-            })
-            .width(110.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.posture.overlay, FieldStyle::None, "No overlay");
-                ui.selectable_value(&mut self.posture.overlay, FieldStyle::Arrows, "Arrows");
-                ui.selectable_value(&mut self.posture.overlay, FieldStyle::Grid, "Deformed grid");
-            })
-            .response
-            .on_hover_text("The displacement from the first state, over the views");
-        if self.posture.overlay != before {
-            // Shown again with the field (or without it).
-            self.posture.shown = None;
-        }
-        // The density of the arrows (and of the deformed grid's lines); the
-        // views walk their arrows again at the new spacing by themselves.
-        ui.add(
-            egui::DragValue::new(&mut self.posture.arrow_mm)
-                .range(crate::registration::dvf::ARROW_SPACING_RANGE)
-                .speed(0.25)
-                .fixed_decimals(0)
-                .suffix(" mm"),
-        )
-        // Its value ("12 mm") has words of a sort, so the tooltip would not
-        // name it: named outright.
-        .named("Arrow spacing")
-        .on_hover_text(
-            "Arrow spacing: one arrow (or one line of the deformed grid) every so many \
-             millimetres, in the views and in Save GIF; closer arrows are drawn shorter in \
-             proportion",
-        );
-        // The extras: the wash and the dose; a change renders again.
-        let (wash, dose) = (self.posture.wash, self.posture.dose_on);
-        ui.checkbox(&mut self.posture.wash, "Jacobian wash")
-            .on_hover_text(
-                "The local volume change since the first state as a colour over the image: blue \
-             compressed, red expanded (full colour at half or twice the volume), magenta folded",
-            );
-        let has_dose = self
-            .posture
-            .built
-            .as_ref()
-            .is_some_and(|b| b.dose.is_some());
-        if has_dose {
-            ui.checkbox(&mut self.posture.dose_on, "Dose (display only)").on_hover_text(
-                "The first state's dose drawn where its tissue has moved along the path. Display \
-                 only: it is not recalculated on the new anatomy, and no dose number or DVH comes \
-                 from it.",
-            );
-        }
-        if (wash, dose) != (self.posture.wash, self.posture.dose_on) {
-            self.posture.shown = None;
-            self.posture.keys.clear();
-            if !self.posture.live {
-                self.posture_start_keys();
-            }
-        }
-        ui.separator();
-        let was_live = self.posture.live;
-        egui::ComboBox::from_id_salt("posture_play_from")
-            .selected_text(if self.posture.live {
-                "Live slices"
-            } else {
-                "Key frames"
-            })
-            .width(90.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.posture.live, true, "Live slices")
-                    .on_hover_text("Each step computes the three planes on screen at its exact time, on the full grid (on the GPU when there is one)");
-                ui.selectable_value(&mut self.posture.live, false, "Key frames")
-                    .on_hover_text("Whole volumes at evenly spaced times on a working grid that fits the playback budget, rendered once and played from memory");
-            })
-            .response
-            .on_hover_text(
-                self.posture
-                    .built
-                    .as_ref()
-                    .map_or_else(String::new, |b| b.slicer_note.clone()),
-            );
-        if self.posture.live != was_live {
-            self.posture.shown = None;
-            if !self.posture.live && self.posture.keys.is_empty() {
-                self.posture_start_keys();
-            }
-        }
-        if self.posture.live {
-            if let Some(n) = &self.posture.live_note {
-                ui.weak(n.as_str());
-            }
-        }
-        ui.add(
-            egui::DragValue::new(&mut self.posture.frames)
-                .range(2..=200)
-                .suffix(" frames"),
-        )
-        .tip("Steps along the path a run takes (key frames: rendered once, played from memory)");
-        if !self.posture.live {
-            if ui
-                .small_button("↺")
-                .tip("Render the key frames again at this count")
-                .clicked()
-            {
-                self.posture.keys.clear();
-                self.posture_start_keys();
-            }
-            if let Some(j) = &self.posture.key_job {
-                ui.add(egui::ProgressBar::new(j.progress.frac()).desired_width(60.0))
-                    .tip("Rendering the key frames");
-            }
-        }
-        ui.separator();
-        let films = [
-            (PaneKind::Plane(ViewPlane::Axial), "Axial"),
-            (PaneKind::Plane(ViewPlane::Sagittal), "Sagittal"),
-            (PaneKind::Plane(ViewPlane::Coronal), "Coronal"),
-            (PaneKind::Scene3d, "3D"),
-        ];
-        egui::ComboBox::from_id_salt("posture_film")
-            .selected_text(
-                films
-                    .iter()
-                    .find(|f| f.0 == self.posture.film)
-                    .map_or("Axial", |f| f.1),
-            )
-            .width(70.0)
-            .show_ui(ui, |ui| {
-                for (k, l) in films {
-                    if ui.selectable_label(self.posture.film == k, l).clicked() {
-                        self.posture_select_pane(k);
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "The selected view: the pane a recording films, and the view Save GIF starts \
-                 from. A click in a pane selects it too.",
-            );
+        self.posture_view_menu(ui);
         let armed = self.posture.rec.is_some();
         if ui
             .add(egui::Button::selectable(armed, if armed { "⏹" } else { "⏺" }))
             .tip(if armed {
                 "Stop recording and write what was taken"
             } else {
-                "Record: the next run is filmed, one cycle, as GIF or PNG frames (the Image playback module's format)"
+                "Record: the next run of the selected view (Display menu) is filmed off the screen, one cycle, as GIF or PNG frames"
             })
             .clicked()
         {
@@ -1856,6 +1780,196 @@ impl ViewerApp {
         }
         if let Some(s) = &self.posture.rec_status {
             ui.weak(s.as_str());
+        }
+    }
+
+    /// *Display*: what is drawn over the image (the field, the wash, the
+    /// dose), how a run plays (live slices or key frames, their number, the
+    /// speed, the end), and the selected view.
+    fn posture_view_menu(&mut self, ui: &mut egui::Ui) {
+        let (overlay, wash, dose, live) = (
+            self.posture.overlay,
+            self.posture.wash,
+            self.posture.dose_on,
+            self.posture.live,
+        );
+        let mut redo_keys = false;
+        let has_dose = self
+            .posture
+            .built
+            .as_ref()
+            .is_some_and(|b| b.dose.is_some());
+        let slicer_note = self
+            .posture
+            .built
+            .as_ref()
+            .map_or_else(String::new, |b| b.slicer_note.clone());
+        let (menu, _) = egui::containers::menu::MenuButton::new("Display")
+            .config(
+                egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            )
+            .ui(ui, |ui| {
+                ui.strong("Over the image");
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("posture_overlay")
+                        .selected_text(match self.posture.overlay {
+                            FieldStyle::None => "No overlay",
+                            FieldStyle::Arrows => "Arrows",
+                            FieldStyle::Grid => "Deformed grid",
+                        })
+                        .width(110.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.posture.overlay, FieldStyle::None, "No overlay");
+                            ui.selectable_value(&mut self.posture.overlay, FieldStyle::Arrows, "Arrows");
+                            ui.selectable_value(&mut self.posture.overlay, FieldStyle::Grid, "Deformed grid");
+                        })
+                        .response
+                        .on_hover_text("The displacement from the first state, over the views");
+                    // The density of the arrows (and of the deformed grid's
+                    // lines); the views walk their arrows again at the new
+                    // spacing by themselves.
+                    ui.add(
+                        egui::DragValue::new(&mut self.posture.arrow_mm)
+                            .range(crate::registration::dvf::ARROW_SPACING_RANGE)
+                            .speed(0.25)
+                            .fixed_decimals(0)
+                            .suffix(" mm"),
+                    )
+                    // Its value ("12 mm") has words of a sort, so the
+                    // tooltip would not name it: named outright.
+                    .named("Arrow spacing")
+                    .on_hover_text(
+                        "Arrow spacing: one arrow (or one line of the deformed grid) every so many \
+                         millimetres, in the views and in Save GIF; closer arrows are drawn shorter in \
+                         proportion",
+                    );
+                });
+                ui.checkbox(&mut self.posture.wash, "Jacobian wash").on_hover_text(
+                    "The local volume change since the first state as a colour over the image: blue \
+                     compressed, red expanded (full colour at half or twice the volume), magenta folded",
+                );
+                if has_dose {
+                    ui.checkbox(&mut self.posture.dose_on, "Dose (display only)").on_hover_text(
+                        "The first state's dose drawn where its tissue has moved along the path. Display \
+                         only: it is not recalculated on the new anatomy, and no dose number or DVH comes \
+                         from it.",
+                    );
+                }
+                ui.separator();
+                ui.strong("Playing");
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("posture_play_from")
+                        .selected_text(if self.posture.live {
+                            "Live slices"
+                        } else {
+                            "Key frames"
+                        })
+                        .width(90.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.posture.live, true, "Live slices")
+                                .on_hover_text("Each step computes the three planes on screen at its exact time, on the full grid (on the GPU when there is one)");
+                            ui.selectable_value(&mut self.posture.live, false, "Key frames")
+                                .on_hover_text("Whole volumes at evenly spaced times on a working grid that fits the playback budget, rendered once and played from memory");
+                        })
+                        .response
+                        .on_hover_text(slicer_note.as_str());
+                    ui.add(
+                        egui::DragValue::new(&mut self.posture.frames)
+                            .range(2..=200)
+                            .suffix(" frames"),
+                    )
+                    .tip("Steps along the path a run takes (key frames: rendered once, played from memory)");
+                    if !self.posture.live {
+                        if ui
+                            .small_button("↺")
+                            .tip("Render the key frames again at this count")
+                            .clicked()
+                        {
+                            redo_keys = true;
+                        }
+                        if let Some(j) = &self.posture.key_job {
+                            ui.add(egui::ProgressBar::new(j.progress.frac()).desired_width(60.0))
+                                .tip("Rendering the key frames");
+                        }
+                    }
+                });
+                if self.posture.live {
+                    if let Some(n) = &self.posture.live_note {
+                        ui.weak(n.as_str());
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.posture.fps)
+                            .range(0.5..=30.0)
+                            .speed(0.1)
+                            .suffix(" fps"),
+                    )
+                    .tip("Steps a second");
+                    egui::ComboBox::from_id_salt("posture_end")
+                        .selected_text(self.play.mode.label())
+                        .width(70.0)
+                        .show_ui(ui, |ui| {
+                            for m in play::PlayMode::ALL {
+                                ui.selectable_value(&mut self.play.mode, m, m.label())
+                                    .on_hover_text(m.hint());
+                            }
+                        })
+                        .response
+                        .on_hover_text("What a run does at the end");
+                });
+                ui.separator();
+                let films = [
+                    (PaneKind::Plane(ViewPlane::Axial), "Axial"),
+                    (PaneKind::Plane(ViewPlane::Sagittal), "Sagittal"),
+                    (PaneKind::Plane(ViewPlane::Coronal), "Coronal"),
+                    (PaneKind::Scene3d, "3D"),
+                ];
+                ui.horizontal(|ui| {
+                    ui.label("Selected view");
+                    egui::ComboBox::from_id_salt("posture_film")
+                        .selected_text(
+                            films
+                                .iter()
+                                .find(|f| f.0 == self.posture.film)
+                                .map_or("Axial", |f| f.1),
+                        )
+                        .width(70.0)
+                        .show_ui(ui, |ui| {
+                            for (k, l) in films {
+                                if ui.selectable_label(self.posture.film == k, l).clicked() {
+                                    self.posture_select_pane(k);
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "The pane a recording films, and the view Save GIF starts from. A click \
+                             in a pane selects it too.",
+                        );
+                });
+            });
+        menu.on_hover_text(
+            "What is drawn over the image (the field, the Jacobian wash, the dose) and how a run plays",
+        );
+        if self.posture.overlay != overlay {
+            // Shown again with the field (or without it).
+            self.posture.shown = None;
+        }
+        // The extras: the wash and the dose; a change renders again.
+        if (wash, dose) != (self.posture.wash, self.posture.dose_on) || redo_keys {
+            self.posture.shown = None;
+            self.posture.keys.clear();
+            if !self.posture.live {
+                self.posture_start_keys();
+            }
+        }
+        if self.posture.live != live {
+            self.posture.shown = None;
+            if !self.posture.live && self.posture.keys.is_empty() {
+                self.posture_start_keys();
+            }
         }
     }
 
@@ -2384,48 +2498,87 @@ impl ViewerApp {
         });
     }
 
-    /// The right side: what was built, the exports and the table.
+    /// The verdict, the exports, the tables.
     fn posture_side(&mut self, ui: &mut egui::Ui) {
         if let Some(s) = &self.posture.status {
             ui.weak(s.as_str());
         }
         let Some(b) = self.posture.built.as_ref() else {
             ui.label("No model yet.");
+            ui.weak(CAVEAT_LINE);
             return;
         };
-        for w in &b.warnings {
-            ui.colored_label(ui.visuals().warn_fg_color, w);
+        // ---- the verdict: how far the model can be trusted ----
+        let verdict = b.tables.verdict();
+        let good = Color32::from_rgb(90, 175, 95);
+        let color_of = |l: Level, ui: &egui::Ui| match l {
+            Level::Good => good,
+            Level::Check => ui.visuals().warn_fg_color,
+            Level::Poor => ui.visuals().error_fg_color,
+        };
+        ui.horizontal(|ui| {
+            ui.colored_label(color_of(verdict.level, ui), "●");
+            ui.strong(match verdict.level {
+                Level::Good => "Good model",
+                Level::Check => "Model to check",
+                Level::Poor => "Poor model",
+            });
+        });
+        for (level, line) in &verdict.lines {
+            if *level == Level::Good {
+                ui.label(line.as_str());
+            } else {
+                ui.colored_label(color_of(*level, ui), line.as_str());
+            }
         }
+        if !b.warnings.is_empty() {
+            egui::CollapsingHeader::new(format!("Notes ({})", b.warnings.len()))
+                .id_salt("posture_warnings")
+                .default_open(false)
+                .show(ui, |ui| {
+                    for w in &b.warnings {
+                        ui.colored_label(ui.visuals().warn_fg_color, w);
+                    }
+                });
+        }
+        ui.weak(CAVEAT_LINE);
+        // ---- what it writes ----
         let busy = self.posture.export_job.is_some();
         let mut act: Option<u8> = None;
         ui.horizontal_wrapped(|ui| {
-            if enabled_tip_button(ui, !busy, "💾 CSV", "The four tables as one CSV file") {
-                act = Some(0);
-            }
-            if enabled_tip_button(ui, !busy, "💾 Model", "The model as a file, to reopen without fitting again") {
-                act = Some(1);
-            }
-            if enabled_tip_button(
-                ui,
-                !busy,
-                "📤 REG",
-                "The whole path, first state to last, as a DICOM Deformable Spatial Registration",
-            ) {
-                act = Some(2);
-            }
-            if enabled_tip_button(
-                ui,
-                !busy,
-                "📤 Image at t",
-                format!(
-                    "The image and the structures at the slider's time as a derived CT series and an \
-                     RT Structure Set, marked as {}",
-                    wp::CAVEAT
-                ),
-            ) {
-                act = Some(3);
-            }
+            ui.add_enabled_ui(!busy, |ui| {
+                let (menu, _) = egui::containers::menu::MenuButton::new("📤 Export").ui(ui, |ui| {
+                    let items = [
+                        ("Tables (CSV)...", "The four tables as one CSV file".to_string()),
+                        ("Model file...", "The model as a file, to reopen without fitting again".to_string()),
+                        (
+                            "Deformation (DICOM REG)...",
+                            "The whole path, first state to last, as a DICOM Deformable Spatial Registration"
+                                .to_string(),
+                        ),
+                        (
+                            "Image at t (DICOM)...",
+                            format!(
+                                "The image and the structures at the slider's time as a derived CT series \
+                                 and an RT Structure Set, marked as {}",
+                                wp::CAVEAT
+                            ),
+                        ),
+                    ];
+                    for (i, (label, tip)) in items.into_iter().enumerate() {
+                        if ui.button(label).on_hover_text(tip).clicked() {
+                            act = Some(i as u8);
+                            ui.close();
+                        }
+                    }
+                });
+                menu.on_hover_text("Write the tables, the model, the deformation or the image at this time");
+            });
+            self.posture_gif_ui(ui);
         });
+        let Some(b) = self.posture.built.as_ref() else {
+            return;
+        };
         match act {
             Some(0) => {
                 let text = b.tables.csv();
@@ -2499,8 +2652,6 @@ impl ViewerApp {
             }
             _ => {}
         }
-        // The animation as a GIF: all views in one, or the selected one.
-        ui.horizontal_wrapped(|ui| self.posture_gif_ui(ui));
         ui.separator();
         egui::ScrollArea::both()
             .id_salt("posture_table")
@@ -2508,6 +2659,10 @@ impl ViewerApp {
             .show(ui, |ui| self.posture_table(ui));
     }
 }
+
+/// What the model is, said once under its verdict and on the empty window.
+const CAVEAT_LINE: &str = "An interpolation between what was scanned: for looking at and \
+                           measuring along the path, not for planning a treatment on.";
 
 /// A series to stand in when a study has none (never the case for a state,
 /// which has an image).

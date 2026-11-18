@@ -391,6 +391,155 @@ impl Tables {
             .map(|(i, _)| i)
             .unwrap_or(0)
     }
+
+    /// How far the model can be trusted, in a few lines ([`Verdict`]).
+    pub fn verdict(&self) -> Verdict {
+        let m = &self.model;
+        let mut v = Verdict::default();
+        let worst = |level: Level, line: String, v: &mut Verdict| {
+            v.level = v.level.max(level);
+            v.lines.push((level, line));
+        };
+        if m.folded_fraction > 0.0 || m.jacobian_min <= 0.0 {
+            worst(
+                Level::Poor,
+                format!(
+                    "The path folds tissue ({:.2} % of it, Jacobian down to {:.2}): not a \
+                     deformation of anatomy. Build it without the residual, or with a coarser \
+                     lattice.",
+                    100.0 * m.folded_fraction,
+                    m.jacobian_min
+                ),
+                &mut v,
+            );
+        }
+        let inv = m.inverse_mm[1][1];
+        if inv > VERDICT_INVERSE_MM {
+            worst(
+                Level::Check,
+                format!("The way back misses the way there by {inv:.1} mm (95th percentile)."),
+                &mut v,
+            );
+        }
+        for s in self.states.iter().skip(1) {
+            if s.to_anchor.residual_mm > VERDICT_ANCHOR_RMS_MM {
+                worst(
+                    Level::Check,
+                    format!(
+                        "The anchor fits {} only to {:.1} mm: is it cut by a scan?",
+                        s.label, s.to_anchor.residual_mm
+                    ),
+                    &mut v,
+                );
+            }
+        }
+        let loose: Vec<String> = self
+            .bodies
+            .iter()
+            .filter(|b| !b.anchor && b.fit_mean_mm > VERDICT_BODY_FIT_MM)
+            .map(|b| format!("{} {:.1} mm", b.name, b.fit_mean_mm))
+            .collect();
+        if !loose.is_empty() {
+            worst(
+                Level::Check,
+                format!(
+                    "Bones that fit loosely (mean surface distance): {}.",
+                    loose.join(", ")
+                ),
+                &mut v,
+            );
+        }
+        let bodies: Vec<&BodyRow> = self.bodies.iter().filter(|b| !b.anchor).collect();
+        if !bodies.is_empty() {
+            let fit = bodies.iter().map(|b| b.fit_mean_mm).sum::<f64>() / bodies.len() as f64;
+            v.lines.push((
+                Level::Good,
+                format!(
+                    "{} bones on screws, fitted to {fit:.1} mm on average; anchor {}.",
+                    bodies.len(),
+                    m.anchor
+                ),
+            ));
+        }
+        if let Some(d) = m.check_unused_dice {
+            let level = if d < VERDICT_SOFT_DICE {
+                Level::Check
+            } else {
+                Level::Good
+            };
+            let residual = m.provenance.iter().any(|l| l.contains("residual:"));
+            let line = if d < VERDICT_SOFT_DICE {
+                format!(
+                    "Organs overlap their own contours on the last state by a Dice of {d:.2} \
+                     only: they moved on their own (gravity, filling), which the bones do not \
+                     carry{}",
+                    if residual {
+                        ", and the residual follows only in part."
+                    } else {
+                        ". The residual follows them some way."
+                    }
+                )
+            } else {
+                format!("Organs land on their own contours with a Dice of {d:.2}.")
+            };
+            worst(level, line, &mut v);
+        }
+        if m.overlap_fraction < VERDICT_OVERLAP {
+            worst(
+                Level::Check,
+                format!(
+                    "The scans overlap on {:.0} % of the first: the model holds only there.",
+                    100.0 * m.overlap_fraction
+                ),
+                &mut v,
+            );
+        }
+        // The worst first, then the rest in order.
+        v.lines.sort_by_key(|l| std::cmp::Reverse(l.0));
+        v
+    }
+}
+
+/// [`Tables::verdict`]: the way back may miss the way there by this much at
+/// the 95th percentile, mm, before it is pointed out.
+pub const VERDICT_INVERSE_MM: f64 = 1.0;
+/// The anchor's surface fit RMS above which the anchor is suspected, mm.
+pub const VERDICT_ANCHOR_RMS_MM: f64 = 2.5;
+/// A bone's mean surface distance above which it is named, mm.
+pub const VERDICT_BODY_FIT_MM: f64 = 2.5;
+/// The organs' mean model-check Dice below which they are said to have
+/// moved on their own.
+pub const VERDICT_SOFT_DICE: f64 = 0.6;
+/// The scans' overlap below which the model's reach is pointed out.
+pub const VERDICT_OVERLAP: f64 = 0.5;
+
+/// How far a model can be trusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Level {
+    #[default]
+    Good,
+    /// Usable, with something to look at.
+    Check,
+    /// Not a deformation of anatomy.
+    Poor,
+}
+
+impl Level {
+    pub fn label(self) -> &'static str {
+        match self {
+            Level::Good => "good",
+            Level::Check => "check",
+            Level::Poor => "poor",
+        }
+    }
+}
+
+/// A model's quality in a word and a few lines: the worst level met, and
+/// each finding with its level, the worst first.
+#[derive(Clone, Debug, Default)]
+pub struct Verdict {
+    pub level: Level,
+    pub lines: Vec<(Level, String)>,
 }
 
 /// Points of a mask on `grid`: every n-th set voxel, at most `max`.

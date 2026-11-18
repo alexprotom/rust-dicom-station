@@ -19,12 +19,20 @@
 //!
 //! Options:
 //!
-//! * `--anchor NAME|image|scanner` - what is held still (default: the
-//!   phantom's `BONE_UPPER`, otherwise `image`);
+//! * `--anchor NAME|auto|image|scanner` - what is held still (default: the
+//!   phantom's `BONE_UPPER`, otherwise `auto`: the sacrum when every scan
+//!   sees all of it, else the middle vertebra every scan sees whole, else
+//!   the largest such bone, else the whole image);
+//! * `--whole-scan` - fit and draw the scans as they are; by default each
+//!   state is its patient only, outside its EXTERNAL structure set to air
+//!   (the couch, the chair), when it has one;
 //! * `--bodies bones|none|A,B,C` - the rigid bodies (default `bones`);
 //! * `--mode diffeomorphic|linear`;
 //! * `--lattice MM` (6), `--analysis MM` (2), `--reach MM` (40);
-//! * `--residual` - add the B-spline residual layer;
+//! * `--residual` - add the B-spline residual layer; `--residual-grid MM`
+//!   (its control lattice), `--residual-reg X` (its bending penalty),
+//!   `--residual-metric msd|mi` override the defaults
+//!   (`workflow::posture::default_residual`);
 //! * `--posture P1,P2,...` - a posture parameter per state;
 //! * `--joint NAME:FIRST:SECOND` - a joint to report (repeatable);
 //! * `--out DIR` - write `tables.csv`, `model.rdsposture`, the deformation
@@ -43,6 +51,12 @@
 //!   (3); the structures of the first state outlined;
 //! * `--export T` - the image and structures at time `T` as DICOM
 //!   (`frame_T/`);
+//! * `--carry SPEC` - another image of the first state's position (an MR:
+//!   a folder or `DIR::FILE` like a state) carried along the path instead
+//!   of the first state's own: the key frames and the GIF show it (with
+//!   `--show forward`, the default), in its own window;
+//!   `--carry-align rigid|scanner` (default `rigid`: mutual information)
+//!   lays it onto the first state. Not written as DICOM here;
 //! * `--wepl GANTRY[,COUCH]` - the WEPL to each structure's centroid along
 //!   a beam at these IEC 61217 angles (degrees, in the first state's
 //!   patient position): first, last and its change;
@@ -146,7 +160,12 @@ fn bench_slices(
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const VALUED: [&str; 24] = [
+    const VALUED: [&str; 29] = [
+        "--residual-grid",
+        "--residual-reg",
+        "--residual-metric",
+        "--carry",
+        "--carry-align",
         "--wepl",
         "--gif",
         "--gif-view",
@@ -259,7 +278,7 @@ fn main() -> Result<()> {
         Some(a) => Anchor::parse(&a),
         None if phantom => Anchor::Structure("BONE_UPPER".into()),
         None if opt("--simulate").is_some() => Anchor::Scanner,
-        None => Anchor::Image,
+        None => Anchor::Auto,
     };
     let bodies = match opt("--bodies").as_deref() {
         None | Some("bones") => Bodies::Bones,
@@ -289,7 +308,20 @@ fn main() -> Result<()> {
         lattice_mm: num("--lattice", 6.0)?,
         analysis_mm: num("--analysis", if phantom { 3.0 } else { 2.0 })?,
         reach_mm: num("--reach", 40.0)?,
-        residual: has("--residual").then(wp::default_residual),
+        residual: if has("--residual") {
+            let mut r = wp::default_residual();
+            r.grid_spacing_mm = num("--residual-grid", r.grid_spacing_mm)?;
+            r.regularization = num("--residual-reg", r.regularization)?;
+            r.metric = match opt("--residual-metric").as_deref() {
+                None => r.metric,
+                Some("msd") => rust_dicom_station::registration::Metric::MeanSquares,
+                Some("mi") => rust_dicom_station::registration::Metric::MutualInformation,
+                Some(m) => bail!("--residual-metric {m}: msd or mi"),
+            };
+            Some(r)
+        } else {
+            None
+        },
         joints,
         wepl: match opt("--wepl") {
             Some(w) => {
@@ -307,6 +339,7 @@ fn main() -> Result<()> {
             None => None,
         },
         smooth_chain: !has("--no-smooth"),
+        patient_only: !has("--whole-scan"),
         ..PostureRequest::default()
     };
 
@@ -404,6 +437,17 @@ fn main() -> Result<()> {
         "Jacobian min {:.3}, folded {:.4}; inverse consistency at the end: max {:.3} mm, p95 {:.3} mm",
         m.jacobian_min, m.folded_fraction, m.inverse_mm[1][0], m.inverse_mm[1][1]
     );
+    println!(
+        "check Dice: bones {}, organs {}",
+        m.check_used_dice.map_or("-".into(), |d| format!("{d:.3}")),
+        m.check_unused_dice
+            .map_or("-".into(), |d| format!("{d:.3}"))
+    );
+    let v = t.verdict();
+    println!("verdict: {}", v.level.label());
+    for (level, line) in &v.lines {
+        println!("  [{}] {line}", level.label());
+    }
     if let Some(n) = opt("--bench-slices") {
         let n: usize = n.parse().map_err(|e| anyhow!("--bench-slices {n}: {e}"))?;
         bench_slices(&o.model, &studies, n.max(1))?;
@@ -419,14 +463,39 @@ fn main() -> Result<()> {
         );
     }
 
-    // ---- the film ----
+    // ---- the images the model draws: each state's patient, or the
+    // carried image in place of the first ----
     let show = match opt("--show") {
         Some(s) => apply::Show::from_key(&s).ok_or_else(|| anyhow!("--show {s}"))?,
         None => apply::Show::StartForward,
     };
+    let mut images: Vec<Arc<Volume>> = o.images.clone();
+    let mut window = show.window().unwrap_or(studies[0].default_window);
+    let carried = match opt("--carry") {
+        Some(spec) => {
+            let other = wp::load_state(&spec, &Progress::default())?;
+            let align = match opt("--carry-align").as_deref() {
+                None | Some("rigid") => wp::CarryAlign::Rigid,
+                Some("scanner") => wp::CarryAlign::Scanner,
+                Some(a) => bail!("--carry-align {a}: rigid or scanner"),
+            };
+            let (v, line) = wp::carry_image(
+                &studies[0].volume,
+                &other.volume,
+                &align,
+                req.analysis_mm,
+                &Progress::default(),
+            )?;
+            println!("carried image: {line}");
+            images[0] = Arc::new(v);
+            if show.window().is_none() {
+                window = other.default_window;
+            }
+            true
+        }
+        None => false,
+    };
     if let Some(gif) = opt("--gif") {
-        let images: Vec<Arc<Volume>> = studies.iter().map(|s| s.volume.clone()).collect();
-        let window = show.window().unwrap_or(studies[0].default_window);
         let mut fp = film::FilmParams::centred(&o.model.grid, show, window);
         fp.views = match opt("--gif-view") {
             None => film::FilmViews::All,
@@ -501,7 +570,6 @@ fn main() -> Result<()> {
             &last.volume.frame_of_reference_uid,
             &out.join("posture_reg.dcm"),
         )?;
-        let images: Vec<Arc<Volume>> = studies.iter().map(|s| s.volume.clone()).collect();
         let frames = num("--frames", 0.0)? as usize;
         if frames > 0 {
             let dir = out.join("frames");
@@ -515,7 +583,6 @@ fn main() -> Result<()> {
                 &apply::Extras::default(),
                 &Progress::default(),
             )?;
-            let window = show.window().unwrap_or(studies[0].default_window);
             for (i, f) in kf.iter().enumerate() {
                 for (plane, tag) in [
                     (ViewPlane::Axial, "axial"),
@@ -532,7 +599,12 @@ fn main() -> Result<()> {
             }
             println!("{} key frames in {}", kf.len(), dir.display());
         }
-        if let Some(at) = opt("--export") {
+        if let Some(at) = opt("--export").filter(|_| {
+            if carried {
+                println!("--export: a carried image is not written as DICOM (frames and GIF only)");
+            }
+            !carried
+        }) {
             let at: f64 = at.parse().map_err(|e| anyhow!("--export {at}: {e}"))?;
             let dir = out.join(format!("frame_{at:.2}"));
             let e = wp::export_frame(

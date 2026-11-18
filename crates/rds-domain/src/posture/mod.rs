@@ -160,6 +160,11 @@ pub enum Anchor {
     /// Nothing: the states' own patient coordinates, for scans that share
     /// a frame of reference.
     Scanner,
+    /// Chosen when the model is built ([`crate::workflow::posture::auto_anchor`]):
+    /// the sacrum when every scan sees all of it, else the middle one of the
+    /// vertebrae every scan sees whole, else the largest such bone, else the
+    /// whole image. A request only: the model records what was chosen.
+    Auto,
 }
 
 impl Anchor {
@@ -168,16 +173,18 @@ impl Anchor {
             Anchor::Structure(s) => s.clone(),
             Anchor::Image => "the whole image (rigid)".into(),
             Anchor::Scanner => "the scanner's frame (none)".into(),
+            Anchor::Auto => "chosen when built".into(),
         }
     }
 
-    /// `structure:NAME`, `image` or `scanner`, the way the CLI and the MCP
-    /// tool take it.
+    /// `structure:NAME`, `image`, `scanner` or `auto`, the way the CLI and
+    /// the MCP tool take it.
     pub fn parse(s: &str) -> Anchor {
         let t = s.trim();
         match t.to_ascii_lowercase().as_str() {
             "image" | "whole image" => Anchor::Image,
             "scanner" | "none" => Anchor::Scanner,
+            "auto" | "" => Anchor::Auto,
             _ => Anchor::Structure(t.strip_prefix("structure:").unwrap_or(t).trim().to_string()),
         }
     }
@@ -187,6 +194,7 @@ impl Anchor {
             Anchor::Structure(s) => format!("structure:{s}"),
             Anchor::Image => "image".into(),
             Anchor::Scanner => "scanner".into(),
+            Anchor::Auto => "auto".into(),
         }
     }
 }
@@ -464,6 +472,7 @@ mod tests {
             Anchor::Structure("sacrum".into()),
             Anchor::Image,
             Anchor::Scanner,
+            Anchor::Auto,
         ] {
             assert_eq!(Anchor::parse(&a.key()), a);
         }

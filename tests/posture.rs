@@ -1082,3 +1082,167 @@ fn the_gif_carries_the_scene_the_field_and_any_one_view() {
     assert!(none.is_err(), "a 3D film with no surfaces");
     assert!(!dir.join("no_scene.gif").exists(), "and no file left");
 }
+
+/// *Auto* on the phantom: no sacrum and no vertebra, so one of the two
+/// bones every scan sees whole is held still; whichever it is, the joint
+/// between the two reads the hinge's angle, and the verdict is not poor.
+#[test]
+fn the_auto_anchor_holds_a_bone_both_scans_see_whole() {
+    let params = ArticulatedParams::default();
+    let pair = gen_test_data::articulated_pair(&params);
+    let mut req = request(Mode::Diffeomorphic);
+    req.anchor = Anchor::Auto;
+    let o = build(&states(&pair), &req, &Progress::default()).expect("the model builds");
+    match &o.model.anchor {
+        Anchor::Structure(s) => assert!(s.starts_with("BONE_"), "anchor {s}"),
+        a => panic!("Auto resolved to {a:?}"),
+    }
+    assert!(
+        o.model
+            .provenance
+            .iter()
+            .any(|l| l.starts_with("anchor chosen")),
+        "{:?}",
+        o.model.provenance
+    );
+    let joint = o.tables.joints.first().expect("the two bones make a joint");
+    let end = joint.at.last().unwrap();
+    assert!(
+        (end[0].abs() - params.angle_deg).abs() < 2.0,
+        "joint {end:?}"
+    );
+    let v = o.tables.verdict();
+    assert_ne!(v.level, posture::measure::Level::Poor, "{v:?}");
+}
+
+/// The residual on top of the bones keeps the path a deformation: nothing
+/// folds, the way back still finds the way there, the bones stay rigid, and
+/// the organ that grows lands on its contour no worse than without it.
+#[test]
+fn the_residual_does_not_fold_and_keeps_the_bones() {
+    let params = ArticulatedParams::default();
+    let pair = gen_test_data::articulated_pair(&params);
+    let plain = run(&pair, Mode::Diffeomorphic);
+    let mut req = request(Mode::Diffeomorphic);
+    req.residual = Some(rust_dicom_station::workflow::posture::default_residual());
+    let o = build(&states(&pair), &req, &Progress::default()).expect("the model builds");
+    let m = &o.tables.model;
+    assert!(m.jacobian_min > 0.0, "Jacobian {}", m.jacobian_min);
+    assert_eq!(m.folded_fraction, 0.0);
+    assert!(m.inverse_mm[1][1] < 1.0, "inverse {:?}", m.inverse_mm);
+    assert!(
+        m.provenance
+            .iter()
+            .any(|l| l.contains("within the part both scans cover")),
+        "{:?}",
+        m.provenance
+    );
+    let lower = body(&o, "BONE_LOWER");
+    assert!(lower.stretch_p95 < 0.05, "stretch {}", lower.stretch_p95);
+    let organ = |o: &PostureOutcome| {
+        o.tables
+            .structures
+            .iter()
+            .find(|s| s.name == "ORGAN")
+            .and_then(|s| s.check)
+            .map(|c| c.dice)
+            .expect("the organ is checked")
+    };
+    assert!(
+        organ(&o) > organ(&plain) - 0.02,
+        "organ {} with the residual, {} without",
+        organ(&o),
+        organ(&plain)
+    );
+}
+
+/// *Patient only*: outside each state's EXTERNAL structure is air in the
+/// images the model draws, inside it the scan's own values; without an
+/// EXTERNAL structure the scan is kept as it is. The model's images are
+/// these.
+#[test]
+fn patient_only_clears_what_lies_outside_the_body() {
+    use rust_dicom_station::workflow::posture::{patient_only, state_images};
+    let mut pair = gen_test_data::articulated_pair(&ArticulatedParams::default());
+    // Something that is not the patient: a couch under it.
+    let v = Arc::make_mut(&mut pair[0].volume);
+    let [nx, ny, nz] = v.dims;
+    for k in 0..nz {
+        for i in 0..nx {
+            v.data[(k * ny + (ny - 2)) * nx + i] = 300;
+        }
+    }
+    let only = patient_only(&pair[0], None).expect("the phantom has a BODY");
+    let couch = (0..nx).map(|i| only.data[((nz / 2) * ny + (ny - 2)) * nx + i]);
+    assert!(couch.into_iter().all(|x| x <= -1000), "the couch is left");
+    let centre = ((nz / 2) * ny + ny / 2) * nx + nx / 2;
+    assert_eq!(only.data[centre], pair[0].volume.data[centre]);
+    let images = state_images(&states(&pair), true);
+    assert!(!Arc::ptr_eq(&images[0], &pair[0].volume));
+    let o = run(&pair, Mode::Diffeomorphic);
+    assert_eq!(o.images.len(), 2);
+    assert!(
+        o.model
+            .provenance
+            .iter()
+            .any(|l| l.starts_with("patient only")),
+        "{:?}",
+        o.model.provenance
+    );
+    // Without a structure set there is nothing to cut by.
+    let mut bare = pair[1].clone();
+    bare.structure_sets.clear();
+    assert!(patient_only(&bare, None).is_none());
+}
+
+/// Another image of the first position carried along the path: laid in
+/// the scanner's frame, the first state's own image comes back as it is
+/// on its grid, and rendered forward to the end it is the model's own
+/// forward image there.
+#[test]
+fn an_image_of_the_first_position_is_carried_like_its_own() {
+    use rust_dicom_station::workflow::posture::{carry_image, CarryAlign};
+    let pair = gen_test_data::articulated_pair(&ArticulatedParams::default());
+    let o = run(&pair, Mode::Diffeomorphic);
+    let (v, line) = carry_image(
+        &o.images[0],
+        &o.images[0],
+        &CarryAlign::Scanner,
+        2.0,
+        &Progress::default(),
+    )
+    .expect("carried");
+    assert!(line.contains("scanner"), "{line}");
+    assert_eq!(v.data, o.images[0].data);
+    let mut images = o.images.clone();
+    images[0] = Arc::new(v);
+    let frame = o.model.frame(1.0);
+    let a = apply::render(
+        &o.model,
+        &images,
+        &frame,
+        apply::Show::StartForward,
+        &o.model.grid,
+    )
+    .unwrap();
+    let b = apply::render(
+        &o.model,
+        &o.images,
+        &frame,
+        apply::Show::StartForward,
+        &o.model.grid,
+    )
+    .unwrap();
+    assert_eq!(a.data, b.data);
+    // Two frames of reference cannot be laid in the scanner's.
+    let mut other = (*o.images[0]).clone();
+    other.frame_of_reference_uid = "1.2.3".into();
+    assert!(carry_image(
+        &o.images[0],
+        &other,
+        &CarryAlign::Scanner,
+        2.0,
+        &Progress::default()
+    )
+    .is_err());
+}
