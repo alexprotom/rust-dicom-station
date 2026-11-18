@@ -210,16 +210,60 @@ fn budget_for(free: Option<u64>) -> usize {
 }
 
 /// Bytes the system could give this process now (`MemAvailable` on Linux
-/// and Android); `None` where it does not say.
+/// and Android, `ullAvailPhys` of `GlobalMemoryStatusEx` on Windows);
+/// `None` where it does not say.
 pub fn available_memory() -> Option<u64> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(windows)]
+    {
+        windows_available_phys()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
     {
         None
     }
+}
+
+/// Physical memory free now on Windows, from kernel32's
+/// `GlobalMemoryStatusEx`: declared here rather than through a bindings
+/// crate, for the one call. The struct is `MEMORYSTATUSEX` as the SDK
+/// lays it out; `dwLength` must hold its size before the call.
+#[cfg(windows)]
+fn windows_available_phys() -> Option<u64> {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut m = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    // SAFETY: `m` is a live, correctly sized MEMORYSTATUSEX with its length
+    // set, which is all the call reads; it writes only into `m`.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut m) };
+    (ok != 0 && m.avail_phys > 0).then_some(m.avail_phys)
 }
 
 /// `MemAvailable` of a `/proc/meminfo` text, in bytes. Only Linux and
@@ -912,6 +956,15 @@ mod tests {
                        MemAvailable:    3145728 kB\nBuffers:            1024 kB\n";
         assert_eq!(mem_available(meminfo), Some(3 << 30));
         assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
+    }
+
+    /// Windows says how much memory is free: something, and no more than
+    /// a machine could have.
+    #[cfg(windows)]
+    #[test]
+    fn windows_reports_free_memory() {
+        let free = available_memory().expect("GlobalMemoryStatusEx");
+        assert!(free > 16 << 20 && free < 1 << 50, "{free}");
     }
 
     /// A fake model with four classes whose logits depend on position and

@@ -103,13 +103,17 @@ fn the_configuration_rules_are_enforced() {
     });
     let e = fail(&mut other, "open_dataset", json!({"path": folder}));
     assert!(e.contains("outside"), "{e}");
-    // Too many datasets.
+    // Too many datasets. An empty model folder of its own, so the refused
+    // download below does not depend on what this machine has downloaded.
+    let no_models = dir.join("no-models");
+    std::fs::create_dir_all(&no_models).unwrap();
     let mut one = Core::new(Config {
         roots: vec![dir.clone()],
         max_open_datasets: 1,
         phi_policy: PhiPolicy::Redact,
         device: "cpu".into(),
         audit_log: false,
+        models_dir: Some(no_models),
         ..Config::default()
     });
     call(&mut one, "open_dataset", json!({"path": folder}));

@@ -687,9 +687,18 @@ impl ViewerApp {
         if series.len() != idxs.len() {
             return;
         }
+        // The phase on screen is in memory already: its entry is that
+        // volume, with its series' own default window, rather than a second
+        // read of the same files. Not in the posture model's workspace,
+        // whose volume is the model's picture rather than the series'.
+        let seed = idxs
+            .iter()
+            .position(|i| *i == study.active_series)
+            .filter(|_| study.has_volume() && !self.posture_owns(slot))
+            .map(|at| (at, study.volume.clone(), self.series_window[slot]));
         let progress = Arc::new(Progress::default());
         self.play.job = Some(Job::spawn(progress, move |p| {
-            (slot, read_phases(&group, &series, &labels, p))
+            (slot, read_phases(&group, &series, &labels, seed, p))
         }));
     }
 
@@ -779,11 +788,14 @@ pub(super) fn human_bytes(n: usize) -> String {
     }
 }
 
-/// Read every phase, in order, reporting where it is.
+/// Read every phase, in order, reporting where it is. `seed` is a phase in
+/// memory already - (its position, its volume, its series default window) -
+/// which is taken as it is instead of being read again.
 fn read_phases(
     group: &str,
     series: &[crate::loader::SeriesInfo],
     labels: &[String],
+    seed: Option<(usize, Arc<Volume>, (f32, f32))>,
     p: &Progress,
 ) -> Result<PhaseCache> {
     let mut cache = PhaseCache {
@@ -803,9 +815,15 @@ fn read_phases(
             i + 1,
             series.len()
         ));
-        let (vol, window, _) = crate::loader::load_series_volume(se, p)?;
+        let (vol, window) = match &seed {
+            Some((at, vol, window)) if *at == i => (vol.clone(), *window),
+            _ => {
+                let (vol, window, _) = crate::loader::load_series_volume(se, p)?;
+                (Arc::new(vol), window)
+            }
+        };
         cache.uids.push(se.uid.clone());
-        cache.vols.push(Arc::new(vol));
+        cache.vols.push(vol);
         cache.windows.push(window);
     }
     Ok(cache)

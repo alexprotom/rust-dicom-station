@@ -318,6 +318,17 @@ impl ViewerApp {
         if run {
             self.start_autoseg();
         }
+        // *Add* of the last result, its structures still being made on a
+        // worker: the same progress row, whose Cancel files nothing.
+        if let Some(job) = self
+            .autoseg_apply_job
+            .as_ref()
+            .filter(|_| self.autoseg_apply_slot == self.auto.slot)
+        {
+            ui.separator();
+            let cancel = progress_row(ui, &job.progress);
+            cancel_if(cancel, &self.autoseg_apply_job);
+        }
         // A finished run waits here for its structures to be picked. It
         // unfolds when the run lands, and goes once they are added.
         if self.autoseg_pending.is_some() {
@@ -339,6 +350,8 @@ impl ViewerApp {
             return;
         };
         let sets = self.structure_set_labels(slot);
+        // One *Add* at a time: the previous result is still being filed.
+        let adding = self.autoseg_apply_job.is_some();
         let Some(p) = &mut self.autoseg_pending else {
             return;
         };
@@ -457,7 +470,10 @@ impl ViewerApp {
                 OutputKind::Structures => format!("Add {n_sel} structure(s)"),
                 OutputKind::Both => format!("Add {n_sel} segment(s) and structure(s)"),
             };
-            if ui.add_enabled(n_sel > 0, egui::Button::new(verb)).clicked() {
+            if ui
+                .add_enabled(n_sel > 0 && !adding, egui::Button::new(verb))
+                .clicked()
+            {
                 apply_clicked = true;
             }
             if ui.button("Discard").clicked() {

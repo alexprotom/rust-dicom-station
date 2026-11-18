@@ -654,7 +654,8 @@ src/
                     loading, workspace merging, safe DICOM element helpers         DICOM
   dicomfile.rs      the one way a file is opened: the standard reader, plus
                     the encoding sniffer for data sets written with no file
-                    meta group (no preamble, no DICM)                            DICOM
+                    meta group (no preamble, no DICM), which reads such a
+                    file only as far as asked (headers, not pixels)              DICOM
   imginfo.rs        the geometry, sampling and acquisition of one series, read
                     back out of its slice headers: spacing, thickness, gaps,
                     uneven positions, tilt, frame of reference, kV / mAs / kernel,
@@ -1285,13 +1286,27 @@ asked by the same two rows (`ToolOutput`, `scope_row`, `output_rows`):
 or both - and, when the displayed series is a phase of a 4D group, *Run
 on* - that series or every phase. A run on the displayed series lands
 through `land_masks`; a run over the phases goes through `run_on_phases`
-on the worker (each phase loaded in turn, the displayed one from memory,
-the engine given a `Progress` whose `set_outer` window and message prefix
-make it one slice of the bar) and lands through `land_phases`, the same
-landing *Copy to each phase* uses. Both hand back `(PhaseInfo, R)` pairs,
-one per volume the engine saw, so a tool's `on_*_done` tells the two
-apart by whether the info names a group. Slice propagation keeps its
-single-series loop.
+on the worker (each phase loaded in turn unless it is in memory - the
+displayed one, or any the 4D player's `PhaseCache` holds while
+`phase_cache_ready` says it still matches the group, mapped by series UID
+in `phase_inputs`; the engine given a `Progress` whose `set_outer` window
+and message prefix make it one slice of the bar) and lands through
+`land_phases`, the same landing *Copy to each phase* uses. Both hand back
+`(PhaseInfo, R)` pairs, one per volume the engine saw, so a tool's
+`on_*_done` tells the two apart by whether the info names a group. Slice
+propagation keeps its single-series loop. Landing consumes the masks:
+contours are traced from them as they are (`segmentation::masks_to_rois`,
+`PhaseCopy::prepare`), then the masks are moved into a segmentation series
+on their own lattice (resampled only onto one that differs, by
+`workflow::group::file_prepared`) or dropped when only contours are filed.
+The auto-segmentation *Add* does that preparing on a worker
+(`seg.rs::prepare_autoseg`, `autoseg_apply_job`, with Cancel) and files
+through `land_prepared_masks` / `land_prepared_phases` when it lands,
+after checking the image again with `workflow::group::shows_image` - the
+series UID, the lattice and the frame of reference, not the size alone,
+which two phases of a 4DCT share - and finding the chosen structure set by
+its SOP Instance UID. The playback cache is seeded with the displayed
+phase (its volume and series default window) instead of reading it twice.
 
 Not everything is a window. Inserting, editing and combining structures
 are sections of the **Structure editor** module (`app/struct_tools.rs`,

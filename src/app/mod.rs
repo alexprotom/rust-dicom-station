@@ -987,6 +987,11 @@ pub struct ViewerApp {
     /// The results window's last TG-263 naming choice, carried to the next
     /// run.
     autoseg_pending_tg263: bool,
+    /// *Add* of a waiting result: the masks extracted and the contours
+    /// traced on a worker, filed when it lands (`seg::AutosegApply`); the
+    /// slot it files on.
+    autoseg_apply_job: Option<SegJob<seg::AutosegApply>>,
+    autoseg_apply_slot: usize,
 
     // Synthetic CT (see `sct`, `synth`): the run and the evaluation, one at
     // a time, on the workspace of the Image synthesis module.
@@ -1428,6 +1433,8 @@ impl ViewerApp {
             autoseg_dialog: None,
             autoseg_pending: None,
             autoseg_pending_tg263: false,
+            autoseg_apply_job: None,
+            autoseg_apply_slot: 0,
             body_job: None,
             body_slot: 0,
             body_dialog: None,

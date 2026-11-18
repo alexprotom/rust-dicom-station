@@ -18,6 +18,11 @@
 //! crops it, and the network sees indices in the prepared grid.
 //! [`prompt_from_crosshair`] does that mapping and is the only place it
 //! happens.
+//!
+//! The prepared image depends on the volume alone, not on the prompt, so the
+//! window keeps the last one ([`KeptPrep`]) and a second point, box or text
+//! on the same scan starts at the network. A run over the phases of a 4D
+//! group prepares each phase afresh and keeps none of them.
 
 use crate::models::{self, Engine as ModelsEngine};
 use crate::nn::device::DevicePref;
@@ -53,6 +58,60 @@ pub(super) struct SegVolDialog {
     /// Where the mask goes, and whether every phase of the displayed
     /// series' 4D group is prompted at the same spot.
     pub output: ToolOutput,
+    /// The prepared image of the volume last prompted, for the next prompt.
+    pub prep: Arc<KeptPrep>,
+}
+
+/// The prepared image of one volume, kept from one prompt to the next.
+///
+/// The volume is told by its allocation, held weakly as the views' prepared
+/// structures hold theirs (`RoiPreps`): a volume behind an `Arc` is never
+/// written in place while anything else holds it (`Arc::make_mut` clones it
+/// or moves it out, either way to a new address, and dissociates this weak
+/// handle), and the handle keeps the address from being reused while it
+/// lives. So the same address is the same voxels and the same geometry,
+/// whatever the dimensions say - and the volume itself is never kept alive
+/// for the sake of its image.
+#[derive(Default)]
+pub(super) struct KeptPrep(std::sync::Mutex<Option<(std::sync::Weak<Volume>, Arc<Prepared>)>>);
+
+impl KeptPrep {
+    /// Largest image kept between prompts (512x512x300 voxels cropped to
+    /// nothing is 300 MiB); a bigger one is prepared afresh for each prompt.
+    const BYTES: usize = 512 << 20;
+
+    fn is_for(kept: &(std::sync::Weak<Volume>, Arc<Prepared>), vol: &Arc<Volume>) -> bool {
+        kept.0.strong_count() > 0 && std::ptr::eq(kept.0.as_ptr(), Arc::as_ptr(vol))
+    }
+
+    /// The kept image when it is `vol`'s; otherwise `vol` prepared now, and
+    /// kept in its place when it fits the budget.
+    fn get_or_prepare(&self, vol: &Arc<Volume>) -> Arc<Prepared> {
+        let mut kept = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(k) = kept.as_ref().filter(|k| Self::is_for(k, vol)) {
+            return k.1.clone();
+        }
+        // The image of another volume goes first: two of them resident at
+        // once is what a machine short of memory cannot afford.
+        *kept = None;
+        let prep = Arc::new(preprocess::prepare(vol));
+        if prep.bytes() <= Self::BYTES {
+            *kept = Some((Arc::downgrade(vol), prep.clone()));
+        }
+        prep
+    }
+
+    /// Let go of the kept image unless it is `current`'s - drawn with the
+    /// section, so a scan replaced or closed does not hold its image until
+    /// the next prompt. Never waits on a run that is preparing one.
+    fn retain_for(&self, current: Option<&Arc<Volume>>) {
+        if let Ok(mut kept) = self.0.try_lock() {
+            let keep = matches!((kept.as_ref(), current), (Some(k), Some(v)) if Self::is_for(k, v));
+            if !keep {
+                *kept = None;
+            }
+        }
+    }
 }
 
 /// What a finished run hands back.
@@ -159,6 +218,7 @@ impl ViewerApp {
                         set: self.default_set_target(slot),
                         ..ToolOutput::default()
                     },
+                    prep: Arc::default(),
                 });
             }
         }
@@ -195,6 +255,7 @@ impl ViewerApp {
             },
             model: self.segvol_model.clone(),
         };
+        let kept = d.prep.clone();
         let phases = if d.output.phases {
             match self.phase_inputs(slot) {
                 Ok(p) => Some(p),
@@ -216,9 +277,12 @@ impl ViewerApp {
                     // The same spot in the patient, on this phase's lattice.
                     let mut r = req.clone();
                     r.cursor = vol.patient_to_voxel(req.patient);
-                    run_segvol(vol, &r, p)
+                    // Each phase is prepared once and let go: none of them
+                    // is the next prompt's.
+                    run_segvol(vol, || Arc::new(preprocess::prepare(vol)), &r, p)
                 }),
-                None => run_segvol(&volume, &req, p).map(|r| vec![(displayed, r)]),
+                None => run_segvol(&volume, || kept.get_or_prepare(&volume), &req, p)
+                    .map(|r| vec![(displayed, r)]),
             };
             (slot, out)
         }));
@@ -286,6 +350,10 @@ impl ViewerApp {
     /// progress row.
     pub(super) fn segvol_section(&mut self, ui: &mut egui::Ui) {
         self.open_segvol_dialog(self.auto.slot);
+        if let Some(d) = &self.segvol_dialog {
+            let current = self.slots[d.slot].study.as_ref().map(|s| &s.volume);
+            d.prep.retain_for(current);
+        }
         let sets = self.structure_set_labels(self.auto.slot);
         let group = self.displayed_group(self.auto.slot);
         let Some(d) = &mut self.segvol_dialog else {
@@ -430,15 +498,18 @@ impl ViewerApp {
 }
 
 /// The worker body. Kept a free function so the closure captures no `&self`.
+/// `prepare` hands over the volume's prepared image: kept from an earlier
+/// prompt, or made now.
 fn run_segvol(
     volume: &Volume,
+    prepare: impl FnOnce() -> Arc<Prepared>,
     req: &SegVolRequest,
     progress: &Progress,
 ) -> anyhow::Result<SegVolResult> {
     use anyhow::{bail, Context};
 
     let t0 = std::time::Instant::now();
-    let prep = preprocess::prepare(volume);
+    let prep = prepare();
     if progress.cancelled() {
         bail!(CANCELLED);
     }
@@ -576,5 +647,37 @@ mod tests {
         for (a, c) in inside.iter().enumerate() {
             assert!(*c >= 0.0 && *c < prep.dims[a] as f32, "{inside:?}");
         }
+    }
+
+    #[test]
+    fn the_prepared_image_is_kept_for_the_same_volume_and_only_for_it() {
+        let kept = KeptPrep::default();
+        let mut vol = axial([20, 16, 8]);
+        vol.data[5] = 900;
+        let vol = Arc::new(vol);
+        let first = kept.get_or_prepare(&vol);
+        // a second prompt on the same volume gets the same image back
+        assert!(Arc::ptr_eq(&first, &kept.get_or_prepare(&vol)));
+        // the same voxels at another address are another volume: told by
+        // identity, never by dimensions or content
+        let copy = Arc::new((*vol).clone());
+        let other = kept.get_or_prepare(&copy);
+        assert!(!Arc::ptr_eq(&first, &other));
+        // which replaced the first: back on `vol`, it is prepared afresh
+        assert!(!Arc::ptr_eq(&first, &kept.get_or_prepare(&vol)));
+        // a volume written in place moves (`make_mut`), so its old image
+        // is not handed out for the new voxels
+        let mut edited = vol.clone();
+        let before = kept.get_or_prepare(&edited);
+        Arc::make_mut(&mut edited).data[6] = -500;
+        assert!(!Arc::ptr_eq(&before, &kept.get_or_prepare(&edited)));
+        // the section lets go of an image whose volume is not on screen
+        kept.retain_for(Some(&vol));
+        assert!(kept.0.lock().unwrap().is_none());
+        let _ = kept.get_or_prepare(&vol);
+        kept.retain_for(Some(&vol));
+        assert!(kept.0.lock().unwrap().is_some());
+        kept.retain_for(None);
+        assert!(kept.0.lock().unwrap().is_none());
     }
 }

@@ -190,26 +190,8 @@ pub fn land_items_as(
     if items.iter().all(|it| it.voxels == 0) {
         return None;
     }
-    // The series the set is bound to: the study's own entry when it lists
-    // it (a phase does), else one that carries just the identity.
-    let series = study
-        .series
-        .iter()
-        .find(|s| s.uid == series_uid)
-        .cloned()
-        .unwrap_or_else(|| SeriesInfo {
-            uid: series_uid.to_string(),
-            study_uid: study_uid.to_string(),
-            ..SeriesInfo::default()
-        });
+    let (series, set) = phase_target(study, series_uid, study_uid);
     let types = vec![roi_type.to_string(); items.len()];
-    // A set that is locked (approved) is not written into: the structures
-    // go into a new set beside it.
-    let locked = study
-        .structure_sets
-        .iter()
-        .rposition(|s| s.referenced_series_uid == series_uid)
-        .is_some_and(|i| study.structure_sets[i].locked);
     let filed = session::file_items(
         study,
         &series,
@@ -218,11 +200,7 @@ pub fn land_items_as(
         &types,
         &session::Filing {
             kind: session::OutputKind::Structures,
-            set: if locked {
-                session::SetChoice::New
-            } else {
-                session::SetChoice::Own
-            },
+            set,
             set_label: new_set_label,
             clash: Some(session::NameClash::Counter),
             taken: None,
@@ -341,17 +319,195 @@ pub struct PhaseCopy {
 }
 
 impl PhaseCopy {
-    /// The copies as a fresh segmentation series bound to the phase.
-    pub fn seg_series(&self, group_name: &str) -> SegSeries {
+    /// The copies as a fresh segmentation series bound to the phase. The
+    /// segments are moved into it, not copied.
+    pub fn seg_series(self, group_name: &str) -> SegSeries {
         let mut series = SegSeries::new(
             format!("{} {}", group_name, self.label),
-            self.grid.clone(),
-            self.series_uid.clone(),
-            self.study_uid.clone(),
+            self.grid,
+            self.series_uid,
+            self.study_uid,
         );
-        series.segs = self.segs.clone();
+        series.segs = self.segs;
         series
     }
+
+    /// Make the copies ready to file as `kind` says: the contours traced
+    /// from them (borrowed, every ROI with the RT ROI Interpreted Type
+    /// `roi_type`) when structures are filed, and the segmentations
+    /// themselves kept when segments are - dropped here otherwise, so a run
+    /// over many phases that wants contours only holds one phase's masks at
+    /// a time. Heavy enough for a worker thread; [`file_prepared`] then
+    /// files the result.
+    pub fn prepare(mut self, kind: session::OutputKind, roi_type: &str) -> PreparedPhase {
+        let rois = if kind.structures() {
+            let mut rois = crate::segmentation::masks_to_rois(&self.segs, &self.grid, roi_type);
+            rois.retain(|r| !r.contours.is_empty());
+            rois
+        } else {
+            Vec::new()
+        };
+        if !kind.segments() {
+            self.segs = Vec::new();
+        }
+        PreparedPhase { copy: self, rois }
+    }
+}
+
+/// One phase's copies ready to file ([`PhaseCopy::prepare`]): the segments
+/// to file (in `copy.segs`, empty when none are), and the contours traced
+/// from them (empty when no structures are filed).
+pub struct PreparedPhase {
+    pub copy: PhaseCopy,
+    pub rois: Vec<crate::rtstruct::Roi>,
+}
+
+impl PreparedPhase {
+    /// Nothing to file on this phase.
+    pub fn is_empty(&self) -> bool {
+        self.rois.is_empty() && self.copy.segs.is_empty()
+    }
+}
+
+/// File one prepared phase on `study`: the contours into the structure set
+/// drawn on the phase (a new set `<group> <phase>` when it has none, or
+/// when its own is locked), the segments into the segmentation series bound
+/// to it (a new one `<group> <phase>` when there is none). A segment is
+/// moved into a series on its own lattice and resampled only onto one that
+/// differs. Returns how many structures and segments were filed; the
+/// caller has checked that the phase's series is in the study.
+pub fn file_prepared(study: &mut LoadedStudy, group_name: &str, ph: PreparedPhase) -> usize {
+    let PreparedPhase { copy, rois } = ph;
+    let mut landed = 0;
+    if !rois.is_empty() {
+        if let Some((_, names)) = land_rois(
+            study,
+            &copy.series_uid,
+            &copy.study_uid,
+            &copy.grid,
+            rois,
+            &format!("{group_name} {}", copy.label),
+        ) {
+            landed += names.len();
+        }
+    }
+    if copy.segs.is_empty() {
+        return landed;
+    }
+    landed += copy.segs.len();
+    let existing = study
+        .seg_series
+        .iter()
+        .rposition(|sr| sr.referenced_series_uid == copy.series_uid);
+    match existing {
+        Some(i) => {
+            let sr = &mut study.seg_series[i];
+            for seg in copy.segs {
+                if sr.grid.matches(&copy.grid) {
+                    sr.segs.push(seg);
+                } else {
+                    let mask = crate::dicomseg::resample_mask(&seg.mask, &copy.grid, &sr.grid);
+                    sr.segs.push(Segmentation::from_mask(
+                        seg.name,
+                        seg.color,
+                        sr.grid.dims,
+                        mask,
+                    ));
+                }
+            }
+        }
+        None => study.seg_series.push(copy.seg_series(group_name)),
+    }
+    landed
+}
+
+/// [`land_in_structure_set_as`] for contours traced already
+/// ([`PhaseCopy::prepare`]): the same set, the same rule for a locked one,
+/// the same names; each ROI keeps the RT ROI Interpreted Type it was traced
+/// with.
+pub fn land_rois(
+    study: &mut LoadedStudy,
+    series_uid: &str,
+    study_uid: &str,
+    grid: &Grid,
+    rois: Vec<crate::rtstruct::Roi>,
+    new_set_label: &str,
+) -> Option<(String, Vec<String>)> {
+    if rois.iter().all(|r| r.contours.is_empty()) {
+        return None;
+    }
+    let (series, set) = phase_target(study, series_uid, study_uid);
+    let filed = session::file_rois(
+        study,
+        &series,
+        grid,
+        rois,
+        &session::Filing {
+            kind: session::OutputKind::Structures,
+            set,
+            set_label: new_set_label,
+            clash: Some(session::NameClash::Counter),
+            taken: None,
+        },
+    )
+    .ok()?;
+    let names: Vec<String> = filed.names.into_iter().flatten().collect();
+    if names.is_empty() {
+        return None;
+    }
+    let set = filed.set?;
+    Some((study.structure_sets[set].label.clone(), names))
+}
+
+/// The series a phase's structures are bound to - the study's own entry
+/// when it lists it (a phase does), else one that carries just the
+/// identity - and the set they go into: the phase's own, unless that one is
+/// locked (approved), when they go into a new set beside it.
+fn phase_target(
+    study: &LoadedStudy,
+    series_uid: &str,
+    study_uid: &str,
+) -> (SeriesInfo, session::SetChoice) {
+    let series = study
+        .series
+        .iter()
+        .find(|s| s.uid == series_uid)
+        .cloned()
+        .unwrap_or_else(|| SeriesInfo {
+            uid: series_uid.to_string(),
+            study_uid: study_uid.to_string(),
+            ..SeriesInfo::default()
+        });
+    let locked = study
+        .structure_sets
+        .iter()
+        .rposition(|s| s.referenced_series_uid == series_uid)
+        .is_some_and(|i| study.structure_sets[i].locked);
+    let set = if locked {
+        session::SetChoice::New
+    } else {
+        session::SetChoice::Own
+    };
+    (series, set)
+}
+
+/// Is `study` still showing the image a result was computed on: the
+/// series `series_uid`, on the lattice `grid` (dimensions, spacing, origin,
+/// axes and frame of reference)? Two phases of one 4DCT share their
+/// dimensions and their frame of reference, so a check on those alone
+/// would let a result made on one phase land on the phase stepped to
+/// meanwhile; the series UID tells them apart.
+pub fn shows_image(study: &LoadedStudy, series_uid: &str, grid: &Grid) -> bool {
+    // `has_volume` first: an empty volume has dims [0, 0, 0] and a blank
+    // frame of reference, which a stale result's own zeros would match.
+    study.has_volume()
+        && study
+            .series
+            .get(study.active_series)
+            .map_or("", |s| s.uid.as_str())
+            == series_uid
+        && study.volume.frame_of_reference_uid == grid.frame_of_reference_uid
+        && study.volume.grid().matches(grid)
 }
 
 /// Carry `structures` onto every phase of a group without registering

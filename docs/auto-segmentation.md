@@ -150,18 +150,30 @@ until *Add*:
   models then reads as one.
 
 **Add …** files the checked structures that way and **Discard** drops the
-run; either way the fold goes, until the next run brings it back.
+run; either way the fold goes, until the next run brings it back. The
+masks are extracted and their contours traced in the background (one scan
+of each label map fills every checked structure's mask), under the same
+progress row with its **Cancel**, which files nothing; the interface stays
+live meanwhile, and the result is filed when that work lands. With
+*RT structures* only, the masks are dropped as soon as they are traced -
+on a 4D group one phase at a time - so only the contours are held.
 
 Materialize only what you need: every mask is a full-volume voxel map
 (≈ 35 MB at 512 × 512 × 133). If the workspace is switched or modified
-during a run, the result is discarded with a message rather than applied
-to the wrong volume.
+during a run, or between the run and *Add* landing, the result is
+discarded with a message rather than applied to the wrong volume - checked
+by the series it was made on, its lattice and its frame of reference, so a
+phase of the same size stepped to meanwhile (the 4D player, the tree) is
+not taken for it; a structure set picked for the contours is found again
+by its identity, and a locked one is not written into.
 
 ### Running on every phase of a 4D group
 
 With *Run on ▸ every phase of <group>*, the run visits the phases in
-temporal order - the displayed one from memory, the others loaded from
-their files - and runs the same model on each; the progress row reads
+temporal order - the displayed one from memory, so too every phase the 4D
+player holds (a group just played is segmented with no series read
+again), the others loaded from their files - and runs the same model on
+each; the progress row reads
 `Phase 30% (4/10): ...` and the bar covers the whole group. One *Results*
 fold then lists **every class any phase found**, with its mean volume
 over the phases that have it, and the checked classes are filed **on each
@@ -285,7 +297,8 @@ resolved - as a `PlainConvUNet` or a `ResidualEncoderUNet`.
    a ring buffer along the leading axis, and for models with many classes
    at fine resolution also split into strips across the second axis, so its
    memory stays under 3 GB whatever the scan - or under a quarter of the
-   memory the system has free, when that is less (a tablet: the 3 mm
+   memory the system has free, when that is less (read on Linux, Android
+   and Windows; a tablet, or a busy workstation: the 3 mm
    `total` model then runs in two or three strips, a little slower, with
    the same labels).
 6. **Label merging** of sub-models into the task's table, later sub-models
