@@ -575,8 +575,8 @@ src/
                       or CPU) or key frames, the exact frame on rest;
                       PlayTarget::Model; the Jacobian wash and the dose
                       carried for display; the offer of an automatic model
-                      for a state lacking structures; its own recorder; the
-                      exports. A tool window by decision, not a module
+                      for a state lacking structures; Save GIF on its bar;
+                      the exports. A tool window by decision, not a module
     posture_table.rs  its four folds (States, Structures, Bones and joints,
                       Model) following the slider, and the curves of a row
                       in the chart pane (ChartSource::Posture)

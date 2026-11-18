@@ -446,9 +446,7 @@ impl ViewerApp {
         // a run that advanced in between would be a frame the recording
         // never saw: the file would skip. Playing is a little slower while
         // recording, and the recording is complete.
-        if self.rec.as_ref().is_some_and(|r| r.pending)
-            || self.posture.rec.as_ref().is_some_and(|r| r.pending)
-        {
+        if self.rec.as_ref().is_some_and(|r| r.pending) {
             ctx.request_repaint();
             return;
         }

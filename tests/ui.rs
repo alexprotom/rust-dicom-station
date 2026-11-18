@@ -1502,16 +1502,17 @@ fn restoring_radiographs_listed_one_by_one_is_one_load() {
 }
 
 /// *Save GIF* in the posture window: once the model is built the button is
-/// on the bar, and its menu lists the five views - *All views* (the
-/// default), *Axial*, *Sagittal*, *Coronal*, *3D* - with the pane last
-/// clicked chosen (a click in the axial pane makes it *Axial*) and any
-/// other picked in the list; the *Vector field* option, the width and the
-/// way back. The arrow spacing is under the window's *Display* menu, and
-/// in the main viewer's *Settings ▸ Viewer*; nothing in either is
-/// unnamed. (The file
-/// dialog is the operating system's and is not opened.)
+/// on the bottom bar, on the row of the time slider, where a recorder
+/// button used to be (there is none now), and its menu lists the five
+/// views - *All views* (the default), *Axial*, *Sagittal*, *Coronal*, *3D* -
+/// any of them picked in the list; the *Vector field* option, the width and
+/// the way back. What it saves is what its menu says: a click in a pane
+/// (here the axial one) leaves *All views* as it was. The arrow spacing is
+/// under the window's *Display* menu, and in the main viewer's *Settings ▸
+/// Viewer*; nothing in either is unnamed. (The file dialog is the operating
+/// system's and is not opened.)
 #[test]
-fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
+fn the_posture_window_saves_a_gif_of_all_views_or_the_one_picked() {
     let _turn = turn();
     let [a, b] = rust_dicom_station::gen_test_data::generate_articulated(
         &common::target_dir("ui-test-posture-gif"),
@@ -1556,6 +1557,29 @@ fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
         .unwrap();
     assert!(ui.settle(SETTLE), "the model did not build");
     assert!(ui.has(&gif), "no Save GIF:\n{}", ui.tree_text());
+    // On the bar, beside the time slider, and the only way to film the run.
+    let bar = ui
+        .find(&Target::label("Time along the path"))
+        .unwrap_or_else(|_| panic!("no time slider:\n{}", ui.tree_text()));
+    let button = ui.find(&gif).unwrap();
+    assert!(
+        (button.rect.center().y - bar.rect.center().y).abs() < bar.rect.height().max(12.0),
+        "Save GIF at {:?} is not on the bar of the time slider at {:?}",
+        button.rect,
+        bar.rect
+    );
+    let win = ui
+        .find(&Target::containing("Posture model").role("window"))
+        .unwrap()
+        .rect;
+    assert!(
+        !["Record", "recording", "⏺"].iter().any(|w| ui
+            .find_all(&Target::containing(w).role("button"))
+            .iter()
+            .any(|h| win.contains(h.rect.center()))),
+        "a recorder beside Save GIF:\n{}",
+        ui.tree_text()
+    );
 
     // The window's own arrow spacing, under its Display menu.
     let window = ui
@@ -1615,13 +1639,17 @@ fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
             .checked,
         Some(true)
     );
+    // And back to all of them: the radio lies over a pane, which takes no
+    // part in the choice.
+    ui.click(&radio("All views")).unwrap();
+    ui.settle(SETTLE);
     assert_all_named(&ui, "the posture window's Save GIF menu");
     ui.key("Escape").unwrap();
     ui.settle(SETTLE);
 
     // The axial pane of the window is above its slice slider (the main
     // screen's, behind the window, start right of the data tree): a click
-    // in it selects it, and the menu offers it.
+    // in it does not change what the GIF takes.
     let slider = ui
         .find_all(&Target::label("Axial slice"))
         .into_iter()
@@ -1640,7 +1668,7 @@ fn the_posture_window_offers_a_gif_of_all_views_or_the_selected_one() {
         let checked = ui.find(&radio(choice)).unwrap().checked;
         assert_eq!(
             checked,
-            Some(choice == "Axial"),
+            Some(choice == "All views"),
             "{choice} after a click in the axial pane:\n{}",
             ui.tree_text()
         );

@@ -24,8 +24,8 @@
 //!   images uploaded once when the model is built), else on the CPU
 //!   ([`crate::posture::apply::render_planes`]); the path at the time is
 //!   computed on the lattice in the same background job. The clock waits
-//!   for each step to land, so a run shows every step (and a recording
-//!   films every one). The rest of the volume holds whatever was there
+//!   for each step to land, so a run shows every step rather than
+//!   skipping the slow ones. The rest of the volume holds whatever was there
 //!   before; nothing reads it while the slider moves.
 //! * **Key frames**: images rendered at evenly spaced times on a working
 //!   grid that fits the playback budget
@@ -74,17 +74,17 @@
 //! back with *Open model* onto the same states, nothing refitted), the end
 //! point as a DICOM Deformable Spatial Registration, the image and the
 //! structures at the slider's time as a derived CT series and an RT
-//! Structure Set marked as interpolated, the film of a pane as GIF or
-//! PNG frames (the recorder of [`super::record`], run on this window's own
-//! screenshots), and *Save GIF*: the path rendered frame by frame from the
-//! model, never from the screen ([`crate::posture::film`]): all views (the
-//! three planes, the 3D scene under them) or any one of them, the vector
-//! field over the planes if asked. The menu starts from the **selected
-//! view** - the pane last clicked in the window (any button), which is
-//! also the pane the recorder films and the one its list beside ⏺ shows -
-//! and any view can be picked in it. The 3D scene of the film is drawn by
-//! the film from the 3D pane's camera, opacities and structures, the
-//! meshes carried to each time, as the pane draws them.
+//! Structure Set marked as interpolated, and *Save GIF* on the bottom
+//! bar: the path rendered frame by frame from the model, never from the
+//! screen ([`crate::posture::film`]): all views (the three planes, the 3D
+//! scene under them; the default) or the one picked in its menu, the
+//! vector field over the planes if asked. What it saves is only what its
+//! menu says: a click in a pane leaves it alone. It replaced a recorder
+//! that filmed one pane off the screen, which did the same thing worse
+//! (one pane, at the screen's size, only as fast as the steps landed).
+//! The 3D scene of the film is drawn by the film from the 3D pane's
+//! camera, opacities and structures, the meshes carried to each time, as
+//! the pane draws them.
 //!
 //! **Arrow spacing.** The overlay's arrows (and grid lines) are this
 //! window's own spacing apart (the millimetres beside the overlay list),
@@ -221,15 +221,10 @@ pub(super) struct PostureWin {
     pub(super) joint_pick: [String; 2],
     /// Joints added by hand (name, first, second).
     pub(super) joints: Vec<(String, String, String)>,
-    /// The pane a recording films, and the one *Save GIF* takes alone: the
-    /// pane last clicked in the window, or the one picked in its list.
-    pub(super) film: PaneKind,
-    pub(super) rec: Option<record::Recording>,
-    pub(super) rec_status: Option<String>,
-    /// *Save GIF*: the views (all of them until a pane is selected, then
-    /// whichever was chosen last: a pane clicked, or a view picked in the
-    /// menu), the field over the planes, the film's width in pixels, there
-    /// and back, the job writing it.
+    /// *Save GIF*: the views (all of them unless one is picked in its
+    /// menu; a click in a pane does not change it), the field over the
+    /// planes, the film's width in pixels, there and back, the job writing
+    /// it.
     pub(super) gif_view: pfilm::FilmViews,
     pub(super) gif_field: bool,
     pub(super) gif_width: usize,
@@ -310,9 +305,6 @@ impl Default for PostureWin {
             chart: None,
             joint_pick: [String::new(), String::new()],
             joints: Vec::new(),
-            film: PaneKind::Plane(ViewPlane::Sagittal),
-            rec: None,
-            rec_status: None,
             gif_view: pfilm::FilmViews::All,
             gif_field: false,
             gif_width: 800,
@@ -1047,7 +1039,8 @@ impl ViewerApp {
         self.posture.live && self.posture.live_job.is_some()
     }
 
-    /// Where a run through the key frames stands (for the recorder).
+    /// Where a run through the key frames stands (for the main viewer's
+    /// recorder, `record.rs`).
     pub(super) fn posture_position(&self) -> Option<usize> {
         self.posture_nearest_key()
     }
@@ -1263,7 +1256,6 @@ impl ViewerApp {
         self.posture.key_job = None;
         self.posture.exact_job = None;
         self.posture.live_job = None;
-        self.posture.rec = None;
         if let Some(slot) = self.posture.slot {
             self.close_posture_workspace(slot);
         }
@@ -1497,16 +1489,10 @@ impl ViewerApp {
                 ui.strong("The model");
                 ui.horizontal(|ui| {
                     ui.label("Mode");
-                    egui::ComboBox::from_id_salt("posture_mode")
-                        .selected_text(self.posture.mode.label())
-                        .show_ui(ui, |ui| {
-                            for m in Mode::ALL {
-                                ui.selectable_value(&mut self.posture.mode, m, m.label())
-                                    .on_hover_text(m.hint());
-                            }
-                        })
-                        .response
-                        .on_hover_text(self.posture.mode.hint());
+                    for m in Mode::ALL {
+                        ui.selectable_value(&mut self.posture.mode, m, m.label())
+                            .on_hover_text(m.hint());
+                    }
                 });
                 let bodies_text = match &self.posture.bodies {
                     None => "Rigid: the bones".to_string(),
@@ -1547,11 +1533,17 @@ impl ViewerApp {
                 );
                 ui.horizontal(|ui| {
                     ui.label("Lattice");
-                    ui.add(egui::DragValue::new(&mut self.posture.lattice_mm).range(2.0..=20.0).suffix(" mm"))
-                        .tip("Lattice of the velocity fields (6 mm: finer folds near joints, coarser misses the way back)");
+                    stepped(ui, &mut self.posture.lattice_mm, 2.0..=20.0, "Lattice", |ui, v| {
+                        ui.add(egui::DragValue::new(v).range(2.0..=20.0).suffix(" mm"))
+                            .tip("Lattice of the velocity fields (6 mm: finer folds near joints, coarser misses the way back)")
+                    });
+                });
+                ui.horizontal(|ui| {
                     ui.label("Reach");
-                    ui.add(egui::DragValue::new(&mut self.posture.reach_mm).range(5.0..=150.0).suffix(" mm"))
-                        .tip("Reach of a rigid body's influence on the tissue around it");
+                    stepped(ui, &mut self.posture.reach_mm, 5.0..=150.0, "Reach", |ui, v| {
+                        ui.add(egui::DragValue::new(v).range(5.0..=150.0).suffix(" mm"))
+                            .tip("Reach of a rigid body's influence on the tissue around it")
+                    });
                 });
                 if self.posture.states.len() >= 3 {
                     ui.checkbox(&mut self.posture.smooth, "Smooth chain")
@@ -1648,21 +1640,6 @@ impl ViewerApp {
         for (i, (kind, r)) in rects.iter().enumerate() {
             self.pane(ui, slot, *kind, *r, i == 0);
         }
-        // The selected view (what a recording films, and *Save GIF* takes
-        // alone) is the pane last clicked here, with any button.
-        let pressed = ui.input(|i| {
-            i.pointer
-                .any_pressed()
-                .then(|| i.pointer.interact_pos())
-                .flatten()
-        });
-        if let Some(at) = pressed {
-            if let Some((k, _)) = rects.iter().find(|(k, r)| {
-                r.contains(at) && matches!(k, PaneKind::Plane(_) | PaneKind::Scene3d)
-            }) {
-                self.posture_select_pane(*k);
-            }
-        }
         if let Some((_, r)) = rects.first() {
             self.posture.pane_aspect = Some(r.width() / r.height().max(1.0));
         }
@@ -1671,16 +1648,10 @@ impl ViewerApp {
             .find(|(k, _)| *k == PaneKind::Scene3d)
             .map(|(_, r)| r.size());
         self.posture.lower_rect = Some(lower.size());
-        let film = rects
-            .iter()
-            .find(|(k, _)| *k == self.posture.film)
-            .map(|(_, r)| *r)
-            .unwrap_or(area);
-        self.posture_record_tick(ui, film);
     }
 
     /// Transport, time and what is shown; how it is drawn and played under
-    /// *Display*; the recorder.
+    /// *Display*; *Save GIF*.
     fn posture_bottom_bar(&mut self, ui: &mut egui::Ui) {
         let Some((span, ticks, param)) = self.posture.built.as_ref().map(|b| {
             (
@@ -1714,7 +1685,9 @@ impl ViewerApp {
         }
         let mut t = self.posture.t;
         let saved = ui.spacing().slider_width;
-        ui.spacing_mut().slider_width = (ui.available_width() - 380.0).max(160.0);
+        // Room left for the time, the list of what is shown, Display and
+        // Save GIF after it.
+        ui.spacing_mut().slider_width = (ui.available_width() - 440.0).max(160.0);
         let resp = ui
             .add(egui::Slider::new(&mut t, 0.0..=span).show_value(false))
             .named("Time along the path");
@@ -1762,30 +1735,12 @@ impl ViewerApp {
             self.posture.moved_at = now;
         }
         self.posture_view_menu(ui);
-        let armed = self.posture.rec.is_some();
-        if ui
-            .add(egui::Button::selectable(armed, if armed { "⏹" } else { "⏺" }))
-            .tip(if armed {
-                "Stop recording and write what was taken"
-            } else {
-                "Record: the next run of the selected view (Display menu) is filmed off the screen, one cycle, as GIF or PNG frames"
-            })
-            .clicked()
-        {
-            if armed {
-                self.posture_finish_recording(false);
-            } else {
-                self.posture_arm_recording();
-            }
-        }
-        if let Some(s) = &self.posture.rec_status {
-            ui.weak(s.as_str());
-        }
+        self.posture_gif_ui(ui);
     }
 
     /// *Display*: what is drawn over the image (the field, the wash, the
     /// dose), how a run plays (live slices or key frames, their number, the
-    /// speed, the end), and the selected view.
+    /// speed, the end).
     fn posture_view_menu(&mut self, ui: &mut egui::Ui) {
         let (overlay, wash, dose, live) = (
             self.posture.overlay,
@@ -1810,39 +1765,56 @@ impl ViewerApp {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
             )
             .ui(ui, |ui| {
+                // One click a choice: a drop-down inside a menu is a popup in
+                // a popup, and the outer one takes the click that should
+                // land in the inner.
                 ui.strong("Over the image");
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("posture_overlay")
-                        .selected_text(match self.posture.overlay {
-                            FieldStyle::None => "No overlay",
-                            FieldStyle::Arrows => "Arrows",
-                            FieldStyle::Grid => "Deformed grid",
-                        })
-                        .width(110.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.posture.overlay, FieldStyle::None, "No overlay");
-                            ui.selectable_value(&mut self.posture.overlay, FieldStyle::Arrows, "Arrows");
-                            ui.selectable_value(&mut self.posture.overlay, FieldStyle::Grid, "Deformed grid");
-                        })
-                        .response
-                        .on_hover_text("The displacement from the first state, over the views");
+                    ui.label("Field");
+                    for (style, label, tip) in [
+                        (FieldStyle::None, "None", "No displacement drawn over the views"),
+                        (
+                            FieldStyle::Arrows,
+                            "Arrows",
+                            "The displacement from the first state as arrows over the views",
+                        ),
+                        (
+                            FieldStyle::Grid,
+                            "Grid",
+                            "The displacement from the first state as a deformed grid over the views",
+                        ),
+                    ] {
+                        ui.selectable_value(&mut self.posture.overlay, style, label)
+                            .on_hover_text(tip);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Spacing");
                     // The density of the arrows (and of the deformed grid's
                     // lines); the views walk their arrows again at the new
                     // spacing by themselves.
-                    ui.add(
-                        egui::DragValue::new(&mut self.posture.arrow_mm)
-                            .range(crate::registration::dvf::ARROW_SPACING_RANGE)
-                            .speed(0.25)
-                            .fixed_decimals(0)
-                            .suffix(" mm"),
-                    )
-                    // Its value ("12 mm") has words of a sort, so the
-                    // tooltip would not name it: named outright.
-                    .named("Arrow spacing")
-                    .on_hover_text(
-                        "Arrow spacing: one arrow (or one line of the deformed grid) every so many \
-                         millimetres, in the views and in Save GIF; closer arrows are drawn shorter in \
-                         proportion",
+                    stepped(
+                        ui,
+                        &mut self.posture.arrow_mm,
+                        crate::registration::dvf::ARROW_SPACING_RANGE,
+                        "Arrow spacing",
+                        |ui, v| {
+                            ui.add(
+                                egui::DragValue::new(v)
+                                    .range(crate::registration::dvf::ARROW_SPACING_RANGE)
+                                    .speed(0.25)
+                                    .fixed_decimals(0)
+                                    .suffix(" mm"),
+                            )
+                            // Its value ("12 mm") has words of a sort, so
+                            // the tooltip would not name it: named outright.
+                            .named("Arrow spacing")
+                            .on_hover_text(
+                                "Arrow spacing: one arrow (or one line of the deformed grid) every so \
+                                 many millimetres, in the views and in Save GIF; closer arrows are \
+                                 drawn shorter in proportion",
+                            )
+                        },
                     );
                 });
                 ui.checkbox(&mut self.posture.wash, "Jacobian wash").on_hover_text(
@@ -1859,27 +1831,28 @@ impl ViewerApp {
                 ui.separator();
                 ui.strong("Playing");
                 ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("posture_play_from")
-                        .selected_text(if self.posture.live {
-                            "Live slices"
-                        } else {
-                            "Key frames"
-                        })
-                        .width(90.0)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.posture.live, true, "Live slices")
-                                .on_hover_text("Each step computes the three planes on screen at its exact time, on the full grid (on the GPU when there is one)");
-                            ui.selectable_value(&mut self.posture.live, false, "Key frames")
-                                .on_hover_text("Whole volumes at evenly spaced times on a working grid that fits the playback budget, rendered once and played from memory");
-                        })
-                        .response
-                        .on_hover_text(slicer_note.as_str());
-                    ui.add(
-                        egui::DragValue::new(&mut self.posture.frames)
-                            .range(2..=200)
-                            .suffix(" frames"),
-                    )
-                    .tip("Steps along the path a run takes (key frames: rendered once, played from memory)");
+                    ui.selectable_value(&mut self.posture.live, true, "Live slices")
+                        .on_hover_text(format!(
+                            "Each step computes the three planes on screen at its exact time, on the \
+                             full grid. {slicer_note}"
+                        ));
+                    ui.selectable_value(&mut self.posture.live, false, "Key frames")
+                        .on_hover_text(
+                            "Whole volumes at evenly spaced times on a working grid that fits the \
+                             playback budget, rendered once and played from memory",
+                        );
+                });
+                if self.posture.live {
+                    if let Some(n) = &self.posture.live_note {
+                        ui.weak(n.as_str());
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Steps");
+                    stepped(ui, &mut self.posture.frames, 2..=200, "Steps", |ui, v| {
+                        ui.add(egui::DragValue::new(v).range(2..=200).suffix(" frames"))
+                            .tip("Steps along the path a run takes (key frames: rendered once, played from memory)")
+                    });
                     if !self.posture.live {
                         if ui
                             .small_button("↺")
@@ -1894,60 +1867,24 @@ impl ViewerApp {
                         }
                     }
                 });
-                if self.posture.live {
-                    if let Some(n) = &self.posture.live_note {
-                        ui.weak(n.as_str());
-                    }
-                }
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.posture.fps)
-                            .range(0.5..=30.0)
-                            .speed(0.1)
-                            .suffix(" fps"),
-                    )
-                    .tip("Steps a second");
-                    egui::ComboBox::from_id_salt("posture_end")
-                        .selected_text(self.play.mode.label())
-                        .width(70.0)
-                        .show_ui(ui, |ui| {
-                            for m in play::PlayMode::ALL {
-                                ui.selectable_value(&mut self.play.mode, m, m.label())
-                                    .on_hover_text(m.hint());
-                            }
-                        })
-                        .response
-                        .on_hover_text("What a run does at the end");
-                });
-                ui.separator();
-                let films = [
-                    (PaneKind::Plane(ViewPlane::Axial), "Axial"),
-                    (PaneKind::Plane(ViewPlane::Sagittal), "Sagittal"),
-                    (PaneKind::Plane(ViewPlane::Coronal), "Coronal"),
-                    (PaneKind::Scene3d, "3D"),
-                ];
-                ui.horizontal(|ui| {
-                    ui.label("Selected view");
-                    egui::ComboBox::from_id_salt("posture_film")
-                        .selected_text(
-                            films
-                                .iter()
-                                .find(|f| f.0 == self.posture.film)
-                                .map_or("Axial", |f| f.1),
+                    ui.label("Speed");
+                    stepped(ui, &mut self.posture.fps, 0.5..=30.0, "Speed", |ui, v| {
+                        ui.add(
+                            egui::DragValue::new(v)
+                                .range(0.5..=30.0)
+                                .speed(0.1)
+                                .suffix(" fps"),
                         )
-                        .width(70.0)
-                        .show_ui(ui, |ui| {
-                            for (k, l) in films {
-                                if ui.selectable_label(self.posture.film == k, l).clicked() {
-                                    self.posture_select_pane(k);
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text(
-                            "The pane a recording films, and the view Save GIF starts from. A click \
-                             in a pane selects it too.",
-                        );
+                        .tip("Steps a second")
+                    });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("At the end");
+                    for m in play::PlayMode::ALL {
+                        ui.selectable_value(&mut self.play.mode, m, m.label())
+                            .on_hover_text(m.hint());
+                    }
                 });
             });
         menu.on_hover_text(
@@ -1971,17 +1908,6 @@ impl ViewerApp {
                 self.posture_start_keys();
             }
         }
-    }
-
-    /// Select a pane (a click in it, or the list beside ⏺): the pane a
-    /// recording films, and the view *Save GIF* offers first.
-    fn posture_select_pane(&mut self, kind: PaneKind) {
-        self.posture.film = kind;
-        self.posture.gif_view = match kind {
-            PaneKind::Plane(p) => pfilm::FilmViews::One(p),
-            PaneKind::Scene3d => pfilm::FilmViews::Scene,
-            _ => self.posture.gif_view,
-        };
     }
 
     /// Has the first state surfaces for the 3D scene of a film?
@@ -2109,7 +2035,6 @@ impl ViewerApp {
                             );
                     });
                 }
-                ui.weak("A click in a pane picks it here too.");
                 let style = match self.posture.overlay {
                     FieldStyle::Grid => "the deformed grid",
                     _ => "arrows",
@@ -2117,8 +2042,8 @@ impl ViewerApp {
                 ui.checkbox(&mut self.posture.gif_field, "Vector field")
                     .on_hover_text(format!(
                         "The displacement from the first state over the planes, as the views \
-                         draw it: {style} (the overlay list on the bar), one every {:.0} mm \
-                         (the spacing beside it), in the views' colours",
+                         draw it: {style} (the field under Display), one every {:.0} mm \
+                         (the spacing under it), in the views' colours",
                         self.posture.arrow_mm
                     ));
                 ui.horizontal(|ui| {
@@ -2134,7 +2059,7 @@ impl ViewerApp {
                 ui.checkbox(&mut self.posture.gif_bounce, "There and back")
                     .on_hover_text("The way back added after the way there, so the loop is smooth");
                 ui.weak(format!(
-                    "{} frames at {:.1} fps (the bar's), {}, the structures outlined{}{}",
+                    "{} frames at {:.1} fps (Display's), {}, the structures outlined{}{}",
                     self.posture.frames.clamp(2, 200),
                     self.posture.fps,
                     self.posture.show.label(),
@@ -2164,7 +2089,8 @@ impl ViewerApp {
              field if asked",
         );
         if let Some(s) = &self.posture.gif_status {
-            ui.weak(s.as_str());
+            // On the bar, cut to the room left (the whole line on hover).
+            ui.add(egui::Label::new(egui::RichText::new(s.as_str()).weak()).truncate());
         }
         if save {
             self.ask_save(
@@ -2376,128 +2302,6 @@ impl ViewerApp {
         }
     }
 
-    /// Arm a recording of the next model run.
-    fn posture_arm_recording(&mut self) {
-        let arm = |app: &mut ViewerApp, dest: std::path::PathBuf| {
-            app.posture.rec_status = Some("Armed: press ▶".into());
-            app.posture.rec = Some(record::Recording {
-                format: app.rec_format,
-                dest,
-                bound: None,
-                frames: Vec::new(),
-                max_frames: app.rec_max.max(1),
-                pending: false,
-                at: u64::MAX,
-            });
-        };
-        match self.rec_format {
-            record::RecFormat::Gif => {
-                self.ask_save("Save the recording", "posture.gif", None, None, arm)
-            }
-            record::RecFormat::Pngs => self.ask_folder("Folder for the recorded frames", arm),
-        }
-    }
-
-    /// The recorder on this window's own pictures: latch onto a model run,
-    /// take one picture per key frame, stop after one cycle.
-    fn posture_record_tick(&mut self, ui: &egui::Ui, film: Rect) {
-        if self.posture.rec.is_none() {
-            return;
-        }
-        let shot = ui.input(|i| {
-            i.events.iter().rev().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
-        let ppp = ui.ctx().pixels_per_point();
-        let running = self.posture_playing();
-        let pos = self.posture_position();
-        let frame_no = self.play.frame_no;
-        let fps = self.posture.fps;
-        let mut finish: Option<bool> = None;
-        let mut want = false;
-        if let Some(rec) = self.posture.rec.as_mut() {
-            if let (Some(shot), true) = (shot, rec.pending) {
-                rec.pending = false;
-                if let Some(b) = rec.bound.as_mut() {
-                    if let Some(f) = record::cut(&shot, b.crop) {
-                        rec.frames.push(f);
-                        match (b.start, pos) {
-                            (None, p) => b.start = p,
-                            (Some(s), Some(p)) if p != s => b.left = true,
-                            (Some(s), Some(p)) if p == s && b.left => {
-                                rec.frames.pop();
-                                finish = Some(false);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            match rec.bound {
-                None if running => {
-                    rec.bound = Some(record::Bound {
-                        target: play::PlayTarget::Model {
-                            slot: self.posture.slot.unwrap_or(0),
-                        },
-                        crop: [
-                            (film.left() * ppp).round().max(0.0) as usize,
-                            (film.top() * ppp).round().max(0.0) as usize,
-                            (film.width() * ppp).round().max(1.0) as usize,
-                            (film.height() * ppp).round().max(1.0) as usize,
-                        ],
-                        fps,
-                        start: None,
-                        left: false,
-                    });
-                    rec.at = u64::MAX;
-                }
-                Some(_) if !running => finish = finish.or(Some(false)),
-                Some(_) if rec.frames.len() >= rec.max_frames => finish = Some(true),
-                _ => {}
-            }
-            if finish.is_none() && rec.bound.is_some() && !rec.pending && rec.at != frame_no {
-                rec.at = frame_no;
-                rec.pending = true;
-                want = true;
-            }
-        }
-        if let Some(capped) = finish {
-            self.posture_finish_recording(capped);
-            return;
-        }
-        if want {
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
-            ui.ctx().request_repaint();
-        }
-    }
-
-    fn posture_finish_recording(&mut self, capped: bool) {
-        let Some(rec) = self.posture.rec.take() else {
-            return;
-        };
-        if rec.frames.is_empty() {
-            self.posture.rec_status = Some("Nothing was recorded".into());
-            return;
-        }
-        let fps = rec.bound.as_ref().map_or(self.posture.fps, |b| b.fps);
-        let n = rec.frames.len();
-        let res = match rec.format {
-            record::RecFormat::Gif => record::write_gif(&rec.dest, &rec.frames, fps).map(|()| n),
-            record::RecFormat::Pngs => record::write_pngs(&rec.dest, &rec.frames),
-        };
-        self.posture.rec_status = Some(match res {
-            Ok(n) => format!(
-                "{n} frames written to {}{}",
-                rec.dest.display(),
-                if capped { " (frame limit)" } else { "" }
-            ),
-            Err(e) => format!("Could not write the recording: {e:#}"),
-        });
-    }
-
     /// The verdict, the exports, the tables.
     fn posture_side(&mut self, ui: &mut egui::Ui) {
         if let Some(s) = &self.posture.status {
@@ -2574,7 +2378,6 @@ impl ViewerApp {
                 });
                 menu.on_hover_text("Write the tables, the model, the deformation or the image at this time");
             });
-            self.posture_gif_ui(ui);
         });
         let Some(b) = self.posture.built.as_ref() else {
             return;

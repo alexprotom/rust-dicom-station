@@ -344,11 +344,17 @@ is a click away in a menu.
   arrow spacing, *Jacobian wash*, *Dose (display only)* when the first
   state has a dose, *Live slices* or *Key frames* and the number of steps,
   frames a second, the end mode (loop, bounce, once: the *Image playback*
-  module's), the selected view - and the recorder (⏺ / ⏹).
+  module's) - and *Save GIF* (below). Inside the
+  *Display* and *Options* menus every choice is one click (a row of
+  buttons, not a drop-down: a drop-down in a menu is a popup in a popup,
+  and the outer one takes the click), and every number - arrow spacing,
+  steps, frames a second, lattice, reach - has ◀ ▶ arrows a step either
+  side: 1 below 15, 5 from 15 to 50, 10 above, landing on a multiple of the
+  step.
 - **Right**: the verdict (a coloured dot, *Good model*, *Model to check* or
   *Poor model*, and its findings), the build's warnings folded as
   *Notes*, the caveat, *📤 Export* (the tables as CSV, the model file, the
-  DICOM REG, the image at t), *Save GIF*, and the tables.
+  DICOM REG, the image at t), and the tables.
 
 **What is shown**: *A moving forward* (the segment's first state carried to
 `t`), *B moving back*, *Cross-fade* (`(1 - s) A + s B`, exactly each scan at
@@ -416,19 +422,19 @@ freed.
 | 💾 Model | `.rdsposture` (JSON): the lattice, grids, anchor transforms, states, per segment its bodies (motion, fit, the lattice nodes they cover) and the residual and linear fields; the blend is rebuilt on reading. *Open model* reads it back onto the same states and recomputes the tables, nothing refitted |
 | 📤 REG | the whole path, first state to last, as a DICOM Deformable Spatial Registration from the first state's frame into the last state's own coordinates |
 | 📤 Image at t | the image at the slider's time as a derived CT series of the first state's study (on its grid, Image Type DERIVED, the time and the caveat in the series description and derivation) and the first state's structures carried to that time as an RT Structure Set on it, each ROI's description saying it was interpolated |
-| ⏺ | the film of a pane as GIF or PNG frames, one cycle of the run, taken from the screen |
-| Save GIF | the path as an animated GIF rendered from the model: all views (the three planes and the 3D scene) or any one of them, with the vector field if asked (below) |
+| Save GIF (on the bottom bar) | the path as an animated GIF rendered from the model: all views (the three planes and the 3D scene) or any one of them, with the vector field if asked (below) |
 
 **Save GIF** (`posture::film`). A menu. **View**: *All views* (the
 default) - axial, sagittal and coronal side by side in cells of the panes'
 shape and the 3D scene under them across the whole width, as the window
-lays them out - or *Axial*, *Sagittal*, *Coronal* or *3D* alone. A click
-in a pane (any button), or the selected-view list beside ⏺, picks that
-pane here too; any view can be picked in the menu without one. *3D* is
-greyed out when no structure of the first state has a surface. **Vector
+lays them out - or *Axial*, *Sagittal*, *Coronal* or *3D* alone. The
+GIF takes what is picked here and nothing else: a click in a pane does
+not change it (it once did, and a GIF of one pane came out of a click
+meant for something else). *3D* is greyed out when no structure of the
+first state has a surface. **Vector
 field**: the displacement over the planes as the views draw it - arrows,
-or the deformed grid while the overlay list says so (arrows when the
-overlay is off) - at the bar's arrow spacing, in the views' colours and
+or the deformed grid while *Display*'s field says so (arrows when the
+field is off) - at *Display*'s arrow spacing, in the views' colours and
 proportions. Then *Width* (800 px by default; the height follows the
 panes' shape) and *There and back* (the way back added without repeating
 an end, for a smooth loop). *Save...* asks for the file and writes it on a
@@ -472,7 +478,8 @@ anti-aliased edges are not in it. The other way - stepping the window
 through the times and cutting each frame out of a screenshot of it - was
 not taken: it would film exactly the screen, but only while the window is
 on screen and drawn, a frame per repaint, and not in the CLI or the
-headless tests; ⏺ remains for filming the screen as it is.
+headless tests. The window had such a recorder too (⏺, one pane cut out
+of the screen), and it went: *Save GIF* does the same better.
 
 One palette for the whole film (the GIF's global table), no dithering, so
 no frame is quantized on its own and nothing flickers: greys (192; 177
@@ -509,7 +516,7 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
 | `posture/film.rs` | *Save GIF*: the run's times, the layout, the palette, the outlines, the wash and the field over the planes, the 3D scene drawn as the pane draws it, written as an animated GIF |
 | `crates/rds-domain/src/workflow/posture.rs` | `build`, `reopen`, `export_frame`, `export_registration`, preset joints, `lacking` and `model_for_missing` |
 | `crates/rds-domain/src/gen_test_data.rs` | `articulated_pair` / `generate_articulated`: the articulated phantom |
-| `src/app/posture_win.rs`, `posture_table.rs` | the window, its workspace, playback and recording; the table and chart |
+| `src/app/posture_win.rs`, `posture_table.rs` | the window, its workspace, playback and *Save GIF*; the table and chart |
 | `crates/rds-domain/src/mcp/tools/posture.rs` | `build_posture_model` |
 | `crates/rds-domain/src/workflow/graph/nodes/posture.rs` | the *Posture model* step |
 | `examples/posture_cli.rs` | headless: folders (or `--phantom`, or `--simulate` on one CT) in, tables, the verdict, model file, REG, key frames and the image at a time out; `--anchor auto` by default, `--whole-scan`, `--residual-grid` / `--residual-reg` / `--residual-metric`, `--carry DIR` with `--carry-align rigid\|scanner` (another image of the first position carried), `--wepl GANTRY[,COUCH]`, `--no-smooth`, `--bench-slices N` (live steps timed on the CPU and the GPU, and how far apart they are), `--gif FILE` (the film; `--gif-view` all, axial, sagittal, coronal or 3d, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`, `--wash`, `--gif-field` arrows or grid, `--arrow-spacing`, `--arrow-scale`) |
@@ -549,9 +556,10 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
   slices are the default, the wash ticks on, the end reads the hinge's
   angle, playing moves the time, every widget has a name; a state lacking
   a structure (*liver*) is named and offered the model that makes it;
-  *Save GIF* lists the five views (all views the default, a click in a
-  pane choosing it, any picked from the list) and *Vector field*, and the
-  arrow spacing is on the window's bar and in *Settings ▸ Viewer*.
+  *Save GIF* is on the bottom bar with no recorder beside it, lists the
+  five views (all views the default, any picked from the list, a click in
+  a pane changing nothing) and *Vector field*, and the arrow spacing is
+  under the window's *Display* and in *Settings ▸ Viewer*.
 - **The film** (`tests/posture.rs`, unit tests in `posture/film.rs`): the
   GIF decodes back to one frame per time at the size its layout gives -
   the three planes, the planes with the scene under them, a plane alone,
