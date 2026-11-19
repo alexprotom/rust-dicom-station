@@ -346,6 +346,10 @@ pub struct ModelBlock {
     /// The WEPL column's beam, as given.
     pub beam: Option<String>,
     pub provenance: Vec<String>,
+    /// A second state predicted from a posture template
+    /// ([`crate::workflow::posture::predict`]), not scanned: what it was
+    /// predicted from.
+    pub predicted: Option<String>,
 }
 
 /// The four tables.
@@ -404,9 +408,11 @@ impl Tables {
             worst(
                 Level::Poor,
                 format!(
-                    "The path folds tissue ({:.2} % of it, Jacobian down to {:.2}): not a \
-                     deformation of anatomy. Build it without the residual, or with a coarser \
-                     lattice.",
+                    "The path folds tissue ({:.3} % of it, Jacobian down to {:.2}): not a \
+                     deformation of anatomy there. A residual that folds: build without it. A \
+                     few nodes beside a bone that slides over another (a shoulder blade on the \
+                     ribs, an arm at the chest wall): leave one of the two out of the rigid \
+                     bodies, or use a finer lattice.",
                     100.0 * m.folded_fraction,
                     m.jacobian_min
                 ),
@@ -450,7 +456,19 @@ impl Tables {
             );
         }
         let bodies: Vec<&BodyRow> = self.bodies.iter().filter(|b| !b.anchor).collect();
-        if !bodies.is_empty() {
+        if let Some(what) = &m.predicted {
+            // Nothing was fitted: the second state is the template's guess.
+            worst(
+                Level::Check,
+                format!(
+                    "Predicted from a posture template of {what}, not fitted to a scan of this \
+                     patient: the bones move as the cohort's did, anchor {}. Its error is the \
+                     template's (leave-one-out), not a fit's.",
+                    m.anchor
+                ),
+                &mut v,
+            );
+        } else if !bodies.is_empty() {
             let fit = bodies.iter().map(|b| b.fit_mean_mm).sum::<f64>() / bodies.len() as f64;
             v.lines.push((
                 Level::Good,
@@ -1131,6 +1149,7 @@ pub fn tables(model: &PostureModel, inp: &Inputs, p: &crate::progress::Progress)
         overlap_si,
         beam: inp.beam.as_ref().map(|b| b.label.clone()),
         provenance: model.provenance.clone(),
+        predicted: None,
     };
     p.report(1.0, "Tables done");
     Tables {

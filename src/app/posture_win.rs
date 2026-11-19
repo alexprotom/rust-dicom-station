@@ -62,6 +62,16 @@
 //! offers to run it on that state; its results land through the Structure
 //! auto tools module as any run's do, and the model is then built again.
 //!
+//! **A state predicted from a template.** The second state's list ends
+//! with the posture templates of the data folder (`posture-templates/`,
+//! [`crate::posture::template`]: a cohort's joints and organ offsets, made
+//! by `posture_cli --make-template`) and *Open a template...*, which copies
+//! the file there. With one picked, the second state is no scan: *Predict*
+//! moves the first state's bones as the cohort's joints move and its organs
+//! by the cohort's offsets ([`crate::workflow::posture::predict`]), and the
+//! model plays, measures and exports like a fitted one - its verdict says
+//! it was predicted, and no table checks it against a scan.
+//!
 //! **The decision to keep this a window.** Every other tool that works on
 //! the images on screen is a module of the right panel. This one is not,
 //! and stays a tool window: it runs a workspace of its own whose planes,
@@ -101,6 +111,7 @@ use crate::posture::film as pfilm;
 use crate::posture::gpu::{self as pgpu, GpuSlicer};
 use crate::posture::measure::{Level, Tables};
 use crate::posture::svf::Field;
+use crate::posture::template as ptemplate;
 use crate::posture::{self, file as pfile, Anchor, Mode, PostureModel};
 use crate::registration::FieldStyle;
 use crate::rtdose::DoseGrid;
@@ -267,6 +278,13 @@ pub(super) struct PostureWin {
     /// Fit and draw each state's patient only (outside its EXTERNAL
     /// structure set to air).
     pub(super) patient_only: bool,
+    /// The second state predicted from this template rather than fitted to
+    /// a scan, and the file it was read from.
+    pub(super) template: Option<(std::path::PathBuf, Arc<ptemplate::Template>)>,
+    pub(super) predict: bool,
+    /// The templates folder's files, and egui's clock when it was listed.
+    pub(super) template_files: Vec<std::path::PathBuf>,
+    pub(super) template_listed: f64,
     /// What the missing-structures line offers, for the states as they are
     /// (the key: every state's names).
     pub(super) offer_key: String,
@@ -330,6 +348,10 @@ impl Default for PostureWin {
             gantry_deg: 90.0,
             couch_deg: 0.0,
             smooth: true,
+            template: None,
+            predict: false,
+            template_files: Vec::new(),
+            template_listed: f64::NEG_INFINITY,
             patient_only: true,
             offer_key: String::new(),
             offers: Vec::new(),
@@ -572,8 +594,18 @@ impl ViewerApp {
         if st.job.is_some() {
             return;
         }
+        let template = st
+            .template
+            .as_ref()
+            .filter(|_| st.predict && from_file.is_none())
+            .map(|(_, t)| t.clone());
+        let take = if template.is_some() {
+            1
+        } else {
+            st.states.len()
+        };
         let mut studies = Vec::new();
-        for (i, &s) in st.states.iter().enumerate() {
+        for (i, &s) in st.states.iter().take(take).enumerate() {
             match self.slots.get(s).and_then(|x| x.study.as_ref()) {
                 Some(study) if study.has_volume() => studies.push((
                     format!("{}{}", SLOT_NAMES[s], if i == 0 { " (start)" } else { "" }),
@@ -617,12 +649,13 @@ impl ViewerApp {
                     posture: postures.get(i).copied().flatten(),
                 })
                 .collect();
-            let o = match &from_file {
-                Some(path) => {
+            let o = match (&from_file, &template) {
+                (Some(path), _) => {
                     let model = pfile::read(path)?;
                     wp::reopen(model, &inputs, &req, p)?
                 }
-                None => wp::build(&inputs, &req, p)?,
+                (None, Some(t)) => wp::predict(&inputs[0], t, &req, true, p)?,
+                (None, None) => wp::build(&inputs, &req, p)?,
             };
             let first = studies[0].1.clone();
             let base_set = first.structure_sets.first().cloned();
@@ -1338,9 +1371,25 @@ impl ViewerApp {
         let mut build = false;
         let mut open_file = false;
         let mut cancel = false;
-        let ready = self.posture.states.len() >= 2
-            && self.posture.states.iter().all(|s| vols.contains(s))
-            && self.posture.states.windows(2).all(|w| w[0] != w[1]);
+        // The templates folder, listed again every few seconds.
+        let now = ui.input(|i| i.time);
+        if now - self.posture.template_listed > 5.0 {
+            self.posture.template_listed = now;
+            self.posture.template_files = list_templates();
+        }
+        let predict = self.posture.predict && self.posture.template.is_some();
+        let mut pick_template: Option<std::path::PathBuf> = None;
+        let mut open_template = false;
+        let ready = if predict {
+            self.posture
+                .states
+                .first()
+                .is_some_and(|s| vols.contains(s))
+        } else {
+            self.posture.states.len() >= 2
+                && self.posture.states.iter().all(|s| vols.contains(s))
+                && self.posture.states.windows(2).all(|w| w[0] != w[1])
+        };
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(!busy, |ui| {
                 let n = self.posture.states.len();
@@ -1348,6 +1397,67 @@ impl ViewerApp {
                 for i in 0..n {
                     if i > 0 {
                         ui.label("→");
+                    }
+                    if i == 1 && (predict || n == 2) {
+                        // The second state: a workspace, or a template.
+                        let files = self.posture.template_files.clone();
+                        let text = match (&self.posture.template, predict) {
+                            (Some((path, t)), true) => {
+                                format!("Template: {} ({} patients)", file_stem(path), t.samples.len())
+                            }
+                            _ => summaries
+                                .iter()
+                                .find(|(s, _)| *s == self.posture.states[1])
+                                .map(|(_, t)| t.clone())
+                                .unwrap_or_else(|| "(pick)".into()),
+                        };
+                        egui::ComboBox::from_id_salt(("posture_state", 1))
+                            .selected_text(text)
+                            .width(190.0)
+                            .show_ui(ui, |ui| {
+                                for (s, t) in &summaries {
+                                    let on = !predict && self.posture.states[1] == *s;
+                                    if ui.selectable_label(on, t).clicked() {
+                                        self.posture.states[1] = *s;
+                                        self.posture.predict = false;
+                                    }
+                                }
+                                ui.separator();
+                                for f in &files {
+                                    let on = predict
+                                        && self.posture.template.as_ref().is_some_and(|(p, _)| p == f);
+                                    if ui
+                                        .selectable_label(on, format!("Template: {}", file_stem(f)))
+                                        .on_hover_text(
+                                            "Predict the second state from this cohort: the bones moved as its \
+                                             joints moved, the organs by its offsets - no second scan",
+                                        )
+                                        .clicked()
+                                    {
+                                        pick_template = Some(f.clone());
+                                    }
+                                }
+                                if ui
+                                    .selectable_label(false, "Open a template...")
+                                    .on_hover_text(format!(
+                                        "A posture template (.{}) made by posture_cli --make-template; it is \
+                                         copied into the templates folder of the data folder",
+                                        ptemplate::EXTENSION
+                                    ))
+                                    .clicked()
+                                {
+                                    open_template = true;
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "Next state: the workspace whose displayed series and structures it is, or a \
+                                 posture template that predicts it from the first",
+                            );
+                        if predict {
+                            break;
+                        }
+                        continue;
                     }
                     let cur = self.posture.states[i];
                     let text = summaries
@@ -1370,10 +1480,17 @@ impl ViewerApp {
                         remove = Some(i);
                     }
                 }
-                if self.posture.states.len() < vols.len() && small_tip_button(ui, "➕", "Add a state: the model becomes a chain") {
+                if !predict && self.posture.states.len() < vols.len() && small_tip_button(ui, "➕", "Add a state: the model becomes a chain") {
                     add = true;
                 }
                 ui.separator();
+                if predict {
+                    ui.label("Root: auto").on_hover_text(
+                        "What stands still in a prediction: the sacrum when the scan sees it whole, else the \
+                         middle vertebra it sees whole",
+                    );
+                    return;
+                }
                 ui.label("Anchor");
                 // What Auto chose, once a model is built.
                 let chosen = self
@@ -1429,15 +1546,53 @@ impl ViewerApp {
                 if ui.button("Cancel").clicked() {
                     cancel = true;
                 }
+            } else if predict {
+                if enabled_tip_button(
+                    ui,
+                    ready,
+                    "▶ Predict",
+                    "Predict the second state from the template: the first state's bones moved as the \
+                     cohort's joints moved, its organs by the cohort's offsets",
+                ) {
+                    build = true;
+                }
             } else if enabled_tip_button(ui, ready, "▶ Build", "Fit the model between the states") {
                 build = true;
             }
             ui.add_enabled_ui(!busy, |ui| {
-                self.posture_options_menu(ui, ready, &common, &mut open_file);
+                self.posture_options_menu(ui, ready && !predict, &common, &mut open_file);
             });
         });
-        if !busy {
+        if !busy && !predict {
             self.posture_offers_ui(ui);
+        }
+        if let Some(path) = pick_template {
+            self.posture_load_template(path);
+        }
+        if open_template {
+            self.ask_file(
+                "Open a posture template",
+                None,
+                Some(pick::Filter {
+                    name: "Posture template",
+                    exts: &[ptemplate::EXTENSION],
+                }),
+                |app, path| {
+                    // Kept in the templates folder, so it is listed next time.
+                    let dir = ptemplate::templates_dir();
+                    let dest = dir.join(path.file_name().unwrap_or_default());
+                    let path = if dest != path
+                        && std::fs::create_dir_all(&dir).is_ok()
+                        && std::fs::copy(&path, &dest).is_ok()
+                    {
+                        app.posture.template_listed = f64::NEG_INFINITY;
+                        dest
+                    } else {
+                        path
+                    };
+                    app.posture_load_template(path);
+                },
+            );
         }
         if let Some(i) = remove {
             self.posture.states.remove(i);
@@ -1467,6 +1622,17 @@ impl ViewerApp {
                 }),
                 |app, path| app.posture_build(Some(path)),
             );
+        }
+    }
+
+    /// Read a template and predict the second state from it.
+    fn posture_load_template(&mut self, path: std::path::PathBuf) {
+        match ptemplate::Template::read(&path) {
+            Ok(t) => {
+                self.posture.template = Some((path, Arc::new(t)));
+                self.posture.predict = true;
+            }
+            Err(e) => self.error = Some(format!("{e:#}")),
         }
     }
 
@@ -2218,7 +2384,10 @@ impl ViewerApp {
                 .states
                 .iter()
                 .zip(lacking)
-                .filter(|(_, l)| !l.is_empty())
+                // A workspace with no image yet lacks nothing to offer.
+                .filter(|(&slot, l)| {
+                    !l.is_empty() && self.slots.get(slot).is_some_and(|x| x.study.is_some())
+                })
                 .map(|(&slot, l)| {
                     let modality = self.slot_modality(slot);
                     Offer {
@@ -2495,4 +2664,15 @@ impl OrDefaultSeries for Option<loader::SeriesInfo> {
             z_range: None,
         })
     }
+}
+
+/// The posture templates of the templates folder, by name.
+fn list_templates() -> Vec<std::path::PathBuf> {
+    ptemplate::list(&ptemplate::templates_dir())
+}
+
+fn file_stem(p: &std::path::Path) -> String {
+    p.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }

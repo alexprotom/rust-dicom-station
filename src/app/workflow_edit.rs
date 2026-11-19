@@ -2757,7 +2757,8 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
         Op::Posture(p) => {
             f.row_tip(
                 "Anchor",
-                "What is held still: a structure on every state, image (a rigid registration)                  or scanner (nothing)",
+                "What is held still: a structure on every state, image (a rigid registration) \
+                 or scanner (nothing)",
                 |ui| text(ui, &mut p.anchor, "image", 150.0),
             );
             f.row("Mode", |ui| {
@@ -2779,7 +2780,8 @@ fn params_ui(ui: &mut egui::Ui, id: u32, op: &mut Op, actions: &mut Vec<EdAction
             });
             f.row_tip(
                 "Rigid",
-                "The rigid bodies, separated by commas; empty: the bones every state has; none:                  no bodies",
+                "The rigid bodies, separated by commas; empty: the bones every state has; none: \
+                 no bodies",
                 |ui| text(ui, &mut p.bodies, "the bones", 150.0),
             );
             f.row("", |ui| {

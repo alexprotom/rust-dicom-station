@@ -281,7 +281,7 @@ fn fade_outside(d: &mut Field, grid: &Grid, region: &[u8], width_mm: f64) {
 }
 
 /// Centroid and covariance of a mask's voxels, patient mm, in scan order.
-fn moments(mask: &BoxedMask, grid: &Grid) -> Option<(Vec3, se3::M3)> {
+pub(crate) fn moments(mask: &BoxedMask, grid: &Grid) -> Option<(Vec3, se3::M3)> {
     let n = mask.count();
     if n == 0 {
         return None;
@@ -521,7 +521,7 @@ pub fn fit_segment(
 
     // ---- layer 2: the blend ----
     p.report(0.62, "Blending the bodies");
-    let on_lattice: Vec<BodyOnLattice> = fitted
+    let mut on_lattice: Vec<BodyOnLattice> = fitted
         .iter()
         .map(|f| {
             let b = bodies
@@ -532,6 +532,7 @@ pub fn fit_segment(
             BodyOnLattice::new(f.name.clone(), f.xi, &occ, lattice)
         })
         .collect();
+    polyrigid::separate(&mut on_lattice, lattice);
     let velocity = polyrigid::blend(lattice, &on_lattice, opts.reach_mm);
     let curves = (opts.keep_weights && opts.mode == Mode::Diffeomorphic).then(|| {
         let xis: Vec<Twist> = fitted.iter().map(|f| f.xi).collect();

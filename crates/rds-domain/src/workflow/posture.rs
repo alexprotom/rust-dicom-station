@@ -39,6 +39,7 @@ use crate::posture::fit::{self, BodyInput, FitOptions};
 use crate::posture::measure::{self, StructureInput, Tables};
 use crate::posture::se3::Rigid;
 use crate::posture::svf::{Field, Lattice};
+use crate::posture::template::{self, Pose, Sample, SampleBody, SampleOrgan, Template};
 use crate::posture::{self, apply, coarsen, Anchor, Mode, PostureModel, StateInfo};
 use crate::progress::{self, Progress, ProgressSink};
 use crate::propagate::BoxedMask;
@@ -99,6 +100,9 @@ pub struct PostureRequest {
     /// outside its EXTERNAL structure - the couch, the chair - set to air.
     /// A state with no EXTERNAL structure keeps its image as scanned.
     pub patient_only: bool,
+    /// Keep what a posture template needs of a pair's model
+    /// ([`PostureOutcome::sample`], [`crate::posture::template`]).
+    pub sample: bool,
 }
 
 /// The WEPL column's beam, in IEC 61217 angles read in the first state's
@@ -137,6 +141,7 @@ impl Default for PostureRequest {
             wepl: None,
             smooth_chain: true,
             patient_only: true,
+            sample: false,
         }
     }
 }
@@ -347,7 +352,12 @@ pub struct PostureOutcome {
     /// The states' images as the model was fitted on them and draws them,
     /// each in its own coordinates: the patient only when the request asked
     /// and the state has an EXTERNAL structure, else the image as scanned.
+    /// A predicted model's second image is the first moved along it.
     pub images: Vec<Arc<Volume>>,
+    /// What a posture template keeps of a pair's model, when the request
+    /// asked for it ([`PostureRequest::sample`]); its label is left for the
+    /// caller to give.
+    pub sample: Option<template::Sample>,
 }
 
 fn key(name: &str) -> String {
@@ -1142,6 +1152,8 @@ pub fn build(states: &[StateInput], req: &PostureRequest, p: &Progress) -> Resul
         p,
     );
     p.set_phase(0.0, 1.0);
+    let sample = (req.sample && states.len() == 2)
+        .then(|| make_sample(&model, &tables, &display, &masks, &external, &agrid));
     p.report(1.0, "Posture model built");
     Ok(PostureOutcome {
         model,
@@ -1150,7 +1162,85 @@ pub fn build(states: &[StateInput], req: &PostureRequest, p: &Progress) -> Resul
         occupancy,
         warnings,
         images,
+        sample,
     })
+}
+
+/// What a template keeps of a pair's model ([`template::Sample`]): the
+/// bodies with their points and motions, the joints between them at the
+/// first state, and the organs not cut by either scan with where the bones
+/// alone carry them.
+fn make_sample(
+    model: &PostureModel,
+    tables: &Tables,
+    display: &[String],
+    masks: &[Vec<BoxedMask>],
+    external: &[bool],
+    agrid: &Grid,
+) -> Sample {
+    let seg = &model.segments[0];
+    let index = |name: &str| display.iter().position(|d| key(d) == key(name));
+    let mut bodies = Vec::new();
+    let mut names = Vec::new();
+    let mut body_masks: Vec<&BoxedMask> = Vec::new();
+    for b in &seg.bodies {
+        let Some(i) = index(&b.name) else {
+            continue;
+        };
+        let Some((c, pts)) = template::body_points(&masks[i][0], agrid) else {
+            continue;
+        };
+        bodies.push(SampleBody {
+            name: b.name.clone(),
+            centroid: [c.x, c.y, c.z],
+            points: pts.iter().map(|q| [q.x, q.y, q.z]).collect(),
+            motion: Pose::of(&b.motion),
+            fit_mm: if b.anchor { 0.0 } else { b.mean_after_mm },
+            anchor: b.anchor,
+        });
+        names.push(b.name.clone());
+        body_masks.push(&masks[i][0]);
+    }
+    let joints = template::contacts(&names, &body_masks, agrid, template::CONTACT_MM);
+    // The organs as the bones alone carry them: the blend, no residual.
+    let blend = seg.velocity.exp(1.0);
+    let h = model.lattice.min_spacing();
+    let organs = tables
+        .structures
+        .iter()
+        .filter(|r| {
+            !r.used
+                && !fit::is_bone(&r.name)
+                && !r.is_cut()
+                && !index(&r.name).is_some_and(|i| external[i])
+                && r.volume_cm3.iter().all(|&v| v >= template::MIN_ORGAN_CM3)
+        })
+        .filter_map(|r| {
+            let start = (*r.centroid.first()?)?;
+            let end = (*r.centroid.last()?)?;
+            let carried = blend.map(start);
+            Some(SampleOrgan {
+                name: r.name.clone(),
+                start: [start.x, start.y, start.z],
+                end: [end.x, end.y, end.z],
+                carried: [carried.x, carried.y, carried.z],
+                gradient: blend.gradient_at_point(start, h),
+                cm3: [
+                    r.volume_cm3.first().copied().unwrap_or(0.0),
+                    r.volume_cm3.last().copied().unwrap_or(0.0),
+                ],
+            })
+        })
+        .collect();
+    Sample {
+        label: String::new(),
+        anchor: model.anchor.label(),
+        scanner: Pose::of(model.to_state.get(1).unwrap_or(&Rigid::IDENTITY)),
+        positions: model.states.iter().map(|s| s.position.clone()).collect(),
+        bodies,
+        joints,
+        organs,
+    }
 }
 
 fn structure_inputs(
@@ -1244,6 +1334,394 @@ pub fn reopen(
         occupancy: Vec::new(),
         warnings,
         images: prep.images,
+        sample: None,
+    })
+}
+
+/// The label of a predicted state.
+pub const PREDICTED: &str = "predicted";
+
+/// The second state of one scan predicted from a posture template
+/// ([`crate::posture::template`]): a model of two states whose second is
+/// not a scan but the first moved as the cohort moved - its bones walked
+/// out from a root along the joints the template knows, the organs it has
+/// offsets for moved by them before the bones carry them (`organs`), the
+/// rest blended. The outcome is a model like any: it plays, measures and
+/// exports; its second image is the first carried to the end of the path,
+/// and nothing in its tables is checked against a scan (no Dice, no
+/// verdict on fits). Of `req`, the lattice, the analysis grid, the reach,
+/// the joints and the samples, the WEPL beam and *patient only* are read;
+/// the anchor is the root ([`auto_anchor`] on this one scan).
+pub fn predict(
+    state: &StateInput,
+    tmpl: &Template,
+    req: &PostureRequest,
+    organs: bool,
+    p: &Progress,
+) -> Result<PostureOutcome> {
+    use crate::posture::polyrigid::{self, BodyOnLattice};
+    let st = state.study;
+    if !st.has_volume() {
+        bail!("'{}' has no image volume", state.label);
+    }
+    let edges = tmpl.edges(None);
+    let known = tmpl.bones();
+    if known.is_empty() {
+        bail!(
+            "the template has no joint seen on {} patients or more",
+            template::MIN_EDGE_SAMPLES
+        );
+    }
+    let offsets: BTreeMap<String, template::OrganStats> = if organs {
+        tmpl.organs(None)
+            .into_iter()
+            .filter(|(_, o)| o.n >= template::MIN_ORGAN_SAMPLES)
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    let si = structure_set(state)
+        .context("a prediction needs the scan's structure set, with its bones contoured")?;
+    let ss = &st.structure_sets[si];
+    let mut provenance = vec![format!(
+        "predicted from a posture template of {} patient(s): not fitted to a second scan",
+        tmpl.samples.len()
+    )];
+    let mut warnings = Vec::new();
+    let images = state_images(std::slice::from_ref(state), req.patient_only);
+    let image = images[0].clone();
+    let grid0 = st.volume.grid();
+    let agrid = coarsen(&grid0, req.analysis_mm);
+
+    // ---- every structure of the scan, on the analysis grid ----
+    let mut display: Vec<String> = Vec::new();
+    let mut colors = Vec::new();
+    let mut masks0: Vec<BoxedMask> = Vec::new();
+    let mut cm3 = Vec::new();
+    let mut external = Vec::new();
+    for (i, roi) in ss.rois.iter().enumerate() {
+        check(p)?;
+        if display.iter().any(|d| key(d) == key(&roi.name)) {
+            continue;
+        }
+        p.report(
+            0.3 * i as f32 / ss.rois.len().max(1) as f32,
+            &format!("Rasterizing {}", roi.name),
+        );
+        let Some(m) = segmentation::rasterize_roi(&grid0, roi) else {
+            continue;
+        };
+        cm3.push(crate::morphology::count_set(&m) as f64 * grid0.voxel_cm3());
+        let coarse = if grid0.matches(&agrid) {
+            m
+        } else {
+            sample_down(&m, &grid0, &agrid)
+        };
+        masks0.push(BoxedMask::pack(&coarse, agrid.dims));
+        display.push(roi.name.clone());
+        colors.push(roi.color);
+        external.push(is_external(roi));
+    }
+
+    // ---- the bones the template knows, and the root ----
+    let edge_of = |m: &BoxedMask| {
+        m.bbox()
+            .is_none_or(|(lo, hi)| (0..3).any(|a| lo[a] == 0 || hi[a] + 1 >= agrid.dims[a]))
+    };
+    let bones: Vec<usize> = (0..display.len())
+        .filter(|&i| fit::is_bone(&display[i]) && known.contains(&key(&display[i])))
+        .filter(|&i| {
+            masks0[i]
+                .bbox()
+                .is_some_and(|(lo, hi)| (0..3).all(|a| hi[a] - lo[a] + 1 >= MIN_BODY_VOXELS))
+        })
+        .collect();
+    if bones.is_empty() {
+        bail!("no bone of this scan is one the template knows by name");
+    }
+    let candidates: Vec<AnchorCandidate> = bones
+        .iter()
+        .map(|&i| {
+            let m = &masks0[i];
+            let mut z = 0.0;
+            m.for_each_set(|a, b, c| z += agrid.voxel_to_patient(a as f64, b as f64, c as f64).z);
+            AnchorCandidate {
+                name: display[i].clone(),
+                whole: !edge_of(m),
+                cm3: cm3[i],
+                si_mm: z / m.count().max(1) as f64,
+            }
+        })
+        .collect();
+    let names: Vec<String> = bones.iter().map(|&i| display[i].clone()).collect();
+    let root = auto_anchor(&candidates)
+        .or_else(|| template::root_of(&names))
+        .unwrap_or(0);
+    provenance.push(format!("root (held still): {}", names[root]));
+
+    // ---- the joints, and the motions walked out along them ----
+    p.report(0.32, "Finding the joints");
+    let body_masks: Vec<&BoxedMask> = bones.iter().map(|&i| &masks0[i]).collect();
+    let joints = template::contacts(&names, &body_masks, &agrid, template::CONTACT_MM);
+    let cents: Vec<crate::geometry::Vec3> = body_masks
+        .iter()
+        .map(|m| {
+            template::body_points(m, &agrid)
+                .map(|x| x.0)
+                .unwrap_or_default()
+        })
+        .collect();
+    let pred = template::predict_bodies(&edges, &names, &cents, &joints, root);
+    let unreached: Vec<&str> = names
+        .iter()
+        .zip(&pred)
+        .filter(|(_, q)| q.motion.is_none())
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if !unreached.is_empty() {
+        warnings.push(format!(
+            "No joint the template knows reaches {}: left out of the bodies, they follow their \
+             neighbours",
+            unreached.join(", ")
+        ));
+    }
+
+    // ---- the blend ----
+    p.report(0.4, "Blending the bodies");
+    let lattice = Lattice::over(&grid0, req.lattice_mm);
+    let mut fitted = Vec::new();
+    let mut on_lattice = Vec::new();
+    let mut occupancy = Vec::new();
+    for (k, q) in pred.iter().enumerate() {
+        let Some(m) = q.motion else {
+            continue;
+        };
+        let i = bones[k];
+        let xi = posture::se3::log(&m);
+        let occ = polyrigid::occupancy(&masks0[i].mask(), &agrid, &lattice);
+        on_lattice.push(BodyOnLattice::new(display[i].clone(), xi, &occ, &lattice));
+        occupancy.push(occ);
+        fitted.push(fit::FittedBody {
+            name: display[i].clone(),
+            color: colors[i],
+            motion: m,
+            xi,
+            centroid: cents[k],
+            mean_before_mm: 0.0,
+            mean_after_mm: 0.0,
+            rms_after_mm: 0.0,
+            dice_after: None,
+            seeded: false,
+            anchor: k == root,
+        });
+    }
+    polyrigid::separate(&mut on_lattice, &lattice);
+    let velocity = polyrigid::blend(&lattice, &on_lattice, req.reach_mm);
+    let mut notes = vec![format!(
+        "{} bones moved as the template's joints move them, {} not reached",
+        fitted.len(),
+        unreached.len()
+    )];
+
+    // ---- the organs' offsets, before the bones ----
+    let mut residual = None;
+    let organ_idx: Vec<(usize, &template::OrganStats)> = (0..display.len())
+        .filter(|&i| !external[i] && !fit::is_bone(&display[i]))
+        .filter_map(|i| offsets.get(&key(&display[i])).map(|o| (i, o)))
+        .collect();
+    if !organ_idx.is_empty() {
+        p.report(0.5, "Moving the organs");
+        let step = lattice.min_spacing();
+        let mut sum = vec![crate::geometry::Vec3::ZERO; lattice.len()];
+        let mut wsum = vec![0.0f64; lattice.len()];
+        for (i, o) in &organ_idx {
+            check(p)?;
+            // The organ as a whole, faded over a lattice step at its edge.
+            let f: Vec<f32> = masks0[*i]
+                .mask()
+                .iter()
+                .map(|&v| f32::from(v.min(1)))
+                .collect();
+            let w = crate::morphology::blur_mm(&f, agrid.dims, agrid.spacing, step);
+            let [nx, ny, _] = agrid.dims;
+            for (n, (s, ws)) in sum.iter_mut().zip(wsum.iter_mut()).enumerate() {
+                let c = agrid.patient_to_voxel(lattice.node(n));
+                if (0..3).any(|a| c[a] < -0.5 || c[a] > agrid.dims[a] as f64 - 0.5) {
+                    continue;
+                }
+                let [a, b, cc] =
+                    [0, 1, 2].map(|x| (c[x].round().max(0.0) as usize).min(agrid.dims[x] - 1));
+                let wv = w[(cc * ny + b) * nx + a] as f64;
+                if wv > 1e-3 {
+                    *s = *s + o.offset * wv;
+                    *ws += wv;
+                }
+            }
+        }
+        let mut d = Field::zero(&lattice);
+        for (n, v) in d.d.iter_mut().enumerate() {
+            *v = sum[n] * (1.0 / wsum[n].max(1.0));
+        }
+        let rho = polyrigid::rigidity(&lattice, &on_lattice);
+        polyrigid::fade(&mut d.d, &rho);
+        let (mut u, _) = posture::svf::log(&d, 12);
+        let mut scale = 1.0;
+        for _ in 0..6 {
+            let jmin = u
+                .exp(1.0)
+                .jacobians()
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
+            if jmin.is_nan() || jmin >= fit::MIN_RESIDUAL_JACOBIAN {
+                break;
+            }
+            u = u.scaled(0.5);
+            scale *= 0.5;
+        }
+        notes.push(format!(
+            "organs moved by the template's offsets before the bones: {}{}",
+            organ_idx
+                .iter()
+                .map(|(i, o)| format!("{} {:.0} mm", display[*i], o.offset.length()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if scale < 1.0 {
+                format!(" (scaled by {scale} so they do not fold)")
+            } else {
+                String::new()
+            }
+        ));
+        residual = (!u.is_zero()).then_some(u);
+    }
+    for n in &notes {
+        provenance.push(format!("A to {PREDICTED}: {n}"));
+    }
+    let seg = posture::Segment {
+        mode: Mode::Diffeomorphic,
+        velocity,
+        residual,
+        linear: None,
+        bodies: fitted,
+        curves: None,
+        notes,
+    };
+    let se = st.series.get(st.active_series);
+    let info0 = StateInfo {
+        label: state.label.clone(),
+        date: se.map(|x| x.study_date.clone()).unwrap_or_default(),
+        series: se.map(|x| x.description.clone()).unwrap_or_default(),
+        position: se
+            .and_then(crate::loader::series_patient_position)
+            .map(|p| p.code().to_string())
+            .unwrap_or_default(),
+        posture: state.posture,
+        grid: Some(grid0.clone()),
+    };
+    // The cohort's second position, as its headers say it most often.
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    for s in &tmpl.samples {
+        if let Some(pos) = s.positions.get(1).filter(|x| !x.is_empty()) {
+            *seen.entry(pos.as_str()).or_default() += 1;
+        }
+    }
+    let info1 = StateInfo {
+        label: PREDICTED.into(),
+        series: format!("predicted from {} patients", tmpl.samples.len()),
+        position: seen
+            .into_iter()
+            .max_by_key(|x| x.1)
+            .map(|x| x.0.to_string())
+            .unwrap_or_default(),
+        grid: Some(grid0.clone()),
+        ..StateInfo::default()
+    };
+    let mut model = PostureModel {
+        lattice,
+        grid: grid0.clone(),
+        analysis: agrid.clone(),
+        anchor: Anchor::Structure(names[root].clone()),
+        to_state: vec![Rigid::IDENTITY, Rigid::IDENTITY],
+        states: vec![info0, info1],
+        segments: vec![seg],
+        ends: Vec::new(),
+        provenance,
+        reach_mm: req.reach_mm,
+    };
+    p.report(0.6, "The path's end points");
+    model.finish();
+    check(p)?;
+
+    // ---- the second state: the first carried to the end ----
+    p.report(0.65, "The predicted image");
+    let (fwd, back) = (&model.ends[0].0, &model.ends[0].1);
+    let predicted = Arc::new(apply::resample(&image, &grid0, |y| back.map(y)));
+    let vols = vec![
+        Arc::new(apply::resample(&image, &agrid, |x| x)),
+        Arc::new(apply::resample(&predicted, &agrid, |x| x)),
+    ];
+    let full = BoxedMask::pack(&vec![1u8; agrid.dims.iter().product()], agrid.dims);
+    let coverage = vec![full.clone(), full];
+    let masks: Vec<Vec<BoxedMask>> = masks0
+        .iter()
+        .map(|m| vec![m.clone(), apply::carry_mask(m, &agrid, fwd, back)])
+        .collect();
+    let own_cm3: Vec<Vec<f64>> = masks
+        .iter()
+        .zip(&cm3)
+        .map(|(m, &v0)| {
+            // The carried volume, scaled from the analysis grid's count.
+            let ratio = m[1].count() as f64 / m[0].count().max(1) as f64;
+            vec![v0, v0 * ratio]
+        })
+        .collect();
+    let body_names = model.body_names();
+    let used: Vec<bool> = display
+        .iter()
+        .map(|d| body_names.iter().any(|b| key(b) == key(d)))
+        .collect();
+    let structures = structure_inputs(&display, &colors, &masks, &own_cm3, &used, &external);
+    let joints = if req.joints.is_empty() {
+        preset_joints(&body_names)
+    } else {
+        req.joints.clone()
+    };
+    p.set_phase(0.7, 0.3);
+    let mut tables = measure::tables(
+        &model,
+        &measure::Inputs {
+            grid: &agrid,
+            volumes: &vols,
+            coverage: &coverage,
+            structures: &structures,
+            joints: &joints,
+            anchor_rms_mm: &[None, None],
+            samples_per_segment: req.samples_per_segment,
+            beam: req.wepl.as_ref().map(|w| w.beam(&model.states[0].position)),
+        },
+        p,
+    );
+    p.set_phase(0.0, 1.0);
+    // Nothing to check a prediction against: no scan of the second state.
+    for r in &mut tables.structures {
+        r.check = None;
+        r.deformation = None;
+    }
+    tables.model.check_used_dice = None;
+    tables.model.check_unused_dice = None;
+    tables.model.predicted = Some(format!(
+        "{} patient(s), {} of this scan's bones moved by the template's joints",
+        tmpl.samples.len(),
+        model.body_names().len()
+    ));
+    p.report(1.0, "Posture predicted");
+    Ok(PostureOutcome {
+        model,
+        tables,
+        structures: display,
+        occupancy: vec![occupancy],
+        warnings,
+        images: vec![image, predicted],
+        sample: None,
     })
 }
 

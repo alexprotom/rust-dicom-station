@@ -90,6 +90,7 @@ pub mod measure;
 pub mod polyrigid;
 pub mod se3;
 pub mod svf;
+pub mod template;
 
 use std::sync::Arc;
 

@@ -815,7 +815,8 @@ src/
     svf.rs            lattices, displacement fields, stationary velocity
                       fields: exp by scaling and squaring (exact rigid
                       regions), composition, inverse, log, Jacobian
-    polyrigid.rs      the bodies' twists blended: swept regions, Shepard
+    polyrigid.rs      the bodies' twists blended: swept regions (given
+                      back near a body that moves otherwise), Shepard
                       weights with a reach, the rigidity weight
     fit.rs            a segment's three layers: rigid bodies (shape fit,
                       principal-axes seeds), blend, B-spline residual
@@ -833,6 +834,10 @@ src/
     file.rs           the .rdsposture file
     film.rs           the path as an animated GIF: exact frames, the planes
                       laid out as the window has them, one palette, outlines
+    template.rs       posture templates: a cohort's joints (medians about
+                      their contact centres, every pair directly) and organ
+                      offsets, one scan's bones walked out from a root,
+                      leave one out, the .rdsposture-template file
   dvh.rs            dose-volume histograms: sampling, curves, metrics,
                     protocol constraints, CSV                                    Dose
   derived.rs        the recipe a derived structure carries: the expression,
@@ -918,7 +923,8 @@ src/
     session.rs        open workspaces, transforms, reports, and their handles
     tools/            the tools as plain functions with schema-deriving
                       argument structs: session, segment, register, setup
-                      (2D/3D), fourd, analysis, posture, output, archive (the
+                      (2D/3D), fourd, analysis, posture (models, their
+                      samples, templates and predictions), output, archive (the
                       station's PACS listed under aliases or codes, paged or
                       summarised, a study described from its headers, opened
                       through the gate), curation/ (audit, duplicates,

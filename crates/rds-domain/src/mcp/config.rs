@@ -81,6 +81,9 @@ pub struct Config {
     /// empty is the viewer's workflow folder. The program's examples are
     /// always offered.
     pub workflows_dir: Option<PathBuf>,
+    /// Where `list_posture_templates` and `predict_posture` find posture
+    /// templates by name; empty is the viewer's posture-templates folder.
+    pub posture_templates_dir: Option<PathBuf>,
     /// The archive the archive tools list and open: empty is the station's
     /// own PACS, as the viewer's settings name it; otherwise its storage
     /// folders joined by `|`.
@@ -212,6 +215,7 @@ impl Default for Config {
             viewer_exe: None,
             volume_cache_mb: 4096,
             workflows_dir: None,
+            posture_templates_dir: None,
             archive: String::new(),
             pacs: PacsConfig::default(),
         }

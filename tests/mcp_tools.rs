@@ -1013,6 +1013,162 @@ fn radiographs_register_to_the_ct_and_export() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A cohort of four articulated phantoms, hinged 30, 40, 40 and 50 degrees:
+/// each pair's model leaves its sample in the output folder, the template
+/// gathers them from there and predicts each phantom from the other three
+/// to within a few millimetres (where no motion at all is off by more), and
+/// the first scan of one more phantom is moved as the cohort moved - its
+/// lower bone turned by their median 40 degrees about the hinge - and
+/// written out with the image at the end, by the template's path and by its
+/// name in the templates folder.
+#[test]
+fn a_posture_template_gathers_samples_and_predicts_one_scan() {
+    use rust_dicom_station::gen_test_data::{self, ArticulatedParams};
+    use rust_dicom_station::posture::template;
+
+    let dir = common::target_dir("test_mcp_tools_posture_template");
+    let out = dir.join("out");
+    let templates = dir.join("templates");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::create_dir_all(&templates).unwrap();
+    let mut core = Core::new(Config {
+        roots: vec![dir.clone()],
+        output_dir: Some(out.clone()),
+        phi_policy: PhiPolicy::Redact,
+        device: "cpu".into(),
+        audit_log: false,
+        posture_templates_dir: Some(templates.clone()),
+        ..Config::default()
+    });
+    let c = &mut core;
+    // The phantom's patient is PHANTOM^POSTURE, words the redactor would
+    // take out of every path reported; a code that is in none.
+    let phantom = |name: &str, angle: f64| {
+        let folders = gen_test_data::generate_articulated(
+            &dir.join(name),
+            &ArticulatedParams {
+                angle_deg: angle,
+                ..ArticulatedParams::default()
+            },
+            &Progress::default(),
+        )
+        .unwrap();
+        for f in &folders {
+            common::name_the_patient(f, "ZQX^KWV", "ZQX001", "");
+        }
+        folders
+    };
+    let handle = |v: &Value| v["dataset"].as_str().unwrap().to_string();
+    for (i, angle) in [30.0, 40.0, 40.0, 50.0].into_iter().enumerate() {
+        let [a, b] = phantom(&format!("p{i}"), angle);
+        let ha = handle(&call(c, "open_dataset", json!({"path": a})));
+        let hb = handle(&call(c, "open_dataset", json!({"path": b})));
+        let pm = call(
+            c,
+            "build_posture_model",
+            json!({"datasets": [ha, hb], "anchor": "BONE_UPPER", "lattice_mm": 10.0,
+                   "analysis_mm": 3.0, "sample": true, "label": format!("p{i}")}),
+        );
+        assert_eq!(pm["sample"]["bones"], 2, "{pm}");
+        assert_eq!(pm["sample"]["label"], format!("p{i}"), "{pm}");
+        assert!(
+            pm["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f == template::SAMPLE_FILE),
+            "{pm}"
+        );
+        call(c, "close_dataset", json!({"dataset": ha}));
+        call(c, "close_dataset", json!({"dataset": hb}));
+    }
+    let e = fail(
+        c,
+        "build_posture_model",
+        json!({"datasets": ["ds1", "ds2", "ds3"], "sample": true}),
+    );
+    assert!(e.contains("pair"), "{e}");
+
+    // The four samples, from the session's output folder.
+    let tp = call(
+        c,
+        "build_posture_template",
+        json!({"samples": ["output/session"], "name": "phantoms"}),
+    );
+    assert_eq!(tp["patients"], 4, "{tp}");
+    assert_eq!(tp["relations"]["direct"], 1, "{tp}");
+    let groups = tp["leave_one_out"]["groups"].as_array().unwrap();
+    let other = groups
+        .iter()
+        .find(|g| g["group"] == "other")
+        .unwrap_or_else(|| panic!("{tp}"));
+    // A 40 predicted from 30, 40 and 50 is right; a 30 from 40, 40 and 50
+    // is ten degrees off, still far nearer than no motion at all.
+    let (err, still) = (
+        other["template_mm"]["mean"].as_f64().unwrap(),
+        other["no_motion_mm"]["mean"].as_f64().unwrap(),
+    );
+    assert!(still > 4.0 * err, "{tp}");
+    let p1 = tp["leave_one_out"]["patients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["label"] == "p1")
+        .unwrap_or_else(|| panic!("{tp}"));
+    assert!(p1["error_mm"].as_f64().unwrap() < 1.5, "{tp}");
+    let file = tp["file"].as_str().unwrap().to_string();
+    assert!(file.starts_with("output/session"), "{file}");
+    // Without a name: the report alone.
+    let again = call(c, "build_posture_template", json!({"samples": [file]}));
+    assert_eq!(again["patients"], 4, "{again}");
+    assert!(again.get("file").is_none(), "{again}");
+
+    // One more scan, predicted by the template's path.
+    let [a, _] = phantom("new", 40.0);
+    let h = handle(&call(c, "open_dataset", json!({"path": a})));
+    let pr = call(
+        c,
+        "predict_posture",
+        json!({"dataset": h, "template": file, "lattice_mm": 10.0, "analysis_mm": 3.0,
+               "write": true, "export_t": 1.0}),
+    );
+    assert_eq!(pr["template"]["patients"], 4, "{pr}");
+    let turned = pr["bodies"]
+        .as_array()
+        .unwrap()
+        .first()
+        .unwrap_or_else(|| panic!("{pr}"));
+    let angle = turned["angle_deg"].as_f64().unwrap();
+    assert!((angle - 40.0).abs() < 3.0, "{angle} deg: {pr}");
+    let findings = pr["verdict"]["findings"].to_string();
+    assert!(findings.contains("template"), "{findings}");
+    assert!(pr["frame"]["images"].as_u64().unwrap() > 0, "{pr}");
+    assert_eq!(pr["files"].as_array().unwrap().len(), 4, "{pr}");
+
+    // By its name, once it is in the templates folder.
+    let written = template::find_samples(&out)
+        .into_iter()
+        .find(|f| template::is_template(f))
+        .unwrap();
+    std::fs::copy(&written, templates.join("phantoms.rdsposture-template")).unwrap();
+    let listed = call(c, "list_posture_templates", json!({}));
+    assert_eq!(listed["templates"][0]["name"], "phantoms", "{listed}");
+    assert_eq!(listed["templates"][0]["patients"], 4, "{listed}");
+    let by_name = call(
+        c,
+        "predict_posture",
+        json!({"dataset": h, "template": "Phantoms", "organs": false,
+               "lattice_mm": 10.0, "analysis_mm": 3.0}),
+    );
+    assert_eq!(by_name["template"]["name"], "phantoms", "{by_name}");
+    let e = fail(
+        c,
+        "predict_posture",
+        json!({"dataset": h, "template": "nowhere"}),
+    );
+    assert!(e.contains("phantoms"), "the error lists the templates: {e}");
+}
+
 /// Every file under `from`, copied to the same place under `to`.
 fn copy_tree(from: &Path, to: &Path) {
     for e in walkdir::WalkDir::new(from).into_iter().flatten() {
