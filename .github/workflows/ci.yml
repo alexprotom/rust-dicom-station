@@ -111,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-15]
+        os: [windows-latest, macos-26]
     steps:
       - uses: actions/checkout@v5
 
@@ -171,13 +171,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-latest, windows-latest, macos-26]
         include:
           - os: ubuntu-latest
             features: ""
           - os: windows-latest
             features: --no-default-features
-          - os: macos-15
+          - os: macos-26
             features: --no-default-features
     steps:
       - uses: actions/checkout@v5

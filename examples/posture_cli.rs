@@ -62,9 +62,29 @@
 //!   patient position): first, last and its change;
 //! * `--no-smooth` - a chain without curves through its states (a constant
 //!   turn per pair);
+//! * `--folds` - where the path at its end folds or nearly folds (Jacobian
+//!   under 0.1 on the lattice): each such node with the two bodies nearest
+//!   it, grouped;
 //! * `--bench-slices N` - N live steps of the three central planes, on the
 //!   CPU and (with a GPU) on the GPU: the time per step and how far the two
 //!   answers are apart.
+//!
+//! A cohort (`posture::template`):
+//!
+//! * with `--out` and two states, `sample.json` is written beside the
+//!   model: what a posture template keeps of it, labelled `--label TEXT`
+//!   (a pseudonymised name; nothing is read from the files);
+//! * `--make-template OUT FILE...` - the samples (or templates) given as
+//!   the positional arguments into one template, its summary and its
+//!   leave-one-out printed; nothing is built;
+//! * `--loo TEMPLATE` - the summary and the leave-one-out of a template:
+//!   each patient's bones predicted from the others' joints against its own
+//!   fitted motions, and its organs with the others' offsets;
+//! * `--template FILE` with one state - the second state predicted from the
+//!   template instead of fitted to a scan (`workflow::posture::predict`);
+//!   `--no-organs` leaves the organs' offsets out. The tables, `--gif`,
+//!   `--frames` and `--export 1` (the predicted image as DICOM) work as for
+//!   a pair.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,7 +93,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use rust_dicom_station::gen_test_data::{self, ArticulatedParams};
 use rust_dicom_station::loader::LoadedStudy;
 use rust_dicom_station::mesh3d;
-use rust_dicom_station::posture::{apply, file, film, Anchor, Mode};
+use rust_dicom_station::posture::{apply, file, film, template, Anchor, Mode};
 use rust_dicom_station::progress::Progress;
 use rust_dicom_station::registration::dvf::{self, FieldStyle};
 use rust_dicom_station::simulate::{generate_transformed_study, SimParams};
@@ -160,7 +180,11 @@ fn bench_slices(
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const VALUED: [&str; 29] = [
+    const VALUED: [&str; 33] = [
+        "--label",
+        "--make-template",
+        "--loo",
+        "--template",
         "--residual-grid",
         "--residual-reg",
         "--residual-metric",
@@ -223,6 +247,29 @@ fn main() -> Result<()> {
         k += 1;
     }
 
+    // ---- a cohort: templates from samples, and their leave-one-out ----
+    if let Some(out) = opt("--make-template") {
+        let mut samples = Vec::new();
+        for f in &folders {
+            samples.extend(template::read_samples(f)?);
+        }
+        if samples.is_empty() {
+            bail!("--make-template OUT SAMPLE...: no sample given");
+        }
+        let t = template::Template::new(samples);
+        t.write(Path::new(&out))?;
+        println!("template of {} patients written to {out}", t.samples.len());
+        print_template(&t);
+        return Ok(());
+    }
+    if let Some(f) = opt("--loo") {
+        print_template(&template::Template::read(Path::new(&f))?);
+        return Ok(());
+    }
+    let tmpl = opt("--template")
+        .map(|f| template::Template::read(Path::new(&f)))
+        .transpose()?;
+
     // ---- the states ----
     let phantom = has("--phantom");
     let truth = ArticulatedParams {
@@ -251,7 +298,7 @@ fn main() -> Result<()> {
         eprintln!("simulated: {}", params.describe());
         vec![a, b]
     } else {
-        if folders.len() < 2 {
+        if folders.len() < 2 && !(tmpl.is_some() && folders.len() == 1) {
             bail!(
                 "usage: posture_cli <STATE_A> <STATE_B> [...] | --phantom | <CT> --simulate tx,ty,tz,rx,ry,rz"
             );
@@ -340,6 +387,7 @@ fn main() -> Result<()> {
         },
         smooth_chain: !has("--no-smooth"),
         patient_only: !has("--whole-scan"),
+        sample: opt("--out").is_some() && studies.len() == 2,
         ..PostureRequest::default()
     };
 
@@ -363,7 +411,10 @@ fn main() -> Result<()> {
         (done, h)
     };
     let t0 = std::time::Instant::now();
-    let built = wp::build(&states, &req, &p);
+    let built = match &tmpl {
+        Some(t) => wp::predict(&states[0], t, &req, !has("--no-organs"), &p),
+        None => wp::build(&states, &req, &p),
+    };
     watch.0.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = watch.1.join();
     let o = built?;
@@ -447,6 +498,9 @@ fn main() -> Result<()> {
     println!("verdict: {}", v.level.label());
     for (level, line) in &v.lines {
         println!("  [{}] {line}", level.label());
+    }
+    if has("--folds") {
+        print_folds(&o);
     }
     if let Some(n) = opt("--bench-slices") {
         let n: usize = n.parse().map_err(|e| anyhow!("--bench-slices {n}: {e}"))?;
@@ -563,6 +617,17 @@ fn main() -> Result<()> {
             &o.model,
             &o.occupancy,
         )?;
+        if let Some(s) = &o.sample {
+            let mut s = s.clone();
+            s.label = opt("--label").unwrap_or_default();
+            s.write(&out.join(template::SAMPLE_FILE))?;
+            println!(
+                "sample: {} bones, {} joints, {} organs",
+                s.bodies.len(),
+                s.joints.len(),
+                s.organs.len()
+            );
+        }
         let last = studies.last().unwrap();
         wp::export_registration(
             &o.model,
@@ -627,6 +692,124 @@ fn main() -> Result<()> {
         println!("written to {}", out.display());
     }
     Ok(())
+}
+
+/// Where the path's end folds or nearly folds, by the two bodies nearest.
+fn print_folds(o: &wp::PostureOutcome) {
+    let m = &o.model;
+    let lat = &m.lattice;
+    let end = m.frame(m.span()).forward;
+    let jac = end.jacobians();
+    let names = m.body_names();
+    let occ = o.occupancy.first().cloned().unwrap_or_default();
+    let nodes: Vec<Vec<rust_dicom_station::geometry::Vec3>> = occ
+        .iter()
+        .map(|v| {
+            v.iter()
+                .enumerate()
+                .filter(|(_, &x)| x != 0)
+                .map(|(n, _)| lat.node(n))
+                .collect()
+        })
+        .collect();
+    let mut groups: std::collections::BTreeMap<String, (usize, f64)> = Default::default();
+    let mut total = 0;
+    for (n, &j) in jac.iter().enumerate() {
+        if j >= 0.1 {
+            continue;
+        }
+        total += 1;
+        let p = lat.node(n);
+        let mut d: Vec<(f64, &str)> = nodes
+            .iter()
+            .zip(&names)
+            .map(|(v, name)| {
+                (
+                    v.iter()
+                        .map(|q| (*q - p).length())
+                        .fold(f64::INFINITY, f64::min),
+                    name.as_str(),
+                )
+            })
+            .collect();
+        d.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let key = match d.as_slice() {
+            [a, b, ..] => format!("{} ({:.0} mm) / {} ({:.0} mm)", a.1, a.0, b.1, b.0),
+            [a] => format!("{} ({:.0} mm)", a.1, a.0),
+            [] => "no body".into(),
+        };
+        let e = groups.entry(key).or_insert((0, f64::INFINITY));
+        e.0 += 1;
+        e.1 = e.1.min(j);
+    }
+    println!("folds: {total} lattice node(s) with a Jacobian under 0.1 at the end");
+    let mut v: Vec<_> = groups.into_iter().collect();
+    v.sort_by_key(|a| std::cmp::Reverse(a.1 .0));
+    for (k, (n, j)) in v.iter().take(15) {
+        println!("  {n:>4} node(s), down to {j:.2}: nearest {k}");
+    }
+}
+
+/// A template's summary and its leave-one-out, as tables.
+fn print_template(t: &template::Template) {
+    for l in t.summary() {
+        println!("{l}");
+    }
+    let loo = template::leave_one_out(t);
+    let groups = template::GROUPS;
+    println!();
+    println!(
+        "leave one out: mean error at each bone's seven points, mm (no motion at all in brackets)"
+    );
+    print!("{:<12} {:<14}", "patient", "root");
+    for g in groups {
+        print!(" {g:>15}");
+    }
+    println!(" {:>9}", "unreached");
+    for p in &loo {
+        print!("{:<12} {:<14}", p.label, p.root);
+        for g in groups {
+            let v: Vec<&template::LooBody> = p
+                .bodies
+                .iter()
+                .filter(|b| b.group == g && b.error_mm.is_some())
+                .collect();
+            if v.is_empty() {
+                print!(" {:>15}", "-");
+                continue;
+            }
+            let e = v.iter().filter_map(|b| b.error_mm).sum::<f64>() / v.len() as f64;
+            let s = v.iter().map(|b| b.still_mm).sum::<f64>() / v.len() as f64;
+            print!(" {:>15}", format!("{e:.1} ({s:.1})"));
+        }
+        println!(
+            " {:>9}",
+            p.bodies.iter().filter(|b| b.error_mm.is_none()).count()
+        );
+    }
+    println!();
+    println!("over every bone of every patient left out: mean / median / 90th percentile, mm");
+    for g in template::loo_groups(&loo) {
+        let (e, x) = (g.template, g.still);
+        println!(
+            "  {:<9} {:>4} bones  template {:5.1} / {:5.1} / {:5.1}    no motion {:5.1} / {:5.1} / {:5.1}",
+            g.group, g.n, e.mean, e.median, e.p90, x.mean, x.median, x.p90
+        );
+    }
+    let organs = template::loo_organs(&loo);
+    if !organs.is_empty() {
+        println!();
+        println!(
+            "organs, centroid from where it was contoured on the second state, mean mm: \
+             still / own fitted bones / bones + template offset"
+        );
+        for o in organs {
+            println!(
+                "  {:<28} n {:>2}   {:6.1} {:6.1} {:6.1}",
+                o.name, o.n, o.still_mm, o.bones_mm, o.template_mm
+            );
+        }
+    }
 }
 
 fn load(dir: &Path) -> Result<LoadedStudy> {

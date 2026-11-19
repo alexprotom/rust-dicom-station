@@ -60,12 +60,16 @@ fn fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 fn config(root: &Path, out: &Path, policy: PhiPolicy) -> Config {
+    // Posture templates of the test's own, never the station's.
+    let templates = out.join("templates");
+    std::fs::create_dir_all(&templates).unwrap();
     Config {
         roots: vec![root.to_path_buf()],
         output_dir: Some(out.to_path_buf()),
         phi_policy: policy,
         device: "cpu".into(),
         audit_log: false,
+        posture_templates_dir: Some(templates),
         ..Config::default()
     }
 }
@@ -205,6 +209,52 @@ fn exercise(policy: PhiPolicy, tag: &str) {
                "analysis_mm": 4.0, "write": true}),
     )
     .unwrap();
+    // Its sample (the anchor its one body, the phantom's structures its
+    // organs), a template of it under the station's templates folder, the
+    // list, and a prediction that has no joint to walk: names, labels and
+    // errors only.
+    let s = call(
+        c,
+        l,
+        "build_posture_model",
+        json!({"datasets": ["ds1", "ds1"], "anchor": "BODY", "lattice_mm": 12.0,
+               "analysis_mm": 4.0, "sample": true, "label": "P01-001"}),
+    )
+    .unwrap();
+    assert_eq!(s["sample"]["bones"], 1, "{s}");
+    let t = call(
+        c,
+        l,
+        "build_posture_template",
+        json!({"samples": ["output/session"], "name": "cohort", "detail": "full"}),
+    )
+    .unwrap();
+    assert_eq!(t["patients"], 1, "{t}");
+    let file = rust_dicom_station::posture::template::find_samples(&out)
+        .into_iter()
+        .find(|f| rust_dicom_station::posture::template::is_template(f))
+        .expect("the template is written");
+    std::fs::copy(
+        &file,
+        out.join("templates").join("cohort.rdsposture-template"),
+    )
+    .unwrap();
+    let listed = call(c, l, "list_posture_templates", json!({})).unwrap();
+    assert_eq!(listed["templates"][0]["name"], "cohort", "{listed}");
+    let e = call(
+        c,
+        l,
+        "predict_posture",
+        json!({"dataset": "ds1", "template": "cohort"}),
+    )
+    .unwrap_err();
+    assert!(e.contains("no joint"), "{e}");
+    let _ = call(
+        c,
+        l,
+        "predict_posture",
+        json!({"dataset": "ds1", "template": "nowhere"}),
+    );
     let dvh = call(
         c,
         l,

@@ -322,13 +322,14 @@ pub fn read(path: &Path) -> Result<PostureModel> {
                 }
             })
             .collect();
-        let on: Vec<BodyOnLattice> = bodies
+        let mut on: Vec<BodyOnLattice> = bodies
             .iter()
             .zip(&s.bodies)
             .map(|(b, bf)| {
                 BodyOnLattice::new(b.name.clone(), b.xi, &unruns(&bf.nodes, n), &lattice)
             })
             .collect();
+        polyrigid::separate(&mut on, &lattice);
         let velocity = polyrigid::blend(&lattice, &on, f.reach_mm);
         let curves = s.smooth.then(|| {
             let xis: Vec<Twist> = bodies.iter().map(|b| b.xi).collect();

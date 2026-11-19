@@ -23,7 +23,9 @@ measure along, and the wrong thing to plan a treatment on. The window says
 so under its bar, and every export carries it.
 
 The same model is a CLI (`examples/posture_cli.rs`), an MCP tool
-(`build_posture_model`, [mcp.md](mcp.md)) and a workflow step (*Posture
+(`build_posture_model`, and for templates `build_posture_template`,
+`list_posture_templates` and `predict_posture`, [mcp.md](mcp.md)) and a
+workflow step (*Posture
 model*, [workflows.md](workflows.md)); all four call
 `crate::workflow::posture`.
 
@@ -97,7 +99,16 @@ layers:
    normalised. Where swept regions meet, a node goes to the body that is
    there at the start - judged on the bodies as they are before their
    one-node margins, so at a joint narrower than a lattice step the femoral
-   head's nodes stay the femur's and the socket's the pelvis's. The
+   head's nodes stay the femur's and the socket's the pelvis's. A body's
+   swept region beyond its own nodes gives back to the blend every node
+   nearer another body's region than the two bodies' velocities there
+   differ, by more than a lattice step (`polyrigid::separate`): a shoulder
+   blade or an arm sweeping up
+   to ribs that stay still would otherwise make the velocity jump by tens
+   of millimetres from one node to the next, and the discrete flow folded
+   the tissue between them (the armpit, the lateral chest wall) on ten of
+   twelve thoracic supine and upright pairs; bodies that move alike keep
+   their regions, and a body's own nodes are never given back. The
    deformation is the flow of that field
    (`posture::svf`): scaling and squaring, the first small step taken
    exactly per node as the rigid motion of that node's twist. A node whose
@@ -235,7 +246,10 @@ window heads its side with it, the MCP tool and the CLI print it.
 ### What it cannot represent
 
 - **Sliding.** Bowel against the abdominal wall, lung against the chest
-  wall: a smooth field shears where anatomy slips.
+  wall, a shoulder blade over the ribs: a smooth field shears where anatomy
+  slips. The blend gives the space between two bones that move apart room
+  to change smoothly (above), but a shoulder blade within a node or two of
+  a rib can still fold a node or two; `posture_cli --folds` says where.
 - **Content that changes.** Gas, stool and bladder filling are not a
   deformation of the same material: the model moves the boundary, and the
   grey values inside are what *Cross-fade* mixes.
@@ -247,6 +261,80 @@ window heads its side with it, the MCP tool and the CLI print it.
   carried along the path (below); that is the planned dose moved with the
   tissue, for looking at - not a dose recalculated on the new geometry, and
   no dose number is derived from it.
+
+## Templates: a cohort, and one scan predicted
+
+A model of one patient needs both scans. A **posture template**
+(`posture::template`, `.rdsposture-template`) is what a cohort of such
+models says about the change of posture itself, so that a patient with
+only the first scan can be given the second:
+
+- **A sample per model** (`PostureRequest::sample`, `posture_cli --out` on
+  a pair writes `sample.json`, as does `build_posture_model` with
+  `sample`): per bone its centroid, seven points on its
+  principal axes and its motion; per pair of bones that touch at the first
+  state (contours within 4 mm) the **joint centre**, the middle of the two
+  contact patches; per organ (not a bone, not the outline, not cut, 5 cm3
+  or more) its centroid at the start, as contoured at the end, and as the
+  bones alone carry it, with the bones' local gradient there. No name or
+  identifier: the label is what the caller gives.
+- **Relations.** For bones `a` and `b`, `M = T_a^-1 o T_b` is `b`'s motion
+  relative to `a` in the first state's coordinates - the same whatever bone
+  anchored that patient's model, so a cohort anchored on the sacrum, T4 or
+  L1 speaks of one joint. Kept as a rotation vector and the centre's own
+  displacement, for joints about the contact centre and for every pair
+  directly about the middle of the two centroids; the template's estimate
+  is the componentwise median over the patients that have it, its spread
+  the median distance from it (one misfitted rib moves neither). A
+  relation is used when three patients or more have it.
+- **Organs.** After the bones, an organ that sags when the patient sits up
+  is elsewhere than the bones carry it; the offset is kept pulled back
+  through the bones' gradient (`G^-1 delta`, the displacement to apply at
+  the first state, before the bones), its median used. Bladder, bowel,
+  stomach, rectum, oesophagus and lungs change content or breath between
+  scans and give no offset.
+- **Prediction** (`workflow::posture::predict`): the scan's bones, the
+  joints found the same way, a root (`auto_anchor` on the one scan), and
+  every bone walked out from it along the relation whose accumulated
+  spread at its centroid is least (Dijkstra: a rib straight from a vertebra
+  near it rather than down the whole spine); the organs with offsets moved
+  as wholes, faded at their edges, as a residual velocity before the bones
+  (halved until it keeps the Jacobian at 0.2); the rest blended as for a
+  fit. The outcome is a model like any - it plays, measures, exports (the
+  image at `t = 1` is the predicted second scan) - whose second state is
+  labelled *predicted*, whose tables check nothing against a scan, and
+  whose verdict says so.
+- **Leave one out** (`template::leave_one_out`, `posture_cli --loo`,
+  `build_posture_template`; `template::loo_groups` and `loo_organs` sum it
+  up by group of bones and by organ): each
+  patient predicted from the others, its bones against its own fitted
+  motions relative to the root (mean distance at the seven points), its
+  organs against their contoured centroids, beside the error of predicting
+  no motion at all.
+
+On the `U2S_ModelTest` cohort (15 supine and upright CT pairs, TotalSegmentator
+v3 structures: 12 thorax and neck, 1 pelvis, 1 thorax-abdomen-pelvis, 1
+thorax-abdomen; 2026-11-19), leave one out, mean / median / 90th percentile
+over every bone of every patient:
+
+| Bones | n | template, mm | no motion, mm |
+|---|---|---|---|
+| thoracic vertebrae | 122 | 3.0 / 1.3 / 7.4 | 4.1 / 2.1 / 10.4 |
+| ribs | 195 | 6.4 / 4.8 / 12.9 | 6.9 / 5.0 / 12.8 |
+| cervical vertebrae | 41 | 6.1 / 4.4 / 12.3 | 6.1 / 4.7 / 12.8 |
+| shoulder girdle, arms, sternum | 65 | 17.2 / 16.4 / 30.2 | 25.9 / 23.3 / 48.3 |
+
+The thoracic spine and the ribs follow a common pattern; the shoulders move
+the most and the template takes a third off their error; the neck does not
+improve (the head's position on its rest differs from patient to patient);
+the lumbar spine and the pelvis have too few patients (one sacrum) to say
+anything yet. The organs' offsets take the heart from 17.6 to 8.3 mm, the
+superior vena cava from 21.9 to 12.4 mm and the subclavian arteries from
+8 - 10 to 5.2 - 5.7 mm (centroids, mean, from where the patient's own
+fitted bones carry them), and leave the thyroid where no motion at all
+would (9.6 mm). On the same cohort the per-patient models no longer fold
+on ten of the twelve thoracic pairs but on three, each at a few lattice
+nodes beside a clavicle or a shoulder blade on the first ribs.
 
 ## The tables
 
@@ -335,6 +423,11 @@ is a click away in a menu.
   `workflow::posture::model_for_missing`). The button runs it on that
   workspace through the *Structure auto tools* module, whose *Results*
   fold then lists what it found; add them there and press *Build* again.
+  The second state's list ends with the templates in the data folder's
+  `posture-templates/` (*Template: name*) and *Open a template...*, which
+  copies the file there; with one picked, the second state is predicted
+  from the first, *Root: auto* stands in for the anchor, and *▶ Predict*
+  replaces *▶ Build*.
 - **Centre**: the three planes, the 3D scene and the chart of the **model
   workspace**, drawn by the same `pane` function as the main rows, so the
   crosshair, zoom, window, structure visibility and the 3D camera are the
@@ -514,12 +607,13 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
 | `posture/measure.rs` | the four tables, the checks, the WEPL along a beam, CSV |
 | `posture/file.rs` | the `.rdsposture` file |
 | `posture/film.rs` | *Save GIF*: the run's times, the layout, the palette, the outlines, the wash and the field over the planes, the 3D scene drawn as the pane draws it, written as an animated GIF |
-| `crates/rds-domain/src/workflow/posture.rs` | `build`, `reopen`, `export_frame`, `export_registration`, preset joints, `lacking` and `model_for_missing` |
+| `posture/template.rs` | posture templates: samples, joints and their centres, the relations' medians and spreads, organ offsets, the bones' motions walked out from a root, leave one out, the `.rdsposture-template` file |
+| `crates/rds-domain/src/workflow/posture.rs` | `build` (and its sample), `reopen`, `predict` (one scan and a template), `export_frame`, `export_registration`, preset joints, `lacking` and `model_for_missing` |
 | `crates/rds-domain/src/gen_test_data.rs` | `articulated_pair` / `generate_articulated`: the articulated phantom |
 | `src/app/posture_win.rs`, `posture_table.rs` | the window, its workspace, playback and *Save GIF*; the table and chart |
-| `crates/rds-domain/src/mcp/tools/posture.rs` | `build_posture_model` |
+| `crates/rds-domain/src/mcp/tools/posture.rs` | `build_posture_model` (with `sample`), `build_posture_template`, `list_posture_templates`, `predict_posture` |
 | `crates/rds-domain/src/workflow/graph/nodes/posture.rs` | the *Posture model* step |
-| `examples/posture_cli.rs` | headless: folders (or `--phantom`, or `--simulate` on one CT) in, tables, the verdict, model file, REG, key frames and the image at a time out; `--anchor auto` by default, `--whole-scan`, `--residual-grid` / `--residual-reg` / `--residual-metric`, `--carry DIR` with `--carry-align rigid\|scanner` (another image of the first position carried), `--wepl GANTRY[,COUCH]`, `--no-smooth`, `--bench-slices N` (live steps timed on the CPU and the GPU, and how far apart they are), `--gif FILE` (the film; `--gif-view` all, axial, sagittal, coronal or 3d, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`, `--wash`, `--gif-field` arrows or grid, `--arrow-spacing`, `--arrow-scale`) |
+| `examples/posture_cli.rs` | headless: folders (or `--phantom`, or `--simulate` on one CT) in, tables, the verdict, model file, REG, key frames and the image at a time out; `--anchor auto` by default, `--whole-scan`, `--residual-grid` / `--residual-reg` / `--residual-metric`, `--carry DIR` with `--carry-align rigid\|scanner` (another image of the first position carried), `--wepl GANTRY[,COUCH]`, `--no-smooth`, `--bench-slices N` (live steps timed on the CPU and the GPU, and how far apart they are), `--gif FILE` (the film; `--gif-view` all, axial, sagittal, coronal or 3d, `--gif-width`, `--gif-frames`, `--fps`, `--bounce`, `--wash`, `--gif-field` arrows or grid, `--arrow-spacing`, `--arrow-scale`); `--folds` (where the end folds, by the two bodies nearest); a cohort: `--out` on a pair writes `sample.json` (`--label`), `--make-template OUT SAMPLE...`, `--loo TEMPLATE`, `--template FILE` with one state (`--no-organs`) |
 
 ## Verification
 
@@ -578,6 +672,16 @@ and `--arrow-scale`; the scene's camera is a fresh pane's).
   first position carried in the scanner's frame renders as the first
   state's own. The rule of *Auto* (sacrum, middle vertebra, largest bone,
   none) is a unit test of `workflow::posture`.
+- **Templates** (unit tests in `posture/template.rs`, `tests/posture.rs`):
+  a joint reads the same whatever bone anchored the model; the median
+  patient is predicted exactly and one misfit 60 degrees off does not move
+  the median; an organ's offset is kept before the bones and a bladder
+  gives none; four phantoms hinged 30, 40, 40 and 50 degrees (their bones
+  24 mm apart, so the direct relation, turning about the middle of the
+  centroids on the hinge, carries it) leave a template that reads back with
+  the median 40 degrees, a leave-one-out within 1.5 mm, and one scan alone
+  given a second state whose bones turn 40 degrees, its image the first
+  moved, its verdict *predicted*, nothing folded.
 - **The step and the tool**: `tests/workflow_steps.rs`, `tests/mcp_tools.rs`
   (the summary and the full answer, the verdict, the image at `export_t`),
   `tests/mcp_phi.rs` (the tool returns tables and handles only).
@@ -626,7 +730,10 @@ The plan left these open; the window starts from:
 
 ## Not built
 
-- a statistical model over many states (see *Smooth chains* for why);
+- a statistical model over many states (see *Smooth chains* for why): a
+  template keeps medians per joint and per organ, not a model of the
+  deformation's modes, and reads rotations in the first state's patient
+  axes rather than in anatomical bone frames;
 - a residual layer with velocities continuous across a chain's states.
 
 ## References

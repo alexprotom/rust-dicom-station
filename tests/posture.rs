@@ -1246,3 +1246,119 @@ fn an_image_of_the_first_position_is_carried_like_its_own() {
     )
     .is_err());
 }
+
+/// A cohort of four phantoms hinged 30, 40, 40 and 50 degrees: each pair's
+/// model leaves a sample of its two bones (24 mm apart at the hinge, so no
+/// joint by contact: their direct relation, about the middle of their
+/// centroids - the hinge itself - carries the turn), the template reads
+/// back from its file with the median turn of 40 degrees,
+/// leave-one-out predicts a 40-degree phantom from the other three exactly
+/// where its own fit put the lower bone, and one scan alone - the first
+/// state - is given a second state whose bones turn the cohort's 40
+/// degrees, its image the first moved, its verdict saying it was predicted.
+#[test]
+fn a_template_of_phantoms_predicts_the_hinge_from_one_scan() {
+    use rust_dicom_station::posture::template::{self, Template};
+    use rust_dicom_station::workflow::posture::predict;
+    let mut samples = Vec::new();
+    for (i, angle) in [30.0, 40.0, 40.0, 50.0].into_iter().enumerate() {
+        let pair = gen_test_data::articulated_pair(&ArticulatedParams {
+            angle_deg: angle,
+            ..ArticulatedParams::default()
+        });
+        let req = PostureRequest {
+            sample: true,
+            ..request(Mode::Diffeomorphic)
+        };
+        let o = build(&states(&pair), &req, &Progress::default()).expect("the model builds");
+        let mut s = o.sample.expect("a pair asked for its sample");
+        s.label = format!("p{i}");
+        assert_eq!(s.bodies.len(), 2, "{:?}", s.bodies);
+        assert!(s.joints.is_empty(), "24 mm apart: {:?}", s.joints);
+        // The middle of the two centroids is on the hinge, the RL axis
+        // through the origin.
+        let c: Vec<f64> = (0..3)
+            .map(|a| 0.5 * (s.bodies[0].centroid[a] + s.bodies[1].centroid[a]))
+            .collect();
+        assert!((c[1].powi(2) + c[2].powi(2)).sqrt() < 4.0, "middle {c:?}");
+        samples.push(s);
+    }
+    let path =
+        common::target_dir("posture-template").join(format!("phantoms.{}", template::EXTENSION));
+    Template::new(samples).write(&path).unwrap();
+    let t = Template::read(&path).unwrap();
+    assert_eq!(t.samples.len(), 4);
+    let edges = t.edges(None);
+    let hinge = edges.values().find(|e| !e.joint).expect("the hinge");
+    assert_eq!(hinge.n, 4);
+    assert!(
+        hinge.tau.length() < 2.0,
+        "the hinge turns about the middle: {:?}",
+        hinge.tau
+    );
+    assert!(
+        (hinge.angle_deg() - 40.0).abs() < 2.0,
+        "{} deg",
+        hinge.angle_deg()
+    );
+    assert!(!t.summary().is_empty());
+
+    let loo = template::leave_one_out(&t);
+    let p1 = loo.iter().find(|p| p.label == "p1").unwrap();
+    for b in &p1.bodies {
+        let err = b.error_mm.expect("the hinge reaches it");
+        assert!(
+            err < 1.5,
+            "{}: {err} mm against {} still",
+            b.name,
+            b.still_mm
+        );
+        assert!(b.still_mm > 5.0, "{} turned", b.name);
+    }
+
+    // One scan: the first state of a new phantom.
+    let pair = gen_test_data::articulated_pair(&ArticulatedParams::default());
+    let one = &states(&pair)[..1];
+    let o = predict(
+        &one[0],
+        &t,
+        &request(Mode::Diffeomorphic),
+        true,
+        &Progress::default(),
+    )
+    .expect("the prediction builds");
+    assert_eq!(o.model.states.len(), 2);
+    assert_eq!(o.images.len(), 2);
+    let (up, low) = (
+        o.model.body_pose("BONE_UPPER", 1.0).expect("upper"),
+        o.model.body_pose("BONE_LOWER", 1.0).expect("lower"),
+    );
+    let rel = low.then(&up.inverse());
+    assert!(
+        (rel.angle_deg() - 40.0).abs() < 2.0,
+        "hinge {} deg",
+        rel.angle_deg()
+    );
+    let v = o.tables.verdict();
+    assert!(
+        v.lines
+            .iter()
+            .any(|(_, l)| l.starts_with("Predicted from a posture template")),
+        "{v:?}"
+    );
+    assert!(o.tables.structures.iter().all(|r| r.check.is_none()));
+    assert!(
+        o.tables.model.folded_fraction == 0.0,
+        "{:?}",
+        o.tables.model
+    );
+    // The second image is the first with the lower bone turned.
+    let (a, b) = (&o.images[0], &o.images[1]);
+    let moved = a
+        .data
+        .iter()
+        .zip(&b.data)
+        .filter(|(x, y)| (**x as f32 - **y as f32).abs() > 200.0)
+        .count();
+    assert!(moved > 100, "{moved} voxels changed");
+}

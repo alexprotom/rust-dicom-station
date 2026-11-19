@@ -1879,3 +1879,101 @@ fn brush_frame_timing() {
         ui.settle(SETTLE);
     }
 }
+
+/// A posture template in the data folder's `posture-templates/` is offered
+/// as the second state of the posture window: picked, the anchor reads
+/// *Root: auto*, *Predict* replaces *Build*, the second state is predicted
+/// from the first scan alone, and the verdict says so. The template is four
+/// articulated phantoms (hinged 30 to 50 degrees), written before the window
+/// opens; only the first state of a fifth is loaded.
+#[test]
+fn the_posture_window_predicts_the_second_state_from_a_template() {
+    use rust_dicom_station::gen_test_data::{self, ArticulatedParams};
+    use rust_dicom_station::posture::template::{self, Template};
+    use rust_dicom_station::progress::Progress;
+    use rust_dicom_station::workflow::posture::{build, Bodies, PostureRequest, StateInput};
+    let _turn = turn();
+    // The cohort: a sample of each phantom's model.
+    let samples: Vec<template::Sample> = [30.0, 40.0, 40.0, 50.0]
+        .into_iter()
+        .map(|angle| {
+            let pair = gen_test_data::articulated_pair(&ArticulatedParams {
+                angle_deg: angle,
+                ..ArticulatedParams::default()
+            });
+            let states: Vec<StateInput> = pair
+                .iter()
+                .enumerate()
+                .map(|(i, s)| StateInput {
+                    label: ["A", "B"][i].into(),
+                    study: s,
+                    structure_set: None,
+                    posture: None,
+                })
+                .collect();
+            let req = PostureRequest {
+                anchor: rust_dicom_station::posture::Anchor::Structure("BONE_UPPER".into()),
+                bodies: Bodies::Bones,
+                sample: true,
+                ..PostureRequest::default()
+            };
+            build(&states, &req, &Progress::default())
+                .expect("the phantom's model builds")
+                .sample
+                .expect("its sample")
+        })
+        .collect();
+    let [a, _] = gen_test_data::generate_articulated(
+        &common::target_dir("ui-test-posture-template"),
+        &ArticulatedParams::default(),
+        &Progress::default(),
+    )
+    .expect("the phantom is written");
+    let mut ui = Ui::open(Opts {
+        datasets: [Some(a), None],
+        ..Opts::default()
+    });
+    assert!(ui.settle(SETTLE), "the first state did not load");
+    // In the data folder of this run, before the window lists it.
+    let dir = template::templates_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    Template::new(samples)
+        .write(&dir.join(format!("phantoms.{}", template::EXTENSION)))
+        .unwrap();
+    ui.click(&Target::label("Tools").role("button")).unwrap();
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Posture model").role("button"))
+        .unwrap();
+    ui.settle(SETTLE);
+    // The second state's list: no second workspace, the template.
+    ui.click(&Target::containing("(pick)"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.settle(SETTLE);
+    ui.click(&Target::containing("Template: phantoms"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    ui.settle(SETTLE);
+    assert!(
+        ui.has(&Target::containing("Root: auto")),
+        "{}",
+        ui.tree_text()
+    );
+    assert!(
+        !ui.has(&Target::containing("Build").role("button")),
+        "{}",
+        ui.tree_text()
+    );
+    ui.click(&Target::containing("Predict").role("button"))
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", ui.tree_text()));
+    assert!(ui.settle(SETTLE), "the prediction did not finish");
+    assert!(
+        ui.has(&Target::containing("Predicted from a posture template")),
+        "no verdict of a prediction:\n{}",
+        ui.tree_text()
+    );
+    assert!(
+        ui.has(&Target::containing("BONE_LOWER")),
+        "{}",
+        ui.tree_text()
+    );
+    assert_all_named(&ui, "the posture window with a predicted state");
+}

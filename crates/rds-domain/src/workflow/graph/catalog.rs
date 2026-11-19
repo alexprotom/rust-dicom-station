@@ -1808,7 +1808,8 @@ impl Op {
                 }
                 if parse_pairs(&p.pairs).is_none() {
                     v.push(
-                        "the pairs are fixed:moving images by number or label, separated by                          commas"
+                        "the pairs are fixed:moving images by number or label, separated by \
+                         commas"
                             .into(),
                     );
                 }

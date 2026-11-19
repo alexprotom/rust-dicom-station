@@ -101,6 +101,56 @@ impl BodyOnLattice {
     }
 }
 
+/// Hand back to the blend the nodes of each body's swept region (beyond
+/// its own) that lie nearer another body's region than the two bodies'
+/// velocities there differ, by more than a lattice step,
+/// `d_j(x) + h < |xi_i(x) - xi_j(x)|`: where a shoulder
+/// blade or an arm sweeps up to ribs that stay still, keeping both at
+/// weight one makes the velocity jump by tens of millimetres from one node
+/// to the next, and the discrete flow folds the tissue between them. Given
+/// back, those nodes take Shepard's weights and the velocity changes over
+/// at least the distance it changes by. Bodies that move alike (two
+/// neighbouring vertebrae) differ by less than a node and keep their
+/// regions; a body's own nodes are never given back. Every place that puts
+/// bodies on a lattice for a blend calls this once on all of them.
+pub fn separate(bodies: &mut [BodyOnLattice], lattice: &Lattice) {
+    if bodies.len() < 2 {
+        return;
+    }
+    let before: Vec<Vec<f32>> = bodies.iter().map(|b| b.dist_mm.clone()).collect();
+    // A jump of a node or less the flow follows; a hinge's own bones, whose
+    // velocities part slowly from the axis, keep their regions there.
+    let h = lattice.min_spacing();
+    let twists: Vec<Twist> = bodies.iter().map(|b| b.xi).collect();
+    for i in 0..bodies.len() {
+        let b = &bodies[i];
+        let keep: Vec<u8> = (0..lattice.len())
+            .into_par_iter()
+            .map(|n| {
+                if before[i][n] > 0.0 {
+                    return 0;
+                }
+                if b.own[n] != 0 {
+                    return 1;
+                }
+                let x = lattice.node(n);
+                let vi = twists[i].velocity(x);
+                let near = (0..twists.len()).any(|j| {
+                    j != i && {
+                        let d = before[j][n] as f64;
+                        d.is_finite() && d + h < (vi - twists[j].velocity(x)).length()
+                    }
+                });
+                u8::from(!near)
+            })
+            .collect();
+        let had = before[i].iter().filter(|&&d| d <= 0.0).count();
+        if keep.iter().filter(|&&k| k != 0).count() < had {
+            bodies[i].dist_mm = distances(&keep, lattice);
+        }
+    }
+}
+
 /// A body's mask on its image grid, put onto the lattice: the nodes it
 /// covers, sampled at the nearest voxel; the node nearest its centroid
 /// when it covers none.
